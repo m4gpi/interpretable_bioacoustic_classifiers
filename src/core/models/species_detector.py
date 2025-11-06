@@ -47,37 +47,68 @@ class SpeciesDetector(L.LightningModule):
                 for species_name in self.species
             })
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    # TODO: include in pipeline somehow
+    def run(
+        self,
+        train_dataloader: torch.utils.data.DataLoader,
+        device: str,
+    ) -> None:
+        if self.pool_method == POOL.MAX:
+            self.classifiers = weight_initialization(
+                in_features=self.in_features,
+                dataloader=train_dataloader,
+                species_names=self.species,
+                loss=functools.partial(class_balanced_binary_cross_entropy_with_logits, beta=self.beta.to(device)),
+                device=device,
+            )
+
+    def forward(self, x: torch.Tensor, species_names: List[str]) -> torch.Tensor:
         # pool by taking a linear combination of features as a function of the data
         if self.pool_method == POOL.FEATURE_ATTN:
-            return torch.cat([
-                torch.sigmoid(clf((x * attn(x)).sum(dim=-2)))
-                for clf, attn in zip(self.classifiers.values(), self.attention.values())
-            ], dim=1)
+            y_probs = []
+            for species_name in species_names:
+                clf = self.classifiers[species_name]
+                attn = self.attention[species_name]
+                assert clf is not None and attn is not None, f"'{species_name}' is not a valid species"
+                y_species_probs = torch.sigmoid(clf((x * attn(x)).sum(dim=-2)))
+                y_probs.append(y_species_probs)
+            return torch.cat(y_probs, dim=1)
         # pool by taking a linear function of probabilities as a function of the data
         elif self.pool_method == POOL.PROB_ATTN:
-            return torch.cat([
-                torch.sigmoid((clf(x) * attn(x)).sum(dim=-2))
-                for clf, attn in zip(self.classifiers.values(), self.attention.values())
-            ], dim=1)
+            y_probs = []
+            for species_name in species_names:
+                clf = self.classifiers[species_name]
+                attn = self.attention[species_name]
+                assert clf is not None and attn is not None, f"'{species_name}' is not a valid species"
+                y_species_probs = torch.sigmoid((clf(x) * attn(x)).sum(dim=-2))
+                y_probs.append(y_species_probs)
+            return torch.cat(y_probs, dim=1)
         # pool by maximum probability
         elif self.pool_method == POOL.MAX:
-            return torch.cat([
-                torch.sigmoid(torch.max(clf(x), dim=-2).values)
-                for clf in self.classifiers.values()
-            ], dim=1)
+            y_probs = []
+            for species_name in species_names:
+                clf = self.classifiers[species_name]
+                assert clf is not None, f"'{species_name}' is not a valid species"
+                y_species_probs = torch.sigmoid(torch.max(clf(x), dim=-2).values)
+                y_probs.append(y_species_probs)
+            return torch.cat(y_probs, dim=1)
         # pool by mean probability
         elif self.pool_method == POOL.MEAN:
-            return torch.cat([
-                torch.sigmoid(torch.mean(clf(x), dim=-2))
-                for clf in self.classifiers.values()
-            ], dim=1)
+            y_probs = []
+            for species_name in species_names:
+                clf = self.classifiers[species_name]
+                assert clf is not None, f"'{species_name}' is not a valid species"
+                y_species_probs = torch.sigmoid(torch.mean(clf(x), dim=-2))
+                y_probs.append(y_species_probs)
+            return torch.cat(y_probs, dim=1)
 
-    def loss(self, y: torch.Tensor, y_probs: torch.Tensor, y_freq: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def loss(self, y: torch.Tensor, y_probs: torch.Tensor, y_freq: List[float]) -> Dict[str, torch.Tensor]:
         # take the mean over the batch for each logistic regression model
-        weights = (torch.ones_like(self.beta) - self.beta) / (torch.ones_like(y_freq[0]) - torch.pow(self.beta, y_freq[0].clip(min=1)))
+        samples_per_class = torch.tensor(y_freq, dtype=torch.int64).to(y.device)
+        weights = (torch.ones_like(self.beta) - self.beta) / (torch.ones_like(samples_per_class) - torch.pow(self.beta, samples_per_class.clip(min=1)))
         weights = weights / weights.sum() * weights.shape[0]
         cel = (-weights * y * y_probs.log() - (1 - y) * (1 - y_probs).log()).mean(dim=0)
+        # TODO: parametrise latent split?
         # L1 regularisation with split for smooth latents (if applicable), sum the L1 penalties for each model
         l1_1 = metrics.l1_penalty([w[:, 0:64] for w in list(self.classifiers.parameters())[::2]], self.l1_penalty)
         l1_2 = metrics.l1_penalty([w[:, 64:128] for w in list(self.classifiers.parameters())[::2]], self.l1_penalty * self.penalty_multiplier)
@@ -93,28 +124,25 @@ class SpeciesDetector(L.LightningModule):
             l1_penalty_2=l1_2.detach().sum(),
         )
 
-    def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        x, y, s = batch
-        logits = self.forward(x)
-        loss_outputs = self.loss(y.float(), logits)
+    def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> Dict[str, torch.Tensor]:
+        x, y, _, y_freq = batch
+        y_probs = self.forward(x, list(y_freq.keys()))
+        loss_outputs = self.loss(y.float(), y_probs, list(y_freq.values()))
         self.log_dict({f"train/{key}": value for key, value in loss_outputs.items()}, prog_bar=True)
         return loss_outputs
 
     @torch.no_grad()
-    def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        x, y, s = batch
-        logits = self.forward(x)
-        loss_outputs = self.loss(y.float(), logits)
+    def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> Dict[str, torch.Tensor]:
+        x, y, _, y_freq = batch
+        y_probs = self.forward(x, list(y_freq.keys()))
+        loss_outputs = self.loss(y.float(), y_probs, list(y_freq.values()))
         self.log_dict({f"val/{key}": value for key, value in loss_outputs.items()}, prog_bar=True)
         return loss_outputs
 
     @torch.no_grad()
-    def predict_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> pd.DataFrame:
-        x, y, (s, samples_per_class) = batch
-        logits = self.forward(x)
-        # take the mean probability over samples if that dimension exists
-        logits = logits.mean(dim=1) if len(logits.shape) > 3 else logits
-        # return dataframe of predictions
+    def predict_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> pd.DataFrame:
+        x, y, s, y_freq = batch
+        y_probs = self.forward(x, list(y_freq.keys()))
         return (
             pd.DataFrame(
                 data=y.detach().cpu(),
@@ -142,18 +170,3 @@ class SpeciesDetector(L.LightningModule):
         if self.pool_method == POOL.FEATURE_ATTN or self.pool_method == POOL.PROB_ATTN:
             optimisers.append(torch.optim.Adam(params=self.attention.parameters(), lr=self.attn_learning_rate))
         return optimisers
-
-    def run(
-        self,
-        trainer: "Trainer",
-        train_dataloader: torch.utils.data.DataLoader,
-        device: str,
-    ) -> None:
-        if self.pool_method == POOL.MAX:
-            self.classifiers = weight_initialization(
-                in_features=self.in_features,
-                dataloader=train_dataloader,
-                species_names=self.species,
-                loss=functools.partial(class_balanced_binary_cross_entropy_with_logits, beta=self.beta.to(device)),
-                device=device,
-            )
