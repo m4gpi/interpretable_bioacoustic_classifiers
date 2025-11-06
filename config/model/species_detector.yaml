@@ -1,0 +1,9 @@
+_target_: src.core.models.species_detector.SpeciesDetector
+in_features: 128
+attn_dim: 10
+pool_method: feature_attn
+l1_penalty: 0.1
+penalty_multiplier: 2
+beta: 0.99
+clf_learning_rate: 0.1
+attn_learning_rate: 0.01
