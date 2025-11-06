@@ -19,21 +19,25 @@ class SoundscapeVAEEmbeddings(torch.utils.data.Dataset):
     index: List[int] = attrs.field()
     num_samples: int = attrs.field(default=1)
 
+    x: torch.Tensor = attrs.field(init=False)
+    y: torch.Tensor = attrs.field(init=False)
+    y_freq: torch.Tensor = attrs.field(init=False)
+
     def __len__(self) -> int:
         return len(self.y)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, ...]:
         q_z = self.x[idx]
         mean, log_var = q_z.chunk(2, dim=-1)
-        mean = mean.unsqueeze(1).expand(-1, self.num_samples, -1, -1)
-        log_var = log_var.unsqueeze(1).expand(-1, self.num_samples, -1, -1)
+        mean = mean.unsqueeze(0).expand(self.num_samples, -1, -1)
+        log_var = log_var.unsqueeze(0).expand(self.num_samples, -1, -1)
         z = mean + torch.randn_like(mean) * (0.5 * log_var).exp()
         return (z, self.y[idx], self.index[idx])
 
     def __attrs_post_init__(self):
         self.x = torch.tensor(self.features.values.reshape(self.labels.values.shape[0], -1, self.features.values.shape[-1]), dtype=torch.float32)
         self.y = torch.tensor(self.labels.values, dtype=torch.int64)
-        self.y_freq = zip(dict(self.labels.columns, [self.labels[y].sum() for y in self.labels.columns]))
+        self.y_freq = dict(zip(self.labels.columns, torch.tensor([self.labels[y].sum() for y in self.labels.columns])))
 
 @attrs.define(kw_only=True)
 class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
@@ -48,6 +52,8 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
     persist_workers: bool | None = attrs.field(default=None)
     pin_memory: bool = attrs.field(default=True, validator=attrs.validators.instance_of(bool))
     drop_last: bool = attrs.field(default=False, validator=attrs.validators.instance_of(bool))
+
+    generator: torch.Generator = attrs.field(init=False)
 
     @root.validator
     def check_features_and_labels_exist(self, attribute, value) -> None:
@@ -116,7 +122,6 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
         batch_size = batch_size or self.eval_batch_size or len(self.test_data)
         return torch.utils.data.DataLoader(self.test_data, batch_size=batch_size, collate_fn=self.batch_converter, **self.dataloader_params, **kwargs)
 
-    @staticmethod
-    def batch_converter(batch: List[List[torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]]:
+    def batch_converter(self, batch: List[List[torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]]:
         xs, ys, idx = zip(*batch)
-        return (torch.stack(xs), torch.stack(ys), torch.stack(idx), self.train_data.dataset.y_freq)
+        return (torch.stack(xs), torch.stack(ys), torch.tensor(idx), self.train_data.dataset.y_freq)

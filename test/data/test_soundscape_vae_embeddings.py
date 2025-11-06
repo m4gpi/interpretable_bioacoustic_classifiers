@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import pathlib
 import tempfile
+import torch
 
 from src.core.data.soundscape_vae_embeddings import SoundscapeVAEEmbeddings, SoundscapeVAEEmbeddingsDataModule
 from test import utils
@@ -65,26 +66,27 @@ def root(num_train_samples, num_test_samples, seq_len, latent_dim, num_classes):
         yield root
 
 def test_soundscape_vae_embeddings(root, num_train_samples, seq_len, latent_dim, num_classes):
+    num_samples = 1
     data = SoundscapeVAEEmbeddings(
         features=pd.read_parquet(root / "train" / "features.parquet"),
         labels=pd.read_parquet(root / "train" / "labels.parquet"),
         index=list(range(num_train_samples)),
+        num_samples=num_samples,
     )
     sample = data[0]
     assert isinstance(sample, tuple)
-    assert len(sample) == 4
-    assert sample[0].shape == (seq_len, latent_dim)
+    assert len(sample) == 3
+    assert sample[0].shape == (num_samples, seq_len, latent_dim)
     assert sample[1].shape == (num_classes,)
     assert isinstance(sample[2], int)
-    assert sample[3].shape == (num_classes,)
 
-def test_soundscape_vae_embedding_data_module(root, num_train_samples, seq_len, latent_dim, num_classes):
+def test_soundscape_vae_embedding_data_module(root, num_train_samples, seq_len, latent_dim):
     dm = SoundscapeVAEEmbeddingsDataModule(root=root)
     dm.setup()
     batch = next(iter(dm.train_dataloader()))
     assert isinstance(batch, list)
     assert len(batch) == 4
-    assert batch[0].shape == (num_train_samples, seq_len, latent_dim)
-    assert batch[1].shape == (num_train_samples, num_classes)
+    assert batch[0].shape == (num_train_samples, 1, seq_len, latent_dim)
+    assert batch[1].shape == (num_train_samples, len(dm.train_data.dataset.labels.columns))
     assert batch[2].shape == (num_train_samples,)
-    assert batch[3].shape == (num_train_samples, num_classes)
+    assert isinstance(batch[3], dict) and all(isinstance(k, str) and isinstance(v, torch.LongTensor) for k, v in batch[3].items())
