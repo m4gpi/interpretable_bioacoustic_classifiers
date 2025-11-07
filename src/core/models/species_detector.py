@@ -5,7 +5,6 @@ import logging
 import numpy as np
 import pandas as pd
 import pathlib
-import sklearn
 import torch
 import yaml
 
@@ -146,68 +145,26 @@ class SpeciesDetector(L.LightningModule):
             l1_penalty_2=l1_2.detach().sum(),
         )
 
-    def evaluate(self, batch_predictions: List[pd.DataFrame]) -> None:
-        predictions = pd.concat(batch_predictions)
-        scores = self.score(predictions)
-        import code; code.interact(local=locals())
-        print(scores.to_markdown())
-
-    def score(self, results: pd.DataFrame) -> pd.DataFrame:
-        scores = []
-        for species_name in results.species_name.unique():
-            y = results.loc[results.species_name == species_name, "label"].values
-            y_prob = results.loc[results.species_name == species_name, "prob"].values
-            if np.isnan(y_prob).any():
-                prop_nans = np.isnan(y_prob).sum() / len(y_prob)
-                log.warning(f"NaNs found in predicted probabilities for {species_name} with a proportional count of {prop_nans}")
-                y_prob = np.nan_to_num(y_prob, nan=0.0)
-            assert not np.isnan(y).any(), f"NaNs found in true labels for {species_name}"
-            scores.append(dict(
-                species_name=species_name,
-                mAP=metrics.average_precision(y, y_prob),
-                auROC=sklearn.metrics.roc_auc_score(y, y_prob),
-            ))
-        return pd.DataFrame(data=scores).set_index("species_name")
-
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> Dict[str, torch.Tensor]:
-        x, y, _, y_freq = batch
+        x, y, s, y_freq = batch
         y_probs = self.forward(x, list(y_freq.keys()))
         loss_outputs = self.loss(y.float(), y_probs, list(y_freq.values()))
         self.log_dict({f"train/{key}": value for key, value in loss_outputs.items()}, prog_bar=True)
-        return loss_outputs
+        return {**loss_outputs, "y_probs": y_probs, "y": y, "s": s, "y_freq": y_freq}
 
     @torch.no_grad()
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> Dict[str, torch.Tensor]:
-        x, y, _, y_freq = batch
+        x, y, s, y_freq = batch
         y_probs = self.forward(x, list(y_freq.keys()))
         loss_outputs = self.loss(y.float(), y_probs, list(y_freq.values()))
         self.log_dict({f"val/{key}": value for key, value in loss_outputs.items()}, prog_bar=True)
-        return loss_outputs
+        return {**loss_outputs, "y_probs": y_probs, "y": y, "s": s, "y_freq": y_freq}
 
     @torch.no_grad()
-    def predict_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> pd.DataFrame:
+    def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> pd.DataFrame:
         x, y, s, y_freq = batch
         y_probs = self.forward(x, list(y_freq.keys()))
-        return (
-            pd.DataFrame(
-                data=y.detach().cpu(),
-                columns=list(y_freq.keys()),
-                index=s.detach().cpu().tolist()
-            )
-            .reset_index(names="file_i")
-            .melt(id_vars="file_i", var_name="species_name", value_name="label")
-            .merge(
-                pd.DataFrame(
-                    data=y_probs.detach().cpu(),
-                    columns=list(y_freq.keys()),
-                    index=s.detach().cpu().tolist()
-                )
-                .reset_index(names="file_i")
-                .melt(id_vars="file_i", var_name="species_name", value_name="prob"),
-                on=["file_i", "species_name"],
-                how="inner",
-            )
-        )
+        return {"y_probs": y_probs, "y": y, "s": s, "y_freq": y_freq}
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         params = []

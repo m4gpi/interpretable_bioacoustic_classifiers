@@ -7,13 +7,13 @@ defaults:
   - override /data: soundscape_vae_embeddings
   - override /model: species_detector
   - override /trainer: gpu
+  - override /logger: wandb
 
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
 
 train: true
-test: false
-predict: true
+test: true
 
 tags: ["SO", "UK", "base_vae", "v4"]
 
@@ -34,9 +34,19 @@ model:
   clf_learning_rate: 0.1
   attn_learning_rate: 0.01
 
-# logger:
-#   wandb:
-#     tags: ${tags}
-#     group: "mnist"
-#   aim:
-#     experiment: "mnist"
+logger:
+  wandb:
+    tags: ${tags}
+    group: sounding_out_uk
+
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.output_dir}/checkpoints
+    filename: epoch_{epoch:03d}
+    monitor: val/loss
+    mode: min
+    save_top_k: -1
+    auto_insert_metric_name: False
+  species_scores:
+    _target_: src.core.callbacks.species_scores.SpeciesScores
+    save_dir: ${paths.output_dir}

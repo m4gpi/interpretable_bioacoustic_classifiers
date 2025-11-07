@@ -4,16 +4,11 @@ defaults:
   - _self_
   - data: soundscape_vae_embeddings
   - model: species_detector
+  - callbacks: default
   - logger: null
   - trainer: default
   - paths: default
   - hydra: default
-
-checkpoint:
-  _target_: lightning.pytorch.callbacks.ModelCheckpoint
-  dirpath: ${paths.output_dir}/checkpoints
-  monitor: val/loss
-  save_top_k: -1
 
 task_name: train
 # tags to help you identify your experiments

@@ -1,0 +1,4 @@
+species_scores:
+  _target_: src.core.callbacks.species_scores.SpeciesScores
+  save_dir: ${paths.output_dir}
+
