@@ -1,6 +1,6 @@
 import torch
 
-from src.core.models import SpeciesDetector, POOL
+from src.core.models import SpeciesDetector
 
 def test_species_detector():
     species = ["a", "b"]

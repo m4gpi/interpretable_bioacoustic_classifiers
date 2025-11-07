@@ -1,0 +1,39 @@
+# @package _global_
+
+# to execute this experiment run:
+# python train.py experiment=so_ec_species_detector_base_vae
+
+defaults:
+  - override /data: soundscape_vae_embeddings
+  - override /model: species_detector
+  - override /trainer: gpu
+
+# all parameters below will be merged with parameters from default configurations set above
+# this allows you to overwrite only specified parameters
+
+tags: ["SO", "EC", "base_vae", "v4"]
+
+seed: 42
+
+data:
+  root: ./data/soundscape_vae_embeddings/base_vae.pt:v4/SO/country=='EC'/
+
+trainer:
+  max_epochs: 1000
+  check_val_every_n_epoch: 50
+  log_every_n_steps: 1
+
+model:
+  species_list_path: ./data/soundscape_vae_embeddings/base_vae.pt:v4/SO/country=='EC'/species.yaml
+  beta: 0.0
+  attn_dim: 10
+  pool_method: feature_attn
+  clf_learning_rate: 0.1
+  attn_learning_rate: 0.01
+
+# logger:
+#   wandb:
+#     tags: ${tags}
+#     group: "mnist"
+#   aim:
+#     experiment: "mnist"

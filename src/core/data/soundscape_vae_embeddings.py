@@ -3,13 +3,14 @@ import pathlib
 import lightning as L
 import numpy as np
 import pandas as pd
+import sklearn
 import torch
 
 from typing import Any, Dict, List, Tuple
 
 __all__ = [
-    "VAESoundscapeEmbeddings",
-    "VAESoundscapeEmbeddingsDataModule",
+    "SoundscapeVAEEmbeddings",
+    "SoundscapeVAEEmbeddingsDataModule",
 ]
 
 @attrs.define(kw_only=True)
@@ -63,6 +64,7 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
         assert pathlib.Path(self.test_labels_path).exists(), f"'{self.test_labels_path}' does not exist"
 
     def __attrs_post_init__(self):
+        L.LightningDataModule.__init__(self)
         self.generator = torch.Generator().manual_seed(self.seed)
 
     @property
@@ -90,38 +92,102 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
             persistent_workers=self.persist_workers,
         )
 
-    def setup(self):
+    def setup(self, stage: str) -> None:
+        self.data, self.test_data = self._setup_data()
+        self.train_data, self.val_data = torch.utils.data.random_split(
+            self.data,
+            (1 - self.val_prop, self.val_prop),
+            generator=self.generator
+        )
+
+    def cross_validation_setup(self, k_folds: int) -> None:
+        self.cross_val_dataloaders = []
+        self.data, self.test_data = self._setup_data()
+        kf = sklearn.model_selection.KFold(
+            n_splits=k_folds,
+            random_state=self.seed,
+            shuffle=True
+        )
+        for k, (train_idx, val_idx) in enumerate(kf.split(range(len(self.data)))):
+            train_dl = torch.utils.data.DataLoader(
+                self.data[train_idx],
+                batch_size=self.train_batch_size or len(self.data[train_idx]),
+                collate_fn=self.batch_converter,
+                **self.dataloader_params
+            )
+            val_dl = torch.utils.data.DataLoader(
+                self.data[val_idx],
+                batch_size=self.eval_batch_size or len(self.data[val_idx]),
+                collate_fn=self.batch_converter,
+                **self.dataloader_params
+            )
+            self.cross_val_dataloaders.append((k, (train_dl, val_dl)))
+
+    def train_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
+        batch_size = batch_size or self.train_batch_size or len(self.train_data)
+        return torch.utils.data.DataLoader(
+            self.train_data,
+            batch_size=batch_size,
+            collate_fn=self.batch_converter,
+            shuffle=True,
+            **self.dataloader_params,
+            **kwargs
+        )
+
+    def val_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
+        batch_size = batch_size or self.eval_batch_size or len(self.val_data)
+        return torch.utils.data.DataLoader(
+            self.val_data,
+            batch_size=batch_size,
+            collate_fn=self.batch_converter,
+            shuffle=False,
+            **self.dataloader_params,
+            **kwargs
+        )
+
+    def test_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
+        batch_size = batch_size or self.eval_batch_size or len(self.test_data)
+        return torch.utils.data.DataLoader(
+            self.test_data,
+            batch_size=batch_size,
+            collate_fn=self.batch_converter,
+            shuffle=False,
+            **self.dataloader_params,
+            **kwargs
+        )
+
+    def predict_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
+        batch_size = batch_size or self.eval_batch_size or len(self.test_data)
+        return torch.utils.data.DataLoader(
+            self.test_data,
+            batch_size=batch_size,
+            collate_fn=self.batch_converter,
+            shuffle=False,
+            **self.dataloader_params,
+            **kwargs
+        )
+
+    def batch_converter(self, batch: List[List[torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]]:
+        xs, ys, idx = zip(*batch)
+        return (torch.stack(xs), torch.stack(ys), torch.tensor(idx), self.train_data.dataset.y_freq)
+
+    def _setup_data(self):
         train_features = pd.read_parquet(self.train_features_path)
         train_labels = pd.read_parquet(self.train_labels_path)
         test_features = pd.read_parquet(self.test_features_path)
         test_labels = pd.read_parquet(self.test_labels_path)
-        labels = set(train_labels.columns).intersection(set(test_labels.columns))
-        train_data = SoundscapeVAEEmbeddings(
+        labels = list(set(train_labels.columns).intersection(set(test_labels.columns)))
+        data = SoundscapeVAEEmbeddings(
             features=train_features,
             labels=train_labels[labels],
             index=train_labels.index.get_level_values(0),
             num_samples=self.train_sample_size,
         )
-        self.train_data, self.val_data = torch.utils.data.random_split(train_data, (1 - self.val_prop, self.val_prop), generator=self.generator)
-        self.test_data = SoundscapeVAEEmbeddings(
+        test_data = SoundscapeVAEEmbeddings(
             features=test_features,
             labels=test_labels[labels],
             index=test_labels.index.get_level_values(0),
             num_samples=self.eval_sample_size,
         )
+        return data, test_data
 
-    def train_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
-        batch_size = batch_size or self.train_batch_size or len(self.train_data)
-        return torch.utils.data.DataLoader(self.train_data, batch_size=batch_size, collate_fn=self.batch_converter, **self.dataloader_params, **kwargs)
-
-    def val_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
-        batch_size = batch_size or self.eval_batch_size or len(self.val_data)
-        return torch.utils.data.DataLoader(self.val_data, batch_size=batch_size, collate_fn=self.batch_converter, **self.dataloader_params, **kwargs)
-
-    def test_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
-        batch_size = batch_size or self.eval_batch_size or len(self.test_data)
-        return torch.utils.data.DataLoader(self.test_data, batch_size=batch_size, collate_fn=self.batch_converter, **self.dataloader_params, **kwargs)
-
-    def batch_converter(self, batch: List[List[torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]]:
-        xs, ys, idx = zip(*batch)
-        return (torch.stack(xs), torch.stack(ys), torch.tensor(idx), self.train_data.dataset.y_freq)

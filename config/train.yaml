@@ -9,6 +9,12 @@ defaults:
   - paths: default
   - hydra: default
 
+checkpoint:
+  _target_: lightning.pytorch.callbacks.ModelCheckpoint
+  dirpath: ${paths.output_dir}/checkpoints
+  monitor: val/loss
+  save_top_k: -1
+
 task_name: train
 # tags to help you identify your experiments
 # you can overwrite this in experiment configs

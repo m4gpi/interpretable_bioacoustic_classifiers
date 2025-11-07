@@ -1,7 +1,7 @@
 _target_: src.core.models.species_detector.SpeciesDetector
+species_list_path:
 in_features: 128
-attn_dim: 10
-pool_method: feature_attn
+pool_method: max
 l1_penalty: 0.1
 penalty_multiplier: 2
 beta: 0.99
