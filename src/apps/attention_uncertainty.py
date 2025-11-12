@@ -217,11 +217,14 @@ def create_dash_app(
             df,
             x="mean",
             y="std",
-            color="label",
+            symbol="label",
+            color="prediction",
             facet_row="stage",
             opacity=0.75,
             hover_name="file_i",
             hover_data=["file_i", "file_name", "label", "prediction"],
+            category_orders=dict(label=["0", "1"]),
+            color_continuous_scale="RdBu",
         )
         fig.update_layout(
             height=700,
@@ -231,6 +234,7 @@ def create_dash_app(
             yaxis2_title_text="Timestep (Dispersion)",
             legend_y=1.1,
             legend_orientation='h',
+            coloraxis_colorbar_title_side="right",
         )
         return fig
 
