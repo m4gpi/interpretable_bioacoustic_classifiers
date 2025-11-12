@@ -303,20 +303,16 @@ def create_dash_app(
             return no_update
         seq_len = 78
         w = np.array([sample[f"weight_{i}"] for i in range(seq_len)])
-        w = w.reshape(2, seq_len // 2).repeat(2, 1)
-        w[1] = np.roll(w[1], 1)
+        w = np.ravel(np.column_stack((w[:len(w) // 2], w[len(w) // 2:])))
         fig = go.Figure()
-        fig.add_trace(go.Heatmap(
+        fig.add_trace(go.Bar(
             x=np.arange(0, 59.904, 1.536 / 2),
-            y=np.arange(2),
-            z=w,
-            zmin=0.0,
-            zmax=1.0,
-            colorscale='RdBu_r',
+            y=w,
         ))
         fig.update_layout(
-            height=300,
+            height=250,
             title_text="Timestep Attention Weights",
+            yaxis_range=[0.0, 1.0],
         )
         return fig
 
