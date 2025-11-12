@@ -1,7 +1,6 @@
 # @package _global_
 
-# to execute this experiment run:
-# python train.py experiment=so_ec_species_detector_base_vae
+# python train.py experiment=so_ec_species_detector_shifti_invariant_vae
 
 defaults:
   - override /data: soundscape_vae_embeddings
@@ -9,18 +8,16 @@ defaults:
   - override /trainer: gpu
   - override /logger: wandb
 
-# all parameters below will be merged with parameters from default configurations set above
-# this allows you to overwrite only specified parameters
-
 train: true
 test: true
-
-tags: ["SO", "EC", "base_vae", "v4"]
 
 seed: 42
 
 data:
-  root: ./data/soundscape_vae_embeddings/base_vae.pt:v4/SO/country=='EC'/
+  root: /its/home/kag25/projects/ecolistening/interpretable_bioacoustic_classifiers/data/soundscape_vae_embeddings
+  model: smooth_nifti_vae
+  version: v12
+  scope: SO/EC
 
 trainer:
   max_epochs: 1000
@@ -28,7 +25,7 @@ trainer:
   log_every_n_steps: 1
 
 model:
-  species_list_path: ./data/soundscape_vae_embeddings/base_vae.pt:v4/SO/country=='EC'/species.yaml
+  species_list_path: ${data.root}/${data.model}.pt:${data.version}/${data.scope}/species.yaml
   beta: 0.0
   attn_dim: 10
   pool_method: feature_attn

@@ -16,7 +16,7 @@ def class_balanced_binary_cross_entropy(
     y_probs = y_probs.clamp(epsilon, 1 - epsilon)
     for values in [y, y_probs, weights]:
         assert torch.isfinite(values).all()
-    return (-(weights * y * y_probs.log() + (1 - y) * (1 - y_probs).log())).mean(dim=0)
+    return (-(weights * y * y_probs.log() + (1 - y) * (1 - y_probs).log()))
 
 def l1_penalty(weights: torch.Tensor, lamdba: float) -> torch.Tensor:
     return lamdba * torch.stack([torch.linalg.norm(layer, 1) for layer in weights])

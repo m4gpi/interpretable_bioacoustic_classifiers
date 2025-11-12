@@ -4,10 +4,13 @@ import pandas as pd
 import pathlib
 import torch
 import sklearn
+import warnings
 
 from typing import Any, Dict, List, Tuple
 
 from src.core.utils import metrics
+
+warnings.filterwarnings("ignore", category=sklearn.exceptions.UndefinedMetricWarning)
 
 __all__ = ["SpeciesScores"]
 
@@ -32,7 +35,7 @@ class SpeciesScores(L.Callback):
             assert not np.isnan(y).any(), f"NaNs found in true labels for {species_name}"
             scores.append(dict(
                 species_name=species_name,
-                mAP=metrics.average_precision(y, y_prob),
+                AP=metrics.average_precision(y, y_prob),
                 auROC=sklearn.metrics.roc_auc_score(y, y_prob),
             ))
         return pd.DataFrame(data=scores).set_index("species_name")

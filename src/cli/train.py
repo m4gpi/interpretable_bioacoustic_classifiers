@@ -41,17 +41,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         "trainer": trainer,
     }
 
-    if cfg.get("train"):
-        log.info("Starting training!")
-        trainer.fit(model=model, datamodule=data_module, ckpt_path=cfg.get("ckpt_path"))
+    if logger:
+        logger.log_hyperparams(object_dict)
 
-    if cfg.get("test"):
-        log.info("Starting prediction!")
-        ckpt_path = trainer.checkpoint_callback.best_model_path
-        if ckpt_path == "":
-            log.warning("Best ckpt not found! Using current weights for prediction...")
-            ckpt_path = None
-        trainer.test(model=model, datamodule=data_module, ckpt_path=ckpt_path)
+    model.run(trainer, data_module, cfg)
 
 @hydra.main(version_base="1.3", config_path="../../config", config_name="train.yaml")
 def main(cfg: DictConfig):
