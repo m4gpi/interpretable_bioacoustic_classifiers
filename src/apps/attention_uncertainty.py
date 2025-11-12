@@ -113,6 +113,8 @@ def create_dash_app(
             id="app",
             p="md",
             children=[
+                dcc.Store("current-sample", data={}),
+                dcc.Store("audio-bounds", data=[59.904, 0.0]),
                 dmc.Grid([
                     dmc.GridCol(
                         span=12,
@@ -139,6 +141,7 @@ def create_dash_app(
                                     ]),
                                     dcc.Graph(
                                         id="scatter-graph",
+                                        figure=None,
                                     ),
                                 ]),
                             ]),
@@ -147,33 +150,40 @@ def create_dash_app(
                     dmc.GridCol(
                         span=6,
                         children=[
-                            dcc.Loading([
-                                dmc.Stack([
-                                    dmc.Box([
-                                        dmc.Text(id="file-name", ta="center", size="xl"),
-                                    ]),
-                                    dmc.Center(
-                                        id="audio-container",
-                                        children=html.Audio(
+                            dmc.Stack([
+                                dmc.Box([
+                                    dmc.Text(id="file-name", ta="center", size="xl"),
+                                ]),
+                                dcc.Loading([
+                                    dmc.Center([
+                                        html.Audio(
                                             id="audio-player",
-                                            src="",
+                                            src=None,
                                             controls=True,
-                                        )
-                                    ),
+                                        ),
+                                    ]),
+                                ]),
+                                dcc.Loading([
                                     dmc.Box(
                                         id="attention-weights-container",
                                         children=dcc.Graph(
                                             id="attention-weights-graph",
+                                            figure=None,
+                                            style=dict(height=200),
                                         )
                                     ),
+                                ]),
+                                dcc.Loading([
                                     dmc.Box(
                                         id="spectrogram-container",
                                         children=dcc.Graph(
                                             id="spectrogram-graph",
+                                            figure=None,
+                                            style=dict(height=400),
                                         )
                                     ),
                                 ]),
-                            ])
+                            ]),
                         ]
                     )
                 ]),
@@ -225,46 +235,118 @@ def create_dash_app(
         return fig
 
     @callback(
-        Output("file-name", "children"),
-        Output("audio-player", "src"),
-        Output("spectrogram-graph", "figure"),
-        Output("attention-weights-graph", "figure"),
+        Output("current-sample", "data"),
         Input("scatter-graph", "clickData"),
         Input("species-select", "value"),
     )
-    def draw_spectrogram(clicked_data, species_name):
+    def store_current_sample(clicked_data, species_name):
         if clicked_data is None or len((points := clicked_data["points"])) == 0:
             return no_update
         file_i = points[0]["hovertext"]
         sample = data.loc[file_i, species_name].reset_index().iloc[0]
-        wav, sr = librosa.load(audio_dir / sample.stage / "data" / sample.file_name, duration=59.904)
+        return sample.to_dict()
+
+    @callback(
+        Output("file-name", "children"),
+        Input("current-sample", "data"),
+    )
+    def set_file_name(sample):
+        if not sample:
+            return no_update
+        return sample["file_name"]
+
+    @callback(
+        Output("audio-player", "src"),
+        Input("current-sample", "data"),
+        Input("audio-bounds", "data"),
+    )
+    def set_audio_content(sample, audio_bounds):
+        if not sample:
+            return no_update
+        file_path = audio_dir / sample["stage"] / "data" / sample["file_name"]
+        duration, offset = audio_bounds
+        wav, sr = librosa.load(file_path, duration=duration, offset=offset)
+        return encode_audio(wav, sr)
+
+    @callback(
+        Output("spectrogram-graph", "figure"),
+        Input("current-sample", "data"),
+    )
+    def draw_spectrogram(sample):
+        if not sample:
+            return no_update
+        file_path = audio_dir / sample["stage"] / "data" / sample["file_name"]
+        wav, sr = librosa.load(file_path, duration=59.904)
         log_mel = log_mel_spectrogram(wav)
-        spec_fig = go.Figure()
-        spec_fig.add_trace(go.Heatmap(
+        fig = go.Figure()
+        fig.add_trace(go.Heatmap(
             x=np.linspace(0, 59.904, log_mel.shape[1]),
             y=np.arange(0, 64),
             z=20 * np.log10(np.exp(log_mel)),
             colorscale='viridis',
             colorbar=dict(tickformat="%+3.1f dB", title_text="Magnitude (dB)", title_side="right"),
         ))
-        spec_fig.update_layout(
+        fig.update_layout(
+            height=400,
+            title_text="Log Mel Spectrogram",
             xaxis_title_text="Time (s)",
             yaxis_title_text="Mel Bin",
         )
-        T = 78
-        attn_fig = go.Figure()
-        w = np.repeat(sample[[f"weight_{i}" for i in range(T)]].to_numpy(), 2)
+        return fig
+
+    @callback(
+        Output("attention-weights-graph", "figure"),
+        Input("current-sample", "data"),
+    )
+    def draw_attention_weights(sample):
+        if not sample:
+            return no_update
+        seq_len = 78
+        w = np.array([sample[f"weight_{i}"] for i in range(seq_len)])
+        w = w.reshape(2, seq_len // 2).repeat(2, 1)
         w[1] = np.roll(w[1], 1)
-        attn_fig.add_trace(go.Heatmap(
-            x=np.arange(0, 59.904, 1.536),
+        fig = go.Figure()
+        fig.add_trace(go.Heatmap(
+            x=np.arange(0, 59.904, 1.536 / 2),
             y=np.arange(2),
-            z=w.reshape(2, 78),
+            z=w,
             zmin=0.0,
             zmax=1.0,
             colorscale='RdBu_r',
         ))
-        attn_fig.update_layout(height=200)
-        return sample.file_name, encode_audio(wav, sr), spec_fig, attn_fig
+        fig.update_layout(
+            height=300,
+            title_text="Timestep Attention Weights",
+        )
+        return fig
+
+    @callback(
+        Output("spectrogram-graph", "figure", allow_duplicate=True),
+        Output("audio-bounds", "data"),
+        Input("attention-weights-graph", "clickData"),
+        Input("spectrogram-graph", "figure"),
+        prevent_initial_call=True,
+    )
+    def draw_bounding_box_on_spectrogram(clicked_data, fig):
+        log.info(clicked_data)
+        if clicked_data is None or len((points := clicked_data["points"])) == 0:
+            return no_update
+        t_start = points[0]["x"]
+        t_end = t_start + 1.536
+        bounding_box = dict(
+            type="rect",
+            x0=t_start, x1=t_end,
+            y0=0, y1=63,
+            line=dict(color="red", width=1),
+            fillcolor="rgba(0,0,0,0)",
+        )
+        duration = t_end - t_start
+        offset = t_start - 1.536
+        zoom_region = [t_start - 1.536, t_end + 1.536]
+        fig["layout"]["shapes"] = [bounding_box]
+        fig["layout"]["xaxis"]["range"] = zoom_region
+        fig["layout"]["xaxis"]["autorange"] = False
+        return fig, [duration, offset]
 
     return app
 
