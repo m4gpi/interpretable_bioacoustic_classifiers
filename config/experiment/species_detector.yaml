@@ -27,6 +27,7 @@ trainer:
 model:
   species_list_path: ${data.root}/${data.model}.pt:${data.version}/${data.scope}/species.yaml
   beta: 0.0
+  label_smoothing: 0.1
   attn_dim: 10
   pool_method: feature_attn
   clf_learning_rate: 0.1

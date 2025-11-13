@@ -4,7 +4,7 @@ import logging
 from lightning import Callback
 from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig
-from typing import List
+from typing import Callable, Dict, List
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -52,3 +52,25 @@ def instantiate_loggers(logger_cfg: DictConfig) -> List[Logger]:
             logger.append(hydra.utils.instantiate(lg_conf))
 
     return logger
+
+def instantiate_transforms(transforms_cfg: DictConfig) -> Dict[str, Callback]:
+    """Instantiates transforms from config.
+
+    :param transforms_cfg: A DictConfig object containing transform configurations.
+    :return: A list of instantiated transforms.
+    """
+    transforms: Dict[str, Callable] = {}
+
+    if not transforms_cfg:
+        log.warning("No transform configs found! Skipping..")
+        return transforms
+
+    if not isinstance(transforms_cfg, DictConfig):
+        raise TypeError("Transforms config must be a DictConfig!")
+
+    for key, tf_conf in transforms_cfg.items():
+        if isinstance(tf_conf, DictConfig) and "_target_" in tf_conf:
+            log.info(f"Instantiating transform <{tf_conf._target_}>")
+            transforms[key] = hydra.utils.instantiate(tf_conf)
+
+    return transforms

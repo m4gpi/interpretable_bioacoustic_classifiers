@@ -1,0 +1,30 @@
+# @package _global_
+
+# python src/cli/app.py experiment=attention_uncertainty
+defaults:
+  - override /data: soundscape_vae_embeddings
+  - override /model: species_detector
+  - override /app: attention_uncertainty
+
+app:
+  audio_dir: ~/data/sounding_out
+  ckpt_path: logs/train/runs/2025-11-11_10-25-55/checkpoints/epoch_999.ckpt
+
+data:
+  root: /its/home/kag25/projects/ecolistening/interpretable_bioacoustic_classifiers/data/soundscape_vae_embeddings
+  model: smooth_nifti_vae
+  version: v1
+  scope: SO/UK
+
+model:
+  species_list_path: ${data.root}/${data.model}.pt:${data.version}/${data.scope}/species.yaml
+  beta: 0.0
+  label_smoothing: 0.1
+  attn_dim: 10
+  pool_method: feature_attn
+  clf_learning_rate: 0.1
+  attn_learning_rate: 0.01
+
+transforms:
+  spectrogram:
+    _target_: src.core.utils.log_mel_spectrogram.LogMelSpectrogram
