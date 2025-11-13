@@ -4,6 +4,7 @@ import cmasher as cmr
 import dash
 import dash_mantine_components as dmc
 import hydra
+import importlib
 import librosa
 import lightning as L
 import logging
@@ -136,19 +137,20 @@ def encode(
 @attrs.define()
 class App:
     audio_dir: pathlib.Path = attrs.field(converter=lambda p: pathlib.Path(p).expanduser(), validator=attrs.validators.instance_of(pathlib.Path))
-    ckpt_path: pathlib.Path = attrs.field(converter=lambda p: pathlib.Path(p).expanduser(), validator=attrs.validators.instance_of(pathlib.Path))
+    model_checkpoint_path: pathlib.Path = attrs.field(converter=lambda p: pathlib.Path(p).expanduser(), validator=attrs.validators.instance_of(pathlib.Path))
+    model_class: str = attrs.field(default=None, validator=attrs.validators.instance_of(str))
 
     def setup(self, cfg: DictConfig) -> dash.Dash:
         log.info(f"Instantiating data <{cfg.data._target_}>")
         data_module = hydra.utils.instantiate(cfg.data)
         data_module.setup(stage="eval")
 
-        log.info(f"Instantiating model <{cfg.model._target_}>")
-        model = hydra.utils.instantiate(cfg.model)
+        log.info(f"Importing model <{self.model_class}>")
+        module, class_name = ".".join(self.model_class.split(".")[:-1]), self.model_class.split(".")[-1]
+        ModelClass = getattr(importlib.import_module(module), class_name)
 
-        log.info(f"Loading checkpoint <{self.ckpt_path}>")
-        checkpoint = torch.load(self.ckpt_path)
-        model.load_state_dict(checkpoint["state_dict"])
+        log.info(f"Loading checkpoint <{self.model_checkpoint_path}>")
+        model = ModelClass.load_from_checkpoint(self.model_checkpoint_path)
 
         transforms = instantiate_transforms(cfg.transforms)
         log_mel_spectrogram = transforms["spectrogram"]
@@ -160,9 +162,9 @@ class App:
         frame_length_seconds = 1 / (log_mel_spectrogram.sample_rate // log_mel_spectrogram.hop_length) * frame_length
 
         species_names = np.array(list(data_module.data.y_freq.keys()))[list(reversed(np.array(list(data_module.data.y_freq.values())).argsort()))]
-        log.info(f"Encoding training subset of <{cfg.data._target_}> with <{cfg.model._target_}>")
+        log.info(f"Encoding training subset of <{cfg.data._target_}> with <{self.model_class}>")
         train_df, train_scores_df = encode(model, data_module.train_dataloader(), data_module.data, "train")
-        log.info(f"Encoding test subset of <{cfg.data._target_}> with <{cfg.model._target_}>")
+        log.info(f"Encoding test subset of <{cfg.data._target_}> with <{self.model_class}>")
         test_df, test_scores_df = encode(model, data_module.test_dataloader(), data_module.test_data, "test")
         data = pd.concat([train_df, test_df], axis=0).sort_index(level=1)
         log.info(f"Extracting scores")
