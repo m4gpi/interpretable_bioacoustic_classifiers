@@ -79,10 +79,11 @@ class SpeciesDetector(L.LightningModule):
                 ckpt_path = None
             trainer.test(model=self, datamodule=data_module, ckpt_path=ckpt_path)
 
-    def forward(self, x: torch.Tensor, species_names: List[str]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, species_names: List[str]) -> Tuple[torch.Tensor, torch.Tensor | None]:
         # pool by taking a linear combination of *features* as a function of the data
         if self.pool_method == POOL.FEATURE_ATTN:
             y_probs = []
+            attn_w = []
             A_V = torch.tanh(self.attention_V(x)) # (N, T, D)
             A_U = torch.sigmoid(self.attention_U(x)) # (N, T, D)
             for species_name in species_names:
@@ -93,10 +94,12 @@ class SpeciesDetector(L.LightningModule):
                 y_species_logits = clf((x * A).sum(dim=-2))
                 y_species_probs = torch.sigmoid(y_species_logits)
                 y_probs.append(y_species_probs)
-            return torch.cat(y_probs, dim=-1).mean(dim=1)
+                attn_w.append(A)
+            return torch.cat(y_probs, dim=-1), torch.cat(attn_w, dim=-1)
         # pool by taking a linear function of *probabilities* as a function of the data
         elif self.pool_method == POOL.PROB_ATTN:
             y_probs = []
+            attn_w = []
             A_V = torch.tanh(self.attention_V(x)) # (N, T, D)
             A_U = torch.sigmoid(self.attention_U(x)) # (N, T, D)
             for species_name in species_names:
@@ -109,7 +112,8 @@ class SpeciesDetector(L.LightningModule):
                 # y_species_probs = torch.logsumexp((A + 1e-6).log() + F.logsigmoid(y_species_logits), dim=-2).exp()
                 y_species_probs = (y_species_probs * A).sum(dim=-2)
                 y_probs.append(y_species_probs)
-            return torch.cat(y_probs, dim=-1).mean(dim=1) # (N, S)
+                attn_w.append(A)
+            return torch.cat(y_probs, dim=-1), torch.cat(attn_w, dim=-1)
         # pool by maximum probability
         elif self.pool_method == POOL.MAX:
             y_probs = []
@@ -119,7 +123,7 @@ class SpeciesDetector(L.LightningModule):
                 y_species_logits = torch.max(clf(x), dim=-2).values
                 y_species_probs = torch.sigmoid(y_species_logits)
                 y_probs.append(y_species_probs)
-            return torch.cat(y_probs, dim=-1).mean(dim=1)
+            return torch.cat(y_probs, dim=-1), None
         # pool by mean probability
         elif self.pool_method == POOL.MEAN:
             y_probs = []
@@ -129,9 +133,11 @@ class SpeciesDetector(L.LightningModule):
                 y_species_logits = torch.mean(clf(x), dim=-2)
                 y_species_probs = torch.sigmoid(y_species_logits)
                 y_probs.append(y_species_probs)
-            return torch.cat(y_probs, dim=-1).mean(dim=1)
+            return torch.cat(y_probs, dim=-1), None
 
     def loss(self, y: torch.Tensor, y_probs: torch.Tensor, samples_per_class: List[float], epsilon: float = 1e-6) -> Dict[str, torch.Tensor]:
+        # first, take the sample mean (dimension 1) over predictions
+        y_probs = y_probs.mean(dim=1)
         # batch mean over log probabilities weighted by positive class frequency
         cel = metrics.class_balanced_binary_cross_entropy(y, y_probs, self.beta, torch.tensor(samples_per_class, dtype=torch.int64).to(y.device)).mean(dim=0)
         # L1 regularisation with split for smooth latents (if applicable), sum the L1 penalties for each model
@@ -149,25 +155,27 @@ class SpeciesDetector(L.LightningModule):
             l1_penalty_2=l1_2.detach().sum(),
         )
 
-    def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> Dict[str, torch.Tensor]:
+    def model_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]]) -> Tuple[torch.Tensor, ...]:
         x, y, s, y_freq = batch
-        y_probs = self.forward(x, list(y_freq.keys()))
+        y_probs, attn_w = self.forward(x, list(y_freq.keys()))
+        return y, y_probs, attn_w, s, y_freq
+
+    def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> Dict[str, torch.Tensor]:
+        y, y_probs, attn_w, s, y_freq = self.model_step(batch)
         loss_outputs = self.loss(y.float(), y_probs, list(y_freq.values()))
-        self.log_dict({f"train/{key}": value for key, value in loss_outputs.items()}, prog_bar=True, batch_size=x.size(0))
+        self.log_dict({f"train/{key}": value for key, value in loss_outputs.items()}, prog_bar=True, batch_size=s.size(0))
         return {**loss_outputs, "y_probs": y_probs, "y": y, "s": s, "y_freq": y_freq}
 
     @torch.no_grad()
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> Dict[str, torch.Tensor]:
-        x, y, s, y_freq = batch
-        y_probs = self.forward(x, list(y_freq.keys()))
+        y, y_probs, attn_w, s, y_freq = self.model_step(batch)
         loss_outputs = self.loss(y.float(), y_probs, list(y_freq.values()))
-        self.log_dict({f"val/{key}": value for key, value in loss_outputs.items()}, prog_bar=True, batch_size=x.size(0))
+        self.log_dict({f"val/{key}": value for key, value in loss_outputs.items()}, prog_bar=True, batch_size=s.size(0))
         return {**loss_outputs, "y_probs": y_probs, "y": y, "s": s, "y_freq": y_freq}
 
     @torch.no_grad()
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> pd.DataFrame:
-        x, y, s, y_freq = batch
-        y_probs = self.forward(x, list(y_freq.keys()))
+        y, y_probs, attn_w, s, y_freq = self.model_step(batch)
         return {"y_probs": y_probs, "y": y, "s": s, "y_freq": y_freq}
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
