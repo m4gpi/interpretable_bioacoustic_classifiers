@@ -16,6 +16,7 @@ def main(cfg: DictConfig):
     if not len(cfg.app):
         log.info(f"No app specified, select one")
         return
+
     log.info(f"Instantiating app <{cfg.app._target_}>")
     app = hydra.utils.instantiate(cfg.app)
     log.info(f"Starting app <{cfg.app._target_}>")

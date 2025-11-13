@@ -7,7 +7,7 @@ defaults:
   - override /app: attention_uncertainty
 
 app:
-  audio_dir: ~/data/sounding_out
+  audio_dir: /its/home/kag25/data/sounding_out
   ckpt_path: logs/train/runs/2025-11-11_10-25-55/checkpoints/epoch_999.ckpt
 
 data:

@@ -135,8 +135,8 @@ def encode(
 
 @attrs.define()
 class App:
-    audio_dir: pathlib.Path = attrs.field(converter=pathlib.Path, validator=attrs.validators.instance_of(pathlib.Path))
-    ckpt_path: pathlib.Path = attrs.field(converter=pathlib.Path, validator=attrs.validators.instance_of(pathlib.Path))
+    audio_dir: pathlib.Path = attrs.field(converter=lambda p: pathlib.Path(p).expanduser(), validator=attrs.validators.instance_of(pathlib.Path))
+    ckpt_path: pathlib.Path = attrs.field(converter=lambda p: pathlib.Path(p).expanduser(), validator=attrs.validators.instance_of(pathlib.Path))
 
     def setup(self, cfg: DictConfig) -> dash.Dash:
         log.info(f"Instantiating data <{cfg.data._target_}>")
