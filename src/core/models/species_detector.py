@@ -34,6 +34,7 @@ class SpeciesDetector(L.LightningModule):
     penalty_multiplier: int
     beta: float
     clf_learning_rate: float
+    label_smoothing: float = 0.0
     pool_method: str = "max"
     attn_dim: int | None = None
     attn_learning_rate: float | None = None
@@ -85,6 +86,7 @@ class SpeciesDetector(L.LightningModule):
             y_probs = []
             attn_w = []
             A_V = torch.tanh(self.attention_V(x)) # (N, T, D)
+            # TODO: try sigmoid layer different for species?
             A_U = torch.sigmoid(self.attention_U(x)) # (N, T, D)
             for species_name in species_names:
                 clf = self.classifiers[species_name]
@@ -136,10 +138,13 @@ class SpeciesDetector(L.LightningModule):
             return torch.cat(y_probs, dim=-1), None
 
     def loss(self, y: torch.Tensor, y_probs: torch.Tensor, samples_per_class: List[float], epsilon: float = 1e-6) -> Dict[str, torch.Tensor]:
-        # first, take the sample mean (dimension 1) over predictions
-        y_probs = y_probs.mean(dim=1)
         # batch mean over log probabilities weighted by positive class frequency
-        cel = metrics.class_balanced_binary_cross_entropy(y, y_probs, self.beta, torch.tensor(samples_per_class, dtype=torch.int64).to(y.device)).mean(dim=0)
+        cel = metrics.class_balanced_binary_cross_entropy(
+            y, y_probs,
+            beta=self.beta,
+            samples_per_class=torch.tensor(samples_per_class, dtype=torch.int64).to(y.device),
+            label_smoothing=self.label_smoothing
+        ).mean(dim=0)
         # L1 regularisation with split for smooth latents (if applicable), sum the L1 penalties for each model
         # TODO: parameterise these indices
         l1_1 = metrics.l1_penalty([weights[:, 0:64] for weights in list(self.classifiers.parameters())[::2]], self.l1_penalty)
@@ -162,6 +167,7 @@ class SpeciesDetector(L.LightningModule):
 
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> Dict[str, torch.Tensor]:
         y, y_probs, attn_w, s, y_freq = self.model_step(batch)
+        y_probs, attn_w = y_probs.mean(dim=1), attn_w.mean(dim=1)
         loss_outputs = self.loss(y.float(), y_probs, list(y_freq.values()))
         self.log_dict({f"train/{key}": value for key, value in loss_outputs.items()}, prog_bar=True, batch_size=s.size(0))
         return {**loss_outputs, "y_probs": y_probs, "y": y, "s": s, "y_freq": y_freq}
@@ -169,6 +175,7 @@ class SpeciesDetector(L.LightningModule):
     @torch.no_grad()
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> Dict[str, torch.Tensor]:
         y, y_probs, attn_w, s, y_freq = self.model_step(batch)
+        y_probs, attn_w = y_probs.mean(dim=1), attn_w.mean(dim=1)
         loss_outputs = self.loss(y.float(), y_probs, list(y_freq.values()))
         self.log_dict({f"val/{key}": value for key, value in loss_outputs.items()}, prog_bar=True, batch_size=s.size(0))
         return {**loss_outputs, "y_probs": y_probs, "y": y, "s": s, "y_freq": y_freq}
@@ -176,6 +183,7 @@ class SpeciesDetector(L.LightningModule):
     @torch.no_grad()
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], batch_idx: int) -> pd.DataFrame:
         y, y_probs, attn_w, s, y_freq = self.model_step(batch)
+        y_probs, attn_w = y_probs.mean(dim=1), attn_w.mean(dim=1)
         return {"y_probs": y_probs, "y": y, "s": s, "y_freq": y_freq}
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
