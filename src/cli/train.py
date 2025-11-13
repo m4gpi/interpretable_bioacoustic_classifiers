@@ -28,21 +28,19 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     callbacks: List[Callback] = instantiate_callbacks(cfg.get("callbacks"))
 
     log.info("Instantiating loggers...")
-    logger: List[Logger] = instantiate_loggers(cfg.get("logger"))
+    loggers: List[Logger] = instantiate_loggers(cfg.get("logger"))
 
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
-    trainer: L.Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=logger)
+    trainer: L.Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=loggers)
 
-    object_dict = {
-        "cfg": cfg,
-        "data_module": data_module,
-        "model": model,
-        "logger": logger,
-        "trainer": trainer,
-    }
-
-    if logger:
-        logger.log_hyperparams(object_dict)
+    if loggers:
+        for logger in loggers:
+            logger.log_hyperparams({
+                "data": dict(cfg.data),
+                "model": dict(cfg.model),
+                "logger": dict(cfg.logger),
+                "trainer": dict(cfg.trainer),
+            })
 
     model.run(trainer, data_module, cfg)
 
