@@ -12,17 +12,6 @@ defaults:
   - paths: default
   - hydra: default
 
-# seed for random number generators in pytorch, numpy and python.random
 seed: 42
-
-# output directory, generated dynamically on each run
-run:
-  dir: ${paths.log_dir}/${task_name}/runs/${now:%Y-%m-%d}_${now:%H-%M-%S}
-sweep:
-  dir: ${paths.log_dir}/${task_name}/multiruns/${now:%Y-%m-%d}_${now:%H-%M-%S}
-  subdir: ${hydra.job.num}
-
-job_logging:
-  handlers:
-    file:
-      filename: ${hydra.runtime.output_dir}/${task_name}.log
+num_workers: 16
+num_folds: 7

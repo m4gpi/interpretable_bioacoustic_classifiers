@@ -74,10 +74,10 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
     drop_last: bool = attrs.field(default=False, validator=attrs.validators.instance_of(bool))
 
     generator: torch.Generator = attrs.field(init=False)
-    data: torch.utils.data.Dataset = attrs.field(init=False)
-    train_data: torch.utils.data.Subset = attrs.field(init=False)
-    val_data: torch.utils.data.Subset = attrs.field(init=False)
-    test_data: torch.utils.data.Dataset = attrs.field(init=False)
+    # data: torch.utils.data.Dataset = attrs.field(init=False)
+    # train_data: torch.utils.data.Subset = attrs.field(init=False)
+    # val_data: torch.utils.data.Subset = attrs.field(init=False)
+    # test_data: torch.utils.data.Dataset = attrs.field(init=False)
 
     def __attrs_post_init__(self):
         L.LightningDataModule.__init__(self)

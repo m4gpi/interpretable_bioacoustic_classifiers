@@ -4,6 +4,7 @@ min_epochs: 1
 max_epochs: 10
 accelerator: cpu
 devices: 1
+strategy: auto
 # mixed precision for extra speed-up
 # precision: 16
 # perform a validation loop every N training epochs

@@ -45,5 +45,4 @@ callbacks:
 
 logger:
   wandb:
-    tags: ${tags}
     group: ${data.scope}

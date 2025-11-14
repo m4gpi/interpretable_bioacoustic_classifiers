@@ -17,9 +17,8 @@ log = logging.getLogger(__name__)
 @attrs.define()
 class CrossValidator(abc.ABC):
     hyperparams: Hyperparams = attrs.field()
+    num_workers: int = attrs.field(default=4)
     num_folds: int = attrs.field(default=7, validator=attrs.validators.instance_of(int))
-
-    datasets: List = attrs.field(init=False)
 
     def setup(self, data_module: L.LightningDataModule) -> List[Any]:
         log.info(f"Setting up data module for cross-validation")

@@ -1,13 +1,15 @@
 import abc
 import attrs
 import hydra
+import itertools
 import lightning as L
 import logging
+import multiprocessing
 import rootutils
 import torch
 
-from omegaconf import DictConfig
-from typing import Any, List, Dict, Tuple
+from omegaconf import DictConfig, OmegaConf
+from typing import Any, Callable, Iterable, List, Dict, Tuple
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
@@ -16,7 +18,78 @@ from src.cli.utils.instantiators import instantiate_callbacks, instantiate_logge
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+torch.set_default_dtype(torch.float32)
+multiprocessing.set_start_method("spawn", force=True)
+
+def process_concurrent(func: Callable, pool_args: List[Any], num_workers: int) -> Iterable:
+    if num_workers > 0:
+        with multiprocessing.Pool(processes=num_workers) as pool:
+            for result in pool.imap(func, pool_args):
+                yield result
+    else:
+        for result in map(func, pool_args):
+            yield result
+
+def worker_run(kwargs: Dict[str, Any]):
+    return run(**kwargs)
+
+def run(
+    fold_id: int,
+    train_dataloader_params: Dict[str, Any],
+    val_dataloader_params: Dict[str, Any],
+    test_dataloader_params: Dict[str, Any],
+    config: Dict[str, Any],
+    model_params: Dict[str, Any],
+    hyperparams: Dict[str, Any],
+) -> Any:
+    seed = config.get("seed")
+    L.seed_everything(seed, workers=True)
+
+    log.info(f"Instantiating dataloaders")
+    train_dataloader = torch.utils.data.DataLoader(**train_dataloader_params)
+    val_dataloader = torch.utils.data.DataLoader(**val_dataloader_params)
+    test_dataloader = torch.utils.data.DataLoader(**test_dataloader_params)
+
+    model_config = config.get("model")
+    log.info(f"Instantiating model <{model_config['_target_']}> with {model_params} and overrides {hyperparams}")
+    model = hydra.utils.instantiate(model_config, **model_params, **hyperparams)
+
+    callback_config = config.get("callbacks")
+    log.info("Instantiating callbacks...")
+    callbacks: List[Callback] = instantiate_callbacks(callback_config)
+
+    logger_config = config.get("logger")
+    log.info("Instantiating loggers...")
+    loggers: List[Logger] = instantiate_loggers(logger_config)
+
+    trainer_config = config.get("trainer")
+    log.info(f"Instantiating trainer <{trainer_config['_target_']}>")
+    trainer: L.Trainer = hydra.utils.instantiate(trainer_config, callbacks=callbacks, logger=loggers)
+
+    if loggers:
+        for logger in loggers:
+            logger.log_hyperparams({
+                # TODO: figure out how to do this nicely
+                # "data": dict(cfg.data),
+                "model": dict(**model_config, **model_params, **hyperparams),
+                "logger": logger_config,
+                "trainer": trainer_config,
+            })
+
+    results = model.run(
+        trainer,
+        config=config,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
+        test_dataloader=test_dataloader,
+    )
+    return results
+
+
 def cross_validation(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    num_workers = cfg.get("num_workers") or 0
+    num_folds = cfg.get("num_folds") or 7
+
     log.info(f"Instantiating hyperparams <{cfg.hyperparams._target_}>")
     hyperparams = hydra.utils.instantiate(cfg.hyperparams)
 
@@ -26,23 +99,16 @@ def cross_validation(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     log.info(f"Instantiating dataset <{cfg.data._target_}>")
     data_module: L.LightningDataModule = hydra.utils.instantiate(cfg.data, seed=cfg.get("seed"))
 
-    folds = cross_validator.setup(data_module)
+    log.info(f"Setting up data module for cross-validation")
+    folds = data_module.cross_validation_setup(num_folds=num_folds)
 
+    config = OmegaConf.to_container(cfg, resolve=True)
+    runs = [dict(**fold, hyperparams=combination, config=config) for combination in hyperparams.combinations() for fold in folds]
+
+    log.info(f"Starting {num_folds}-folds cross-validation with {len(runs)} independent runs using {num_workers} workers")
     results = []
-    runs = [(fold, combination) for combination in hyperparams.combinations() for fold in folds]
-    log.info(f"Starting cross-validation with {len(runs)} independent runs")
-    for fold, combination in runs:
-        result = cross_validator.run(
-            model_config=cfg.get("model"),
-            trainer_config=cfg.get("trainer"),
-            callback_config=cfg.get("callbacks"),
-            logger_config=cfg.get("logger"),
-            **fold,
-            hyperparams=combination,
-            seed=cfg.get("seed"),
-        )
+    for result in process_concurrent(worker_run, runs, num_workers=num_workers):
         results.append(result)
-
     log.info(f"Cross-validation complete")
 
     if cfg.get("evaluator"):

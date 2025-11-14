@@ -73,6 +73,7 @@ class SpeciesDetector(L.LightningModule):
     ) -> None:
         if not device:
             device = trainer.strategy.root_device
+            log.info(f"Device: {device}")
 
         if config.get("train"):
             if self.pool_method == POOL.MAX:
@@ -84,15 +85,15 @@ class SpeciesDetector(L.LightningModule):
                 self._max_pool_weight_initialization(train_dataloader, device)
                 log.info(f"Weight initialisation complete")
 
+            log.info("Starting training!")
             if data_module is not None:
-                log.info("Starting training!")
                 trainer.fit(model=self, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
             else:
                 trainer.fit(
                     model=self,
                     train_dataloaders=train_dataloader,
                     val_dataloaders=val_dataloader,
-                    ckpt_path=config.get("ckpt_path")
+                    ckpt_path=config.get("ckpt_path", None)
                 )
 
         predictions = None
