@@ -4,4 +4,5 @@ defaults:
   - _self_
   - data: soundscape_vae_embeddings
   - app: default
+  - hydra: default
   - paths: default
