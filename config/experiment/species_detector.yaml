@@ -6,7 +6,7 @@ defaults:
   - override /data: soundscape_vae_embeddings
   - override /model: species_detector
   - override /trainer: gpu
-  - override /logger: null
+  - override /logger: wandb
 
 train: true
 test: true
