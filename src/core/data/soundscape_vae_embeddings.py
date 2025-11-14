@@ -1,6 +1,7 @@
 import attrs
 import pathlib
 import lightning as L
+import logging
 import numpy as np
 import pandas as pd
 import sklearn
@@ -9,6 +10,9 @@ import torch
 from typing import Any, Dict, List, Tuple
 
 from src.core.utils import tree
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 __all__ = [
     "SoundscapeVAEEmbeddings",
@@ -31,16 +35,24 @@ class SoundscapeVAEEmbeddings(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, ...]:
         q_z = self.x[idx]
+        q_z = q_z.unsqueeze(0) if q_z.dim() == 2 else q_z
         mean, log_var = q_z.chunk(2, dim=-1)
-        mean = mean.unsqueeze(0).expand(self.num_samples, -1, -1)
-        log_var = log_var.unsqueeze(0).expand(self.num_samples, -1, -1)
+        mean = mean.unsqueeze(1).expand(-1, self.num_samples, -1, -1)
+        log_var = log_var.unsqueeze(1).expand(-1, self.num_samples, -1, -1)
         z = mean + torch.randn_like(mean) * (0.5 * log_var).exp()
-        return (z, self.y[idx], self.index[idx])
+        return (z.squeeze(0), self.y[idx], self.index[idx])
 
     def __attrs_post_init__(self):
         self.x = torch.tensor(self.features.values.reshape(self.labels.values.shape[0], -1, self.features.values.shape[-1]), dtype=torch.float32)
         self.y = torch.tensor(self.labels.values, dtype=torch.int64)
         self.y_freq = dict(zip(self.labels.columns, torch.tensor([self.labels[y].sum() for y in self.labels.columns])))
+
+    @property
+    def model_params(self):
+        return dict(
+            target_names=self.labels.columns.tolist(),
+            target_counts=list(self.y_freq.values())
+        )
 
 @attrs.define(kw_only=True)
 class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
@@ -62,6 +74,10 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
     drop_last: bool = attrs.field(default=False, validator=attrs.validators.instance_of(bool))
 
     generator: torch.Generator = attrs.field(init=False)
+    data: torch.utils.data.Dataset = attrs.field(init=False)
+    train_data: torch.utils.data.Subset = attrs.field(init=False)
+    val_data: torch.utils.data.Subset = attrs.field(init=False)
+    test_data: torch.utils.data.Dataset = attrs.field(init=False)
 
     def __attrs_post_init__(self):
         L.LightningDataModule.__init__(self)
@@ -73,7 +89,7 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
 
     @scope.validator
     def check_scope_is_valid_if_not_none(self, attribute, value):
-        return value in ["EC", "UK", "bird", "frog"] if value is not None else True
+        return value in ["SO_EC", "SO_UK", "RFCX_bird", "RFCX_frog"] if value is not None else True
 
     @version.validator
     def check_version_is_valid_if_not_none(self, attribute, value):
@@ -105,24 +121,22 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
         )
 
     def setup(self, stage: str) -> None:
-        assert pathlib.Path(self.train_features_path).exists(), f"'{self.train_features_path}' does not exist"
-        assert pathlib.Path(self.train_labels_path).exists(), f"'{self.train_labels_path}' does not exist"
-        assert pathlib.Path(self.test_features_path).exists(), f"'{self.test_features_path}' does not exist"
-        assert pathlib.Path(self.test_labels_path).exists(), f"'{self.test_labels_path}' does not exist"
+        self._validate_features_and_labels_present(self.train_features_path, self.train_labels_path)
+        self._validate_features_and_labels_present(self.test_features_path, self.test_labels_path)
 
         train_labels = pd.read_parquet(self.train_labels_path)
         test_labels = pd.read_parquet(self.test_labels_path)
-        labels = list(set(train_labels.columns).intersection(set(test_labels.columns)))
+        target_names = list(set(train_labels.columns).intersection(set(test_labels.columns)))
 
         self.data = SoundscapeVAEEmbeddings(
             features=pd.read_parquet(self.train_features_path),
-            labels=train_labels[labels],
+            labels=train_labels[target_names],
             index=train_labels.index.get_level_values(0),
             num_samples=self.train_sample_size,
         )
         self.test_data = SoundscapeVAEEmbeddings(
             features=pd.read_parquet(self.test_features_path),
-            labels=test_labels[labels],
+            labels=test_labels[target_names],
             index=test_labels.index.get_level_values(0),
             num_samples=self.eval_sample_size,
         )
@@ -133,40 +147,66 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
         )
         return self
 
-    def cross_validation_setup(self, k_folds: int) -> None:
-        self.cross_val_dataloaders = tree()
-        model_index = pd.read_parquet(self.root / "index.parquet")
-        for model_name in model_index["model_name"].unique():
-            for subset in model_index.loc[model_index["model_name"] == model_name, "dataset"].unique():
-                for scope in model_index.loc[model_index["dataset"] == dataset, "scope"].unique():
-                    train_features_path = self._build_subset_path(model, version, "/".join([subset, scope])) / "train" / "features.parquet"
-                    train_labels_path = self._build_subset_path(model, version, "/".join([subset, scope])) / "train" / "labels.parquet"
-                    test_features_path = self._build_subset_path(model, version, "/".join([subset, scope])) / "test" / "features.parquet"
-                    test_labels_path = self._build_subset_path(model, version, "/".join([subset, scope])) / "test" / "labels.parquet"
-                    train_labels = pd.read_parquet(train_labels_path)
-                    test_labels = pd.read_parquet(test_labels_path)
-                    labels = list(set(train_labels.columns).intersection(set(test_labels.columns)))
-                    data = SoundscapeVAEEmbeddings(
-                        features=pd.read_parquet(train_features_path),
-                        labels=train_labels[labels],
-                        index=train_labels.index.get_level_values(0),
-                        num_samples=self.train_sample_size,
-                    )
-                    test_data = SoundscapeVAEEmbeddings(
-                        features=pd.read_parquet(test_features_path),
-                        labels=test_labels[labels],
-                        index=test_labels.index.get_level_values(0),
-                        num_samples=self.eval_sample_size,
-                    )
-                    test_dl = self._build_dataloader(self.test_data, batch_size-self.eval_batch_size, shuffle=False)
-                    self.cross_val_dataloaders[model_name][dataset][scope]["test"] = test_dl
-                    for k, (train_idx, val_idx) in enumerate(kf.split(range(len(self.data)))):
-                        train_dl = self._build_dataloader(self.data[train_idx], batch_size=self.train_batch_size, shuffle=True)
-                        val_dl = self._build_dataloader(self.data[val_idx], batch_size=self.eval_batch_size, shuffle=False)
-                        self.cross_val_dataloaders[model_name][dataset][scope]["k"] = k
-                        self.cross_val_dataloaders[model_name][dataset][scope]["train"] = train_dl
-                        self.cross_val_dataloaders[model_name][dataset][scope]["val"] = val_dl
-        return self.cross_val_dataloaders
+    def cross_validation_setup(self, num_folds: int) -> None:
+        datasets = []
+        index = pd.read_parquet(self.root / "index.parquet")
+        for (model_name, scope), df in index.groupby(["model_name", "scope"]):
+            for i, row in df.iterrows():
+                train_features_path = self._build_subset_path(model_name, row.version, scope) / "train" / "features.parquet"
+                train_labels_path = self._build_subset_path(model_name, row.version, scope) / "train" / "labels.parquet"
+                test_features_path = self._build_subset_path(model_name, row.version, scope) / "test" / "features.parquet"
+                test_labels_path = self._build_subset_path(model_name, row.version, scope) / "test" / "labels.parquet"
+                self._validate_features_and_labels_present(train_features_path, train_labels_path)
+                self._validate_features_and_labels_present(test_features_path, test_labels_path)
+
+                log.info(f"Setting up dataset {model_name, row.version, scope}")
+
+                train_labels = pd.read_parquet(train_labels_path)
+                test_labels = pd.read_parquet(test_labels_path)
+                target_names = list(set(train_labels.columns).intersection(set(test_labels.columns)))
+
+                data = SoundscapeVAEEmbeddings(
+                    features=pd.read_parquet(train_features_path),
+                    labels=train_labels[target_names],
+                    index=train_labels.index.get_level_values(0),
+                    num_samples=self.train_sample_size,
+                )
+                test_data = SoundscapeVAEEmbeddings(
+                    features=pd.read_parquet(test_features_path),
+                    labels=test_labels[target_names],
+                    index=test_labels.index.get_level_values(0),
+                    num_samples=self.eval_sample_size,
+                )
+                folder = sklearn.model_selection.KFold(n_splits=num_folds, random_state=self.seed, shuffle=True)
+                for fold_id, (train_idx, val_idx) in enumerate(folder.split(range(len(data)))):
+                    train_data = torch.utils.data.Subset(data, train_idx)
+                    val_data = torch.utils.data.Subset(data, val_idx)
+                    datasets.append(dict(
+                        fold_id=fold_id,
+                        model_params=data.model_params,
+                        train_dataloader_params=dict(
+                            dataset=train_data,
+                            batch_size=self.train_batch_size or len(train_data),
+                            shuffle=True,
+                            collate_fn=self.batch_converter,
+                            **self.dataloader_params,
+                        ),
+                        val_dataloader_params=dict(
+                            dataset=val_data,
+                            batch_size=self.eval_batch_size or len(val_data),
+                            shuffle=False,
+                            collate_fn=self.batch_converter,
+                            **self.dataloader_params,
+                        ),
+                        test_dataloader_params=dict(
+                            dataset=test_data,
+                            batch_size=self.eval_batch_size or len(test_data),
+                            shuffle=False,
+                            collate_fn=self.batch_converter,
+                            **self.dataloader_params,
+                        ),
+                    ))
+        return datasets
 
     def train_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
         return self._build_dataloader(self.train_data, batch_size=self.train_batch_size, shuffle=True)
@@ -183,7 +223,7 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
 
     def batch_converter(self, batch: List[List[torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]]:
         xs, ys, idx = zip(*batch)
-        return (torch.stack(xs), torch.stack(ys), torch.tensor(idx), self.train_data.dataset.y_freq)
+        return (torch.stack(xs), torch.stack(ys), torch.tensor(idx))
 
     def _build_dataloader(self, dataset: torch.utils.data.Dataset, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
         return torch.utils.data.DataLoader(
@@ -199,3 +239,8 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
         assert version is not None, f"'version' is not specified"
         assert scope is not None, f"'scope' is not specified"
         return self.root / (model + ".pt:" + version) / scope
+
+    def _validate_features_and_labels_present(self, features_path, labels_path):
+        assert pathlib.Path(features_path).exists(), f"'{features_path}' does not exist"
+        assert pathlib.Path(labels_path).exists(), f"'{labels_path}' does not exist"
+

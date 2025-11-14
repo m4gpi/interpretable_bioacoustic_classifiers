@@ -1,16 +1,15 @@
 # @package _global_
 
-# python train.py experiment=so_ec_species_detector_shifti_invariant_vae
+# python src/cli/train.py +experiment=species_detector
 
 defaults:
   - override /data: soundscape_vae_embeddings
   - override /model: species_detector
   - override /trainer: gpu
-  - override /logger: wandb
+  - override /logger: null
 
 train: true
 test: true
-
 seed: 42
 
 data:
@@ -25,7 +24,6 @@ trainer:
   log_every_n_steps: 1
 
 model:
-  species_list_path: ${data.root}/${data.model}.pt:${data.version}/${data.scope}/species.yaml
   beta: 0.0
   label_smoothing: 0.1
   attn_dim: 10
@@ -48,4 +46,4 @@ callbacks:
 logger:
   wandb:
     tags: ${tags}
-    group: sounding_out_ecuador
+    group: ${data.scope}

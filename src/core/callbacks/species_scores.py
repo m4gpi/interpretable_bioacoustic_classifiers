@@ -45,7 +45,7 @@ class SpeciesScores(L.Callback):
         trainer: L.Trainer,
         pl_module: L.LightningModule,
         outputs: List[pd.DataFrame],
-        batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]],
+        batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[str]],
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
@@ -66,7 +66,7 @@ class SpeciesScores(L.Callback):
         trainer: L.Trainer,
         pl_module: L.LightningModule,
         outputs: List[pd.DataFrame],
-        batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]],
+        batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[str]],
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
@@ -87,7 +87,7 @@ class SpeciesScores(L.Callback):
         trainer: L.Trainer,
         pl_module: L.LightningModule,
         outputs: List[pd.DataFrame],
-        batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]],
+        batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[str]],
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
@@ -100,6 +100,8 @@ class SpeciesScores(L.Callback):
         pl_module: L.LightningModule,
     ) -> None:
         scores = self._on_epoch_end(self.test_predictions)
+        freq_df = pd.DataFrame(data=dict(zip(pl_module.target_names, pl_module.target_counts)), columns=["species_name", "train_label_frequency"])
+        scores = pd.concat([scores, freq_df], axis=1)
         print(scores.to_markdown())
         score_mean = scores.mean(axis=0).to_frame().rename(columns={0: "mean"})
         score_std = scores.std(axis=0).to_frame().rename(columns={0: "std"})
@@ -109,10 +111,9 @@ class SpeciesScores(L.Callback):
         self.test_predictions = []
 
     def _on_batch_end(self, outputs: List[Dict[str, Any]]) -> pd.DataFrame:
-        y, y_probs, s, y_freq = outputs["y"], outputs["y_probs"], outputs["s"], outputs["y_freq"]
-        freq_df = pd.DataFrame(data=y_freq.items(), columns=["species_name", "label_frequency"])
-        label_df = pd.DataFrame(data=y.detach().cpu(), columns=list(y_freq.keys()), index=s.detach().cpu().tolist())
-        probs_df = pd.DataFrame(data=y_probs.detach().cpu(), columns=list(y_freq.keys()), index=s.detach().cpu().tolist())
+        y, y_probs, s, target_names = outputs["y"], outputs["y_probs"], outputs["s"], outputs["target_names"]
+        label_df = pd.DataFrame(data=y.detach().cpu(), columns=target_names, index=s.detach().cpu().tolist())
+        probs_df = pd.DataFrame(data=y_probs.detach().cpu(), columns=target_names, index=s.detach().cpu().tolist())
         return (
             label_df
             .reset_index(names="file_i")
@@ -123,11 +124,6 @@ class SpeciesScores(L.Callback):
                 .melt(id_vars="file_i", var_name="species_name", value_name="prob"),
                 on=["file_i", "species_name"],
                 how="inner",
-            )
-            .merge(
-                freq_df,
-                how="left",
-                on="species_name",
             )
         )
 

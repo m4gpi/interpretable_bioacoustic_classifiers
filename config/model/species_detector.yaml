@@ -1,5 +1,4 @@
 _target_: src.core.models.species_detector.SpeciesDetector
-species_list_path:
 in_features: 128
 pool_method: max
 l1_penalty: 0.1

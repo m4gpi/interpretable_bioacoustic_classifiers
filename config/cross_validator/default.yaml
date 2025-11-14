@@ -1,0 +1,2 @@
+_target_: src.core.utils.cross_validator.CrossValidator
+num_folds: 7
