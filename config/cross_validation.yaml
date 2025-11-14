@@ -4,7 +4,6 @@ defaults:
   - _self_
   - data: soundscape_vae_embeddings
   - model: species_detector
-  - cross_validator: default
   - hyperparams: species_detector
   - callbacks: null
   - logger: null
@@ -15,3 +14,4 @@ defaults:
 seed: 42
 num_workers: 16
 num_folds: 7
+devices: [0]

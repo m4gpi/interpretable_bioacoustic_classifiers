@@ -39,6 +39,8 @@ class SpeciesDetector(L.LightningModule):
     pool_method: str = "max"
     attn_dim: int | None = None
     attn_learning_rate: float | None = None
+    train_sample_size: int = 1
+    eval_sample_size: int = 1
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
@@ -192,30 +194,34 @@ class SpeciesDetector(L.LightningModule):
             l1_penalty_2=l1_2.detach().sum(),
         )
 
-    def model_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]]) -> Tuple[torch.Tensor, ...]:
-        x, y, s = batch
-        y_probs, attn_w = self.forward(x)
+    def model_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], num_samples: int = 1) -> Tuple[torch.Tensor, ...]:
+        q_z, y, s = batch
+        mean, log_var = q_z.chunk(2, dim=-1)
+        mean = mean.unsqueeze(1).expand(-1, num_samples, -1, -1)
+        log_var = log_var.unsqueeze(1).expand(-1, num_samples, -1, -1)
+        z = mean + torch.randn_like(mean) * (0.5 * log_var).exp()
+        y_probs, attn_w = self.forward(z)
+        y_probs = y_probs.mean(dim=1)
+        if attn_w is not None:
+            attn_w = attn_w.mean(dim=1)
         return y, y_probs, attn_w, s
 
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        y, y_probs, _, s = self.model_step(batch)
-        y_probs = y_probs.mean(dim=1)
+        y, y_probs, _, s = self.model_step(batch, num_samples=self.train_sample_size)
         loss_outputs = self.loss(y.float(), y_probs)
         self.log_dict({f"train/{key}": value for key, value in loss_outputs.items()}, prog_bar=True, batch_size=s.size(0))
         return {**loss_outputs, "y_probs": y_probs, "y": y, "s": s, "target_names": self.target_names}
 
     @torch.no_grad()
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
-        y, y_probs, _, s = self.model_step(batch)
-        y_probs = y_probs.mean(dim=1)
+        y, y_probs, _, s = self.model_step(batch, num_samples=self.eval_sample_size)
         loss_outputs = self.loss(y.float(), y_probs)
         self.log_dict({f"val/{key}": value for key, value in loss_outputs.items()}, prog_bar=True, batch_size=s.size(0))
         return {**loss_outputs, "y_probs": y_probs, "y": y, "s": s, "target_names": self.target_names}
 
     @torch.no_grad()
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> pd.DataFrame:
-        y, y_probs, _, s = self.model_step(batch)
-        y_probs = y_probs.mean(dim=1)
+        y, y_probs, _, s = self.model_step(batch, num_samples=self.eval_sample_size)
         return {"y_probs": y_probs, "y": y, "s": s, "target_names": self.target_names}
 
     @torch.no_grad()
@@ -259,10 +265,12 @@ class SpeciesDetector(L.LightningModule):
         losses = []
         with torch.no_grad():
             for i, batch in enumerate(dataloader):
-                x, y, _ = batch
-                x, y = x.to(device), y.to(device)
+                q_z, y, _ = batch
+                q_z, y = q_z.to(device), y.to(device)
+                mean, log_var = q_z.chunk(2, dim=-1)
+                z = mean + torch.randn_like(mean) * (0.5 * log_var).exp()
                 for j in range(num_initialisations):
-                    y_probs = torch.cat([torch.sigmoid(torch.max(layers[j](x), dim=-2).values) for layers in classifiers.values()], dim=-1).mean(dim=1)
+                    y_probs = torch.cat([torch.sigmoid(torch.max(layers[j](z), dim=-2).values) for layers in classifiers.values()], dim=-1)
                     loss = metrics.class_balanced_binary_cross_entropy(y, y_probs, self.beta, torch.tensor(self.target_counts, dtype=torch.int64).to(y.device))
                     losses.append(loss)
         # sample-wise sum

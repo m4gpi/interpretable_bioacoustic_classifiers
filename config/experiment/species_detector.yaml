@@ -13,10 +13,10 @@ test: true
 seed: 42
 
 data:
-  root: /its/home/kag25/projects/ecolistening/interpretable_bioacoustic_classifiers/data/soundscape_vae_embeddings
+  root: /its/home/kag25/projects/ecolistening/interpretable_bioacoustic_classifiers/data/soundscape_vae_embeddings_2
   model: smooth_nifti_vae
   version: v12
-  scope: SO/EC
+  scope: SO_EC
 
 trainer:
   max_epochs: 1000

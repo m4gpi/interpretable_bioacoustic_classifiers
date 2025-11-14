@@ -24,7 +24,6 @@ class SoundscapeVAEEmbeddings(torch.utils.data.Dataset):
     features: pd.DataFrame = attrs.field()
     labels: pd.DataFrame = attrs.field()
     index: List[int] = attrs.field()
-    num_samples: int = attrs.field(default=1)
 
     x: torch.Tensor = attrs.field(init=False)
     y: torch.Tensor = attrs.field(init=False)
@@ -34,18 +33,12 @@ class SoundscapeVAEEmbeddings(torch.utils.data.Dataset):
         return len(self.y)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, ...]:
-        q_z = self.x[idx]
-        q_z = q_z.unsqueeze(0) if q_z.dim() == 2 else q_z
-        mean, log_var = q_z.chunk(2, dim=-1)
-        mean = mean.unsqueeze(1).expand(-1, self.num_samples, -1, -1)
-        log_var = log_var.unsqueeze(1).expand(-1, self.num_samples, -1, -1)
-        z = mean + torch.randn_like(mean) * (0.5 * log_var).exp()
-        return (z.squeeze(0), self.y[idx], self.index[idx])
+        return (self.x[idx], self.y[idx], self.index[idx])
 
     def __attrs_post_init__(self):
         self.x = torch.tensor(self.features.values.reshape(self.labels.values.shape[0], -1, self.features.values.shape[-1]), dtype=torch.float32)
         self.y = torch.tensor(self.labels.values, dtype=torch.int64)
-        self.y_freq = dict(zip(self.labels.columns, torch.tensor([self.labels[y].sum() for y in self.labels.columns])))
+        self.y_freq = dict(zip(self.labels.columns, [self.labels[y].sum() for y in self.labels.columns]))
 
     @property
     def model_params(self):
@@ -63,8 +56,6 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
 
     train_batch_size: int | None = attrs.field(default=None)
     eval_batch_size: int | None = attrs.field(default=None)
-    train_sample_size: int = attrs.field(default=1, validator=attrs.validators.instance_of(int))
-    eval_sample_size: int = attrs.field(default=1, validator=attrs.validators.instance_of(int))
     val_prop: float = attrs.field(default=0.0, validator=attrs.validators.instance_of(float))
 
     seed: int = attrs.field(default=8, validator=attrs.validators.instance_of(int))
@@ -132,13 +123,11 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
             features=pd.read_parquet(self.train_features_path),
             labels=train_labels[target_names],
             index=train_labels.index.get_level_values(0),
-            num_samples=self.train_sample_size,
         )
         self.test_data = SoundscapeVAEEmbeddings(
             features=pd.read_parquet(self.test_features_path),
             labels=test_labels[target_names],
             index=test_labels.index.get_level_values(0),
-            num_samples=self.eval_sample_size,
         )
         self.train_data, self.val_data = torch.utils.data.random_split(
             self.data,
@@ -150,7 +139,14 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
     def cross_validation_setup(self, num_folds: int) -> None:
         datasets = []
         index = pd.read_parquet(self.root / "index.parquet")
-        for (model_name, scope), df in index.groupby(["model_name", "scope"]):
+
+        if self.model is not None and self.scope is not None:
+            df = index[(index["model_name"] == self.model) & (index["scope"] == self.scope)]
+            groups = [((self.model, self.scope), df)]
+        else:
+            groups = index.groupby(["model_name", "scope"])
+
+        for (model_name, scope), df in groups:
             for i, row in df.iterrows():
                 train_features_path = self._build_subset_path(model_name, row.version, scope) / "train" / "features.parquet"
                 train_labels_path = self._build_subset_path(model_name, row.version, scope) / "train" / "labels.parquet"
@@ -169,13 +165,11 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
                     features=pd.read_parquet(train_features_path),
                     labels=train_labels[target_names],
                     index=train_labels.index.get_level_values(0),
-                    num_samples=self.train_sample_size,
                 )
                 test_data = SoundscapeVAEEmbeddings(
                     features=pd.read_parquet(test_features_path),
                     labels=test_labels[target_names],
                     index=test_labels.index.get_level_values(0),
-                    num_samples=self.eval_sample_size,
                 )
                 folder = sklearn.model_selection.KFold(n_splits=num_folds, random_state=self.seed, shuffle=True)
                 for fold_id, (train_idx, val_idx) in enumerate(folder.split(range(len(data)))):
@@ -184,6 +178,12 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
                     datasets.append(dict(
                         fold_id=fold_id,
                         model_params=data.model_params,
+                        dataset_config=dict(
+                            root=str(self.root),
+                            model=model_name,
+                            scope=scope,
+                            version=row.version,
+                        ),
                         train_dataloader_params=dict(
                             dataset=train_data,
                             batch_size=self.train_batch_size or len(train_data),
