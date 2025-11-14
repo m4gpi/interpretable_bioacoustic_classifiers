@@ -5,8 +5,8 @@ defaults:
   - data: soundscape_vae_embeddings
   - model: species_detector
   - hyperparams: species_detector
-  - callbacks: null
-  - logger: null
+  - callbacks: default
+  - logger: wandb
   - trainer: default
   - paths: default
   - hydra: default

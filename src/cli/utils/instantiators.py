@@ -22,7 +22,7 @@ def instantiate_callbacks(callbacks_cfg: DictConfig) -> List[Callback]:
         return callbacks
 
     for _, cb_conf in callbacks_cfg.items():
-        if isinstance(cb_conf, DictConfig) and "_target_" in cb_conf:
+        if "_target_" in cb_conf:
             log.info(f"Instantiating callback <{cb_conf['_target_']}>")
             callbacks.append(hydra.utils.instantiate(cb_conf))
 
@@ -41,7 +41,7 @@ def instantiate_loggers(logger_cfg: DictConfig) -> List[Logger]:
         return logger
 
     for _, lg_conf in logger_cfg.items():
-        if isinstance(lg_conf, DictConfig) and "_target_" in lg_conf:
+        if "_target_" in lg_conf:
             log.info(f"Instantiating logger <{lg_conf['_target_']}>")
             logger.append(hydra.utils.instantiate(lg_conf))
 
@@ -60,7 +60,7 @@ def instantiate_transforms(transforms_cfg: DictConfig) -> Dict[str, Callback]:
         return transforms
 
     for key, tf_conf in transforms_cfg.items():
-        if isinstance(tf_conf, DictConfig) and "_target_" in tf_conf:
+        if "_target_" in tf_conf:
             log.info(f"Instantiating transform <{tf_conf['_target_']}>")
             transforms[key] = hydra.utils.instantiate(tf_conf)
 

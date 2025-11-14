@@ -9,6 +9,7 @@ import multiprocessing
 import rootutils
 import torch
 
+from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig, OmegaConf
 from typing import Any, Callable, Iterable, List, Dict, Tuple
 
