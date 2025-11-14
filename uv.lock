@@ -1238,7 +1238,7 @@ requires-dist = [
     { name = "rootutils", specifier = "==1.0.7" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "tabulate", specifier = ">=0.9.0" },
-    { name = "torch", specifier = ">=2.4.1", index = "https://download.pytorch.org/whl/cu118" },
+    { name = "torch", specifier = "==2.4.1", index = "https://download.pytorch.org/whl/cu118" },
     { name = "torchaudio", specifier = ">=2.4.1", index = "https://download.pytorch.org/whl/cu118" },
     { name = "torchmetrics", specifier = ">=0.11.4" },
     { name = "torchvision", specifier = ">=0.19.1", index = "https://download.pytorch.org/whl/cu118" },
@@ -2478,10 +2478,10 @@ wheels = [
 
 [[package]]
 name = "nvidia-nccl-cu11"
-version = "2.21.5"
+version = "2.20.5"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ac/9a/8b6a28b3b87d5fddab0e92cd835339eb8fbddaa71ae67518c8c1b3d05bae/nvidia_nccl_cu11-2.21.5-py3-none-manylinux2014_x86_64.whl", hash = "sha256:49d8350629c7888701d1fd200934942671cb5c728f49acc5a0b3a768820bed29", size = 147811630, upload-time = "2024-04-03T15:33:12.879Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/37/948257090a0b9eddade74490b521490b7fe748a70cad72fd8fbda692f6d4/nvidia_nccl_cu11-2.20.5-py3-none-manylinux2014_x86_64.whl", hash = "sha256:3619e25dfb0c8f4c554561c3459ee7dfe1250eed05e9aa4d147a75c45cc6ae0d", size = 142898041, upload-time = "2024-03-06T04:30:49.93Z" },
 ]
 
 [[package]]
@@ -3825,7 +3825,7 @@ wheels = [
 
 [[package]]
 name = "torch"
-version = "2.7.1+cu118"
+version = "2.4.1+cu118"
 source = { registry = "https://download.pytorch.org/whl/cu118" }
 dependencies = [
     { name = "filelock" },
@@ -3849,24 +3849,24 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu118/torch-2.7.1%2Bcu118-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:89433c62b02ec802d4c0887c867d935887ae8f00d7cc549ecf1c2640d096bd4c" },
-    { url = "https://download.pytorch.org/whl/cu118/torch-2.7.1%2Bcu118-cp310-cp310-win_amd64.whl", hash = "sha256:af4833e36a8e964681a4dad7775f559cf043bd42c9d0c0b5e0619f9d0e44cb56" },
-    { url = "https://download.pytorch.org/whl/cu118/torch-2.7.1%2Bcu118-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:a596d91c747d1fa601724e85b9c8797c8d7c62140aa1acf245773e911254bc45" },
-    { url = "https://download.pytorch.org/whl/cu118/torch-2.7.1%2Bcu118-cp311-cp311-win_amd64.whl", hash = "sha256:584e5ee99d29286b93be2fba3b3f1f5b9d7a4b9055a288eb31b33100a1f09ed9" },
+    { url = "https://download.pytorch.org/whl/cu118/torch-2.4.1%2Bcu118-cp310-cp310-linux_x86_64.whl", hash = "sha256:740bae6eb10c6b41cb86c4f9e84da0b4533b5595aed4f06694d95d5e32b4076c" },
+    { url = "https://download.pytorch.org/whl/cu118/torch-2.4.1%2Bcu118-cp310-cp310-win_amd64.whl", hash = "sha256:08634e2d32e753ea4a086d42cc145f9251c767b0a7619fd9a6ed5c035dee7b63" },
+    { url = "https://download.pytorch.org/whl/cu118/torch-2.4.1%2Bcu118-cp311-cp311-linux_x86_64.whl", hash = "sha256:c7fbf1e214af65ccc0e54d265140b2d09486f977b966fcde218b25068bd54551" },
+    { url = "https://download.pytorch.org/whl/cu118/torch-2.4.1%2Bcu118-cp311-cp311-win_amd64.whl", hash = "sha256:1db7ac11687fc6ec279c5504302840a057a4f6bbadf81b7c4588fa53743cf493" },
 ]
 
 [[package]]
 name = "torchaudio"
-version = "2.7.1+cu118"
+version = "2.4.1+cu118"
 source = { registry = "https://download.pytorch.org/whl/cu118" }
 dependencies = [
     { name = "torch" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu118/torchaudio-2.7.1%2Bcu118-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:effef2c79a95830d11b481f6fbe461312988b49b4c0b3dbe893d0b56d5ce032f" },
-    { url = "https://download.pytorch.org/whl/cu118/torchaudio-2.7.1%2Bcu118-cp310-cp310-win_amd64.whl", hash = "sha256:da55035d325d4523981c48413da8e34321ef6d9306fa71b04b96dc04b3ed8318" },
-    { url = "https://download.pytorch.org/whl/cu118/torchaudio-2.7.1%2Bcu118-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:76629345b5e095b5b9dd6abbeb1919e50dd8f3c2082d89b54ad5cd7d25158de9" },
-    { url = "https://download.pytorch.org/whl/cu118/torchaudio-2.7.1%2Bcu118-cp311-cp311-win_amd64.whl", hash = "sha256:c33d68f7a0c35810dbd74150f8994ef850c54813d0f8c5b7b1e5d71f2b6c7159" },
+    { url = "https://download.pytorch.org/whl/cu118/torchaudio-2.4.1%2Bcu118-cp310-cp310-linux_x86_64.whl", hash = "sha256:ba8c23b7d101faa53b10f5e84d6c2925c55702c1eedabccea0f0504eed1049d2" },
+    { url = "https://download.pytorch.org/whl/cu118/torchaudio-2.4.1%2Bcu118-cp310-cp310-win_amd64.whl", hash = "sha256:7ba476129f5aa06066583b24adf8a47e581857388de889aa41af1b3716c2b621" },
+    { url = "https://download.pytorch.org/whl/cu118/torchaudio-2.4.1%2Bcu118-cp311-cp311-linux_x86_64.whl", hash = "sha256:1b372b3a0f9fa152a8ec3e0a720dac3b93dfaacefe6238ff0b2f628c14d954bf" },
+    { url = "https://download.pytorch.org/whl/cu118/torchaudio-2.4.1%2Bcu118-cp311-cp311-win_amd64.whl", hash = "sha256:d945f15bdef06798669e4d1f16ae632b260dc913e93949f9c5b6324183ab91fc" },
 ]
 
 [[package]]
@@ -3886,7 +3886,7 @@ wheels = [
 
 [[package]]
 name = "torchvision"
-version = "0.22.1+cu118"
+version = "0.19.1+cu118"
 source = { registry = "https://download.pytorch.org/whl/cu118" }
 dependencies = [
     { name = "numpy" },
@@ -3894,10 +3894,10 @@ dependencies = [
     { name = "torch" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu118/torchvision-0.22.1%2Bcu118-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:64954400493caf614b5aebded9b5a63eda8753cea9f8a1e32752eb2adc6ed383" },
-    { url = "https://download.pytorch.org/whl/cu118/torchvision-0.22.1%2Bcu118-cp310-cp310-win_amd64.whl", hash = "sha256:608ea6cb93eb66cdf273cab41122f83191c198c3c4ff583609f0e6e184f52865" },
-    { url = "https://download.pytorch.org/whl/cu118/torchvision-0.22.1%2Bcu118-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:6dd3d825fb4a75eae887665d1da812a360d69273118bfa17616c836bfb466627" },
-    { url = "https://download.pytorch.org/whl/cu118/torchvision-0.22.1%2Bcu118-cp311-cp311-win_amd64.whl", hash = "sha256:98a626661670cd96faeef05b33a140a09f9f134b0ab38d127b6ebbcf73d42bf5" },
+    { url = "https://download.pytorch.org/whl/cu118/torchvision-0.19.1%2Bcu118-cp310-cp310-linux_x86_64.whl", hash = "sha256:330e122edb647c58be0f9705291438306ff33a448b2665f80a3471ed99a118bf" },
+    { url = "https://download.pytorch.org/whl/cu118/torchvision-0.19.1%2Bcu118-cp310-cp310-win_amd64.whl", hash = "sha256:c290d9761526efcd1f555c0c3cfffe07b0ff325543b06f553c884c3df2021ea2" },
+    { url = "https://download.pytorch.org/whl/cu118/torchvision-0.19.1%2Bcu118-cp311-cp311-linux_x86_64.whl", hash = "sha256:35d9a78ca449fbe71cc48b456e15e0997873b3f98635845126c66f50c38ee6d8" },
+    { url = "https://download.pytorch.org/whl/cu118/torchvision-0.19.1%2Bcu118-cp311-cp311-win_amd64.whl", hash = "sha256:b78cd590b9c354168c1bee3dbdfc8123b95219acb5aa58af185239bf9b598d2a" },
 ]
 
 [[package]]
@@ -3942,14 +3942,14 @@ wheels = [
 
 [[package]]
 name = "triton"
-version = "3.3.1"
+version = "3.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "setuptools", marker = "sys_platform == 'linux'" },
+    { name = "filelock", marker = "sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8d/a9/549e51e9b1b2c9b854fd761a1d23df0ba2fbc60bd0c13b489ffa518cfcb7/triton-3.3.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b74db445b1c562844d3cfad6e9679c72e93fdfb1a90a24052b03bb5c49d1242e", size = 155600257, upload-time = "2025-05-29T23:39:36.085Z" },
-    { url = "https://files.pythonhosted.org/packages/21/2f/3e56ea7b58f80ff68899b1dbe810ff257c9d177d288c6b0f55bf2fe4eb50/triton-3.3.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b31e3aa26f8cb3cc5bf4e187bf737cbacf17311e1112b781d4a059353dfd731b", size = 155689937, upload-time = "2025-05-29T23:39:44.182Z" },
+    { url = "https://files.pythonhosted.org/packages/45/27/14cc3101409b9b4b9241d2ba7deaa93535a217a211c86c4cc7151fb12181/triton-3.0.0-1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:e1efef76935b2febc365bfadf74bcb65a6f959a9872e5bddf44cc9e0adce1e1a", size = 209376304, upload-time = "2024-07-19T20:56:41.483Z" },
+    { url = "https://files.pythonhosted.org/packages/33/3e/a2f59384587eff6aeb7d37b6780de7fedd2214935e27520430ca9f5b7975/triton-3.0.0-1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:5ce8520437c602fb633f1324cc3871c47bee3b67acf9756c1a66309b60e3216c", size = 209438883, upload-time = "2024-07-19T20:56:52.275Z" },
 ]
 
 [[package]]
