@@ -41,6 +41,7 @@ class SpeciesDetector(L.LightningModule):
     attn_learning_rate: float | None = None
     train_sample_size: int = 1
     eval_sample_size: int = 1
+    key_per_target: bool = False
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
@@ -57,7 +58,15 @@ class SpeciesDetector(L.LightningModule):
         })
         if self.pool_method == POOL.FEATURE_ATTN or self.pool_method == POOL.PROB_ATTN:
             self.attention_V = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
-            self.attention_U = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
+
+            if self.key_per_target:
+                self.attention_U = torch.nn.ModuleDict({
+                    target_name: torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
+                    for target_name in self.target_names
+                })
+            else:
+                self.attention_U = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
+
             self.attention_w = torch.nn.ModuleDict({
                 target_name: torch.nn.Linear(in_features=self.attn_dim, out_features=1)
                 for target_name in self.target_names
@@ -108,11 +117,9 @@ class SpeciesDetector(L.LightningModule):
                 ckpt_path = None
 
             if data_module is not None:
-                predictions = trainer.predict(model=self, datamodule=data_module, ckpt_path=ckpt_path, return_predictions=True)
+                trainer.test(model=self, datamodule=data_module, ckpt_path=ckpt_path)
             else:
-                predictions = trainer.predict(model=self, dataloaders=test_dataloader, ckpt_path=ckpt_path, return_predictions=True)
-
-        return predictions
+                trainer.test(model=self, dataloaders=test_dataloader, ckpt_path=ckpt_path)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor | None]:
         # pool by taking a linear combination of *features* as a function of the data
@@ -120,12 +127,16 @@ class SpeciesDetector(L.LightningModule):
             y_probs = []
             attn_w = []
             A_V = torch.tanh(self.attention_V(x)) # (N, T, D)
-            # TODO: try sigmoid layer different for target?
-            A_U = torch.sigmoid(self.attention_U(x)) # (N, T, D)
+            if not self.key_per_target:
+                A_U = torch.sigmoid(self.attention_U(x)) # (N, T, D)
             for target_name in self.target_names:
                 clf = self.classifiers[target_name]
                 attention_w = self.attention_w[target_name]
                 assert clf is not None and attention_w is not None, f"'{target_name}' is not a valid target"
+                if self.key_per_target:
+                    attention_U = self.attention_U[target_name]
+                    assert attention_U is not None, f"{target_name} is not a valid target"
+                    A_U = torch.sigmoid(attention_U(x))
                 A = F.softmax(attention_w(A_V * A_U), dim=-2) # (N, T, 1)
                 y_target_logits = clf((x * A).sum(dim=-2))
                 y_target_probs = torch.sigmoid(y_target_logits)
@@ -226,8 +237,7 @@ class SpeciesDetector(L.LightningModule):
 
     @torch.no_grad()
     def predict_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> pd.DataFrame:
-        y, y_probs, _, s, y_freq = self.model_step(batch)
-        y_probs = y_probs.mean(dim=1)
+        y, y_probs, _, s = self.model_step(batch)
         return {"y_probs": y_probs, "y": y, "s": s, "target_names": self.target_counts}
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
@@ -237,10 +247,6 @@ class SpeciesDetector(L.LightningModule):
             attn_params = list(self.attention_V.parameters()) + list(self.attention_U.parameters()) + list(self.attention_w.parameters())
             params.append({'params': attn_params, 'lr': self.attn_learning_rate})
         return torch.optim.Adam(params)
-
-    def _load_target_list(self):
-        with open(self.target_list_path, "r") as f:
-            return yaml.safe_load(f.read())
 
     def _max_pool_weight_initialization(
         self,

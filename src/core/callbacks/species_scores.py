@@ -22,6 +22,7 @@ class SpeciesScores(L.Callback):
         self.train_predictions = []
         self.val_predictions = []
         self.test_predictions = []
+        self.predict_predictions = []
 
     def score(self, results: pd.DataFrame) -> pd.DataFrame:
         scores = []
@@ -100,8 +101,8 @@ class SpeciesScores(L.Callback):
         pl_module: L.LightningModule,
     ) -> None:
         scores = self._on_epoch_end(self.test_predictions)
-        freq_df = pd.DataFrame(data=dict(zip(pl_module.target_names, pl_module.target_counts)), columns=["species_name", "train_label_frequency"])
-        scores = pd.concat([scores, freq_df], axis=1)
+        freq_df = pd.DataFrame(data=zip(pl_module.target_counts), columns=["train_label_frequency"], index=pl_module.target_names)
+        scores = scores.join(freq_df, on="species_name")
         print(scores.to_markdown())
         score_mean = scores.mean(axis=0).to_frame().rename(columns={0: "mean"})
         score_std = scores.std(axis=0).to_frame().rename(columns={0: "std"})
@@ -109,6 +110,34 @@ class SpeciesScores(L.Callback):
         print(summary_stats.to_markdown())
         scores.to_parquet(self.save_dir / "test_scores.parquet")
         self.test_predictions = []
+
+    def on_predict_batch_end(
+        self,
+        trainer: L.Trainer,
+        pl_module: L.LightningModule,
+        outputs: List[pd.DataFrame],
+        batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[str]],
+        batch_idx: int,
+        dataloader_idx: int = 0,
+    ) -> None:
+        df = self._on_batch_end(outputs)
+        self.predict_predictions.append(df)
+
+    def on_predict_end(
+        self,
+        trainer: L.Trainer,
+        pl_module: L.LightningModule,
+    ) -> None:
+        scores = self._on_epoch_end(self.predict_predictions)
+        freq_df = pd.DataFrame(data=dict(zip(pl_module.target_names, pl_module.target_counts)), columns=["species_name", "train_label_frequency"])
+        scores = pd.concat([scores, freq_df], axis=1)
+        print(scores.to_markdown())
+        score_mean = scores.mean(axis=0).to_frame().rename(columns={0: "mean"})
+        score_std = scores.std(axis=0).to_frame().rename(columns={0: "std"})
+        summary_stats = pd.concat([score_mean, score_std], axis=1)
+        print(summary_stats.to_markdown())
+        scores.to_parquet(self.save_dir / "predict_scores.parquet")
+        self.predict_predictions = []
 
     def _on_batch_end(self, outputs: List[Dict[str, Any]]) -> pd.DataFrame:
         y, y_probs, s, target_names = outputs["y"], outputs["y_probs"], outputs["s"], outputs["target_names"]

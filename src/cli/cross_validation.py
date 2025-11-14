@@ -112,9 +112,12 @@ def cross_validation(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     log.info(f"Setting up data module for cross-validation")
     folds = data_module.cross_validation_setup(num_folds=num_folds)
 
+    combinations = hyperparams.combinations()
+    assert len(combinations), "No hyperparameters declared to search"
+
     config = OmegaConf.to_container(cfg, resolve=True)
     runs = []
-    for i, (fold, combination) in enumerate([(fold, combination) for combination in hyperparams.combinations() for fold in folds]):
+    for i, (fold, combination) in enumerate([(fold, combination) for combination in combinations for fold in folds]):
         runs.append(dict(**fold, hyperparams=combination, config=copy.deepcopy(config), device=devices[i % len(devices)]))
 
     results = []

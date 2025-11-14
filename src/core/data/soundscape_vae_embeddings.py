@@ -65,6 +65,9 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
     drop_last: bool = attrs.field(default=False, validator=attrs.validators.instance_of(bool))
 
     generator: torch.Generator = attrs.field(init=False)
+    fold_id: int = attrs.field(default=None)
+    num_folds: int = attrs.field(default=None)
+
     # data: torch.utils.data.Dataset = attrs.field(init=False)
     # train_data: torch.utils.data.Subset = attrs.field(init=False)
     # val_data: torch.utils.data.Subset = attrs.field(init=False)
@@ -72,7 +75,6 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
 
     def __attrs_post_init__(self):
         L.LightningDataModule.__init__(self)
-        self.generator = torch.Generator().manual_seed(self.seed)
 
     @model.validator
     def check_model_is_valid_if_not_none(self, attribute, value):
@@ -85,6 +87,14 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
     @version.validator
     def check_version_is_valid_if_not_none(self, attribute, value):
         return (value[0] == "v" and int(value[1:])) if value is not None else True
+
+    @num_folds.validator
+    def check_fold_is_integer_if_not_none(self, attribute, value):
+        return isinstance(value, int) if value is not None else True
+
+    @fold_id.validator
+    def check_fold_is_integer_if_not_none(self, attribute, value):
+        return isinstance(value, int) if value is not None else True
 
     @property
     def train_features_path(self):
@@ -112,6 +122,10 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
         )
 
     def setup(self, stage: str) -> None:
+        index = pd.read_parquet(self.root / "index.parquet")
+        assert ((index["model_name"] == self.model) & (index["version"] == self.version) & (index["scope"] == self.scope)).any(), \
+            f"Data does not exist for {self.model} {self.version} {self.scope}"
+
         self._validate_features_and_labels_present(self.train_features_path, self.train_labels_path)
         self._validate_features_and_labels_present(self.test_features_path, self.test_labels_path)
 
@@ -129,16 +143,23 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
             labels=test_labels[target_names],
             index=test_labels.index.get_level_values(0),
         )
-        self.train_data, self.val_data = torch.utils.data.random_split(
-            self.data,
-            (1 - self.val_prop, self.val_prop),
-            generator=self.generator
-        )
+        if self.num_folds is not None and self.fold_id is not None:
+            folder = sklearn.model_selection.KFold(n_splits=self.num_folds, random_state=self.seed, shuffle=True)
+            folds = list(folder.split(range(len(self.data))))
+            train_idx, val_idx = folds[self.fold_id]
+            self.train_data = torch.utils.data.Subset(self.data, train_idx)
+            self.val_data = torch.utils.data.Subset(self.data, val_idx)
+        else:
+            self.generator = torch.Generator().manual_seed(self.seed)
+            self.train_data, self.val_data = torch.utils.data.random_split(
+                self.data,
+                (1 - self.val_prop, self.val_prop),
+                generator=self.generator,
+            )
         return self
 
     def cross_validation_setup(self, num_folds: int) -> None:
         datasets = []
-        index = pd.read_parquet(self.root / "index.parquet")
 
         if self.model is not None and self.scope is not None:
             df = index[(index["model_name"] == self.model) & (index["scope"] == self.scope)]

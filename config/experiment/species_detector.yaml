@@ -6,14 +6,17 @@ defaults:
   - override /data: soundscape_vae_embeddings
   - override /model: species_detector
   - override /trainer: gpu
-  - override /logger: wandb
+  - override /logger: null
+
+name: interpretable_bioacoustic_classifiers
+results_dir: ${paths.results_dir}/${name}/${data.scope}/${data.model}/${data.version}
 
 train: true
 test: true
 seed: 42
 
 data:
-  root: /its/home/kag25/projects/ecolistening/interpretable_bioacoustic_classifiers/data/soundscape_vae_embeddings_2
+  root: ${paths.data_dir}/soundscape_vae_embeddings
   model: smooth_nifti_vae
   version: v12
   scope: SO_EC
@@ -33,7 +36,7 @@ model:
 
 callbacks:
   model_checkpoint:
-    dirpath: ${paths.output_dir}/checkpoints
+    dirpath: ${results_dir}/checkpoints
     filename: epoch_{epoch:03d}
     monitor: val/loss
     mode: min
@@ -41,7 +44,7 @@ callbacks:
     auto_insert_metric_name: False
   species_scores:
     _target_: src.core.callbacks.species_scores.SpeciesScores
-    save_dir: ${paths.output_dir}
+    save_dir: ${results_dir}
 
 logger:
   wandb:

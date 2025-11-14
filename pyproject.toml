@@ -37,6 +37,7 @@ dependencies = [
   "dash>=3.2.0",
   "dash-mantine-components>=2.4.0",
   "cmasher>=1.9.2",
+  "hydra-joblib-launcher>=1.2.0",
 ]
 
 [dependency-groups]

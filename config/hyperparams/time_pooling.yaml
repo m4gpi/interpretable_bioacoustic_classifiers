@@ -1,0 +1,4 @@
+_target_: src.core.utils.hyperparams.TimePoolingHyperparams
+clf_learning_rate: [1.e-2, 5.e-2, 1.e-1]
+l1_penalty: [1.e-3, 1.e-2, 1.e-1]
+pool_method: ["mean", "max", "feature_attn", "prob_attn"]
