@@ -3,9 +3,9 @@
 # you can replace it with "." if you want the root to be the current working directory
 root_dir: ${oc.env:PROJECT_ROOT}
 # path to data directory
-data_dir: ${paths.root_dir}/data/
+data_dir: ${paths.root_dir}/data
 # path to data directory
-results_dir: ${paths.root_dir}/results/
+results_dir: ${paths.root_dir}/results
 # path to logging directory
 log_dir: ${paths.root_dir}/logs/
 # path to output directory, created dynamically by hydra

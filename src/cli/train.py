@@ -1,10 +1,12 @@
 import hydra
 import lightning as L
 import logging
+import pathlib
 import rootutils
 import torch
+import json
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from typing import Any, List, Dict, Tuple
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
@@ -37,11 +39,15 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if loggers:
         for logger in loggers:
             logger.log_hyperparams({
+                "name": cfg.get("name"),
                 "data": dict(cfg.data),
                 "model": dict(cfg.model),
                 "logger": dict(cfg.logger),
                 "trainer": dict(cfg.trainer),
             })
+
+    log.info(json.dumps(OmegaConf.to_container(cfg, resolve=True), indent=1))
+    OmegaConf.save(cfg, pathlib.Path(cfg.results_dir) / "config.yaml")
 
     model.run(trainer, cfg, data_module=data_module)
 

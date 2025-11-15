@@ -1,5 +1,12 @@
 _target_: src.core.data.soundscape_vae_embeddings.SoundscapeVAEEmbeddingsDataModule
 root:
+model:
+version:
+scope:
+train_batch_size:
+eval_batch_size:
 val_prop: 0.2
 num_workers: 0
 pin_memory: False
+num_folds:
+fold_id:
