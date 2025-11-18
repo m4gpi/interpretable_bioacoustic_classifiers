@@ -10,7 +10,7 @@ From: cuda_11.8.0-cudnn8-devel-ubuntu18.04.sif
 %post
   # setup container
   apt-get update
-  apt-get install --no-install-recommends curl ca-certificates git ffmpeg -y
+  apt-get install --no-install-recommends curl ca-certificates git ffmpeg make build-essential -y
   apt-get clean && rm -rf /var/lib/apt/lists/*
 
   # install UV
