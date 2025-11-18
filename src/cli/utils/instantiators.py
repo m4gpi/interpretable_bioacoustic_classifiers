@@ -4,12 +4,12 @@ import logging
 from lightning import Callback
 from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-def instantiate_callbacks(callbacks_cfg: DictConfig) -> List[Callback]:
+def instantiate_callbacks(callbacks_cfg: DictConfig, **kwargs: Any) -> List[Callback]:
     """Instantiates callbacks from config.
 
     :param callbacks_cfg: A DictConfig object containing callback configurations.
@@ -24,11 +24,11 @@ def instantiate_callbacks(callbacks_cfg: DictConfig) -> List[Callback]:
     for _, cb_conf in callbacks_cfg.items():
         if "_target_" in cb_conf:
             log.info(f"Instantiating callback <{cb_conf['_target_']}>")
-            callbacks.append(hydra.utils.instantiate(cb_conf))
+            callbacks.append(hydra.utils.instantiate(cb_conf, **kwargs))
 
     return callbacks
 
-def instantiate_loggers(logger_cfg: DictConfig) -> List[Logger]:
+def instantiate_loggers(logger_cfg: DictConfig, **kwargs: Any) -> List[Logger]:
     """Instantiates loggers from config.
 
     :param logger_cfg: A DictConfig object containing logger configurations.
@@ -43,11 +43,11 @@ def instantiate_loggers(logger_cfg: DictConfig) -> List[Logger]:
     for _, lg_conf in logger_cfg.items():
         if "_target_" in lg_conf:
             log.info(f"Instantiating logger <{lg_conf['_target_']}>")
-            logger.append(hydra.utils.instantiate(lg_conf))
+            logger.append(hydra.utils.instantiate(lg_conf, **kwargs))
 
     return logger
 
-def instantiate_transforms(transforms_cfg: DictConfig) -> Dict[str, Callback]:
+def instantiate_transforms(transforms_cfg: DictConfig, **kwargs: Any) -> Dict[str, Callback]:
     """Instantiates transforms from config.
 
     :param transforms_cfg: A DictConfig object containing transform configurations.
@@ -62,6 +62,6 @@ def instantiate_transforms(transforms_cfg: DictConfig) -> Dict[str, Callback]:
     for key, tf_conf in transforms_cfg.items():
         if "_target_" in tf_conf:
             log.info(f"Instantiating transform <{tf_conf['_target_']}>")
-            transforms[key] = hydra.utils.instantiate(tf_conf)
+            transforms[key] = hydra.utils.instantiate(tf_conf, **kwargs)
 
     return transforms

@@ -20,8 +20,8 @@ def class_balanced_binary_cross_entropy(
     y = y * (1 - label_smoothing) + (1 - y) * label_smoothing
     return (-(weights * y * y_probs.log() + (1 - y) * (1 - y_probs).log()))
 
-def l1_penalty(weights: torch.Tensor, lamdba: float) -> torch.Tensor:
-    return lamdba * torch.stack([torch.linalg.norm(layer, 1) for layer in weights])
+def weight_regularisation(weights: torch.Tensor, lamdba: float, order: int = 2) -> torch.Tensor:
+    return lamdba * torch.stack([torch.linalg.norm(layer, order) for layer in weights])
 
 def average_precision(
     labels: NDArray,

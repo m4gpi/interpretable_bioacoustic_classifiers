@@ -32,9 +32,9 @@ class SpeciesDetector(L.LightningModule):
     target_counts: List[int]
     in_features: int
     l1_penalty: float
-    penalty_multiplier: int
     beta: float
     clf_learning_rate: float
+    penalty_multiplier: int = 1.0
     label_smoothing: float = 0.0
     pool_method: str = "max"
     attn_dim: int | None = None
@@ -192,8 +192,8 @@ class SpeciesDetector(L.LightningModule):
         ).mean(dim=0)
         # L1 regularisation with split for smooth latents (if applicable), sum the L1 penalties for each model
         # TODO: parameterise these indices
-        l1_1 = metrics.l1_penalty([weights[:, 0:64] for weights in list(self.classifiers.parameters())[::2]], self.l1_penalty)
-        l1_2 = metrics.l1_penalty([weights[:, 64:128] for weights in list(self.classifiers.parameters())[::2]], self.l1_penalty * self.penalty_multiplier)
+        l1_1 = metrics.weight_regularisation([weights[:, 0:64] for weights in list(self.classifiers.parameters())[::2]], self.l1_penalty)
+        l1_2 = metrics.weight_regularisation([weights[:, 64:128] for weights in list(self.classifiers.parameters())[::2]], self.l1_penalty * self.penalty_multiplier)
         l1_penalty = torch.stack([l1_1, l1_2], dim=-1).sum(dim=-1)
         # per logistic regression model, add the CEL and L1 together and then sum to get the total loss
         loss = (cel + l1_penalty).sum()

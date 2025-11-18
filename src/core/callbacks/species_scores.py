@@ -19,6 +19,7 @@ class SpeciesScores(L.Callback):
         super().__init__()
         self.save_dir = pathlib.Path(save_dir)
         self.save_dir.mkdir(exist_ok=True, parents=True)
+        (self.save_dir / "val_scores.parquet").mkdir(exist_ok=True, parents=True)
         self.train_predictions = []
         self.val_predictions = []
         self.test_predictions = []
@@ -81,6 +82,14 @@ class SpeciesScores(L.Callback):
     ) -> None:
         scores = self._on_epoch_end(self.val_predictions)
         pl_module.log_dict({f"val/{metric}": value for metric, value in scores.mean(axis=0).to_dict().items()}, prog_bar=True, on_epoch=True)
+        freq_df = pd.DataFrame(data=zip(pl_module.target_counts), columns=["train_label_frequency"], index=pl_module.target_names)
+        scores = scores.join(freq_df, on="species_name")
+        scores["run_id"] = pl_module.logger.experiment.id
+        scores["epoch"] = pl_module.current_epoch
+        for param, value in pl_module.hparams.items():
+            if param not in ["target_counts", "target_names"]:
+                scores[param] = value
+        scores.to_parquet(self.save_dir / "val_scores.parquet" / f"epoch={pl_module.current_epoch}.parquet")
         self.val_predictions = []
 
     def on_test_batch_end(
@@ -103,6 +112,10 @@ class SpeciesScores(L.Callback):
         scores = self._on_epoch_end(self.test_predictions)
         freq_df = pd.DataFrame(data=zip(pl_module.target_counts), columns=["train_label_frequency"], index=pl_module.target_names)
         scores = scores.join(freq_df, on="species_name")
+        scores["run_id"] = pl_module.logger.experiment.id
+        for param, value in pl_module.hparams.items():
+            if param not in ["target_counts", "target_names"]:
+                scores[param] = value
         print(scores.to_markdown())
         score_mean = scores.mean(axis=0).to_frame().rename(columns={0: "mean"})
         score_std = scores.std(axis=0).to_frame().rename(columns={0: "std"})

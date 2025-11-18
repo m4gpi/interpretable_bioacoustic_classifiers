@@ -1,3 +1,4 @@
+import os
 import hydra
 import lightning as L
 import logging
@@ -5,6 +6,7 @@ import pathlib
 import rootutils
 import torch
 import json
+import wandb
 
 from omegaconf import DictConfig, OmegaConf
 from typing import Any, List, Dict, Tuple
@@ -20,6 +22,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("seed"):
         L.seed_everything(cfg.seed, workers=True)
 
+    # ensure the run gets a unique results directory
+    run_id = os.urandom(6).hex()
+    cfg["results_dir"] = str(pathlib.Path(cfg.get("results_dir")).expanduser() / run_id)
+
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     data_module: L.LightningDataModule = hydra.utils.instantiate(cfg.data)
     data_module.setup(stage="fit")
@@ -31,7 +37,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     callbacks: List[Callback] = instantiate_callbacks(cfg.get("callbacks"))
 
     log.info("Instantiating loggers...")
-    loggers: List[Logger] = instantiate_loggers(cfg.get("logger"))
+    loggers: List[Logger] = instantiate_loggers(cfg.get("logger"), id=run_id)
 
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
     trainer: L.Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=loggers)
@@ -50,6 +56,9 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     OmegaConf.save(cfg, pathlib.Path(cfg.results_dir) / "config.yaml")
 
     model.run(trainer, cfg, data_module=data_module)
+
+    if wandb.run is not None:
+        wandb.finish()
 
 @hydra.main(version_base="1.3", config_path="../../config", config_name="train.yaml")
 def main(cfg: DictConfig):

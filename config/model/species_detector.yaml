@@ -2,7 +2,7 @@ _target_: src.core.models.species_detector.SpeciesDetector
 in_features: 128
 pool_method: max
 l1_penalty: 0.1
-penalty_multiplier: 2
+penalty_multiplier: 1
 beta: 0.99
 clf_learning_rate: 0.1
 label_smoothing: 0.0
