@@ -1,0 +1,36 @@
+#!/bin/bash
+#SBATCH --job-name=interpretable_bioacoustic_classifiers
+#SBATCH --output=./logs/run."%j".out
+#SBATCH --error=./logs/run."%j".err
+#SBATCH --mail-user $USER@sussex.ac.uk
+#SBATCH --mail-type=ALL
+#SBATCH --ntasks=1
+#SBATCH --partition=gpu
+
+singularity run --env-file .env --bind $DATA_PATH:/data --bind $RESULTS_PATH:/results app.sif \
+  -m +experiment=species_detector \
+  name=cross_validation \
+  trainer.max_epochs=1000 \
+  trainer.check_val_every_n_epoch=50 \
+  +data.num_folds=7 \
+  +data.fold_id=0,1,2,3,4,5,6 \
+  data.model=smooth_nifti_vae \
+  data.version=v0,v1,v2 \
+  data.scope=SO_UK \
+  model.pool_method=max,mean,feature_attn,prob_attn \
+  model.attn_learning_rate=1e-2,5e-3 \
+  model.clf_learning_rate=1e-1,5e-2
+
+singularity run --env-file .env --bind $DATA_PATH:/data --bind $RESULTS_PATH:/results app.sif \
+  -m +experiment=species_detector \
+  name=cross_validation \
+  trainer.max_epochs=1000 \
+  trainer.check_val_every_n_epoch=50 \
+  data.model=smooth_nifti_vae \
+  data.version=v0,v1,v2 \
+  data.scope=SO_UK \
+  data.num_folds=7 \
+  data.fold_id=0,1,2,3,4,5,6 \
+  model.pool_method=max,mean,feature_attn,prob_attn \
+  model.attn_learning_rate=1e-2,5e-3 \
+  model.clf_learning_rate=1e-1,5e-2
