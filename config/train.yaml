@@ -10,6 +10,7 @@ defaults:
   - hydra: default
   - _self_
 
+run_id:
 task_name: train
 # tags to help you identify your experiments
 # you can overwrite this in experiment configs

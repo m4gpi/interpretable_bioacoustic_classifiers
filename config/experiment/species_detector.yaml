@@ -8,7 +8,7 @@ defaults:
   - override /logger: wandb
 
 name: interpretable_bioacoustic_classifiers
-results_dir: ${paths.results_dir}/${name}/${data.scope}/${data.model}/${data.version}/${data.fold_id}
+results_dir: ${paths.results_dir}/${logger.wandb.project}/${name}/${data.scope}/${data.model}/${data.version}
 
 train: true
 test: true
@@ -16,22 +16,9 @@ seed: 42
 
 data:
   root: ${paths.data_dir}/soundscape_vae_embeddings
-  model: smooth_nifti_vae
-  version: v12
-  scope: SO_EC
 
 trainer:
-  max_epochs: 1000
-  check_val_every_n_epoch: 50
   log_every_n_steps: 1
-
-model:
-  beta: 0.0
-  label_smoothing: 0.0
-  attn_dim: 10
-  pool_method: feature_attn
-  clf_learning_rate: 0.1
-  attn_learning_rate: 0.01
 
 callbacks:
   model_checkpoint:
@@ -41,10 +28,15 @@ callbacks:
     mode: min
     save_top_k: -1
     auto_insert_metric_name: False
+    save_last: True
   species_scores:
     _target_: src.core.callbacks.species_scores.SpeciesScores
+    run_id: ${run_id}
     save_dir: ${results_dir}
 
 logger:
   wandb:
+    id: ${run_id}
+    resume: null
+    project: interpretable_bioacoustic_classifiers
     group: ${data.scope}

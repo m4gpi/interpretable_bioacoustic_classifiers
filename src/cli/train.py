@@ -15,6 +15,8 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.cli.utils.instantiators import instantiate_callbacks, instantiate_loggers
 
+OmegaConf.register_new_resolver("gen_run_id", lambda: os.urandom(6).hex())
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
@@ -22,9 +24,12 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("seed"):
         L.seed_everything(cfg.seed, workers=True)
 
-    # ensure the run gets a unique results directory
-    run_id = os.urandom(6).hex()
-    cfg["results_dir"] = str(pathlib.Path(cfg.get("results_dir")).expanduser() / run_id)
+    run_id = cfg.get("run_id") or os.urandom(6).hex()
+    results_dir = pathlib.Path(cfg.get("results_dir")).expanduser() / run_id
+    results_dir.mkdir(parents=True, exist_ok=True)
+    cfg["results_dir"] = str(results_dir)
+    log.info(json.dumps(OmegaConf.to_container(cfg, resolve=True), indent=1))
+    OmegaConf.save(cfg, results_dir / "config.yaml")
 
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     data_module: L.LightningDataModule = hydra.utils.instantiate(cfg.data)
@@ -51,9 +56,6 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
                 "logger": dict(cfg.logger),
                 "trainer": dict(cfg.trainer),
             })
-
-    log.info(json.dumps(OmegaConf.to_container(cfg, resolve=True), indent=1))
-    OmegaConf.save(cfg, pathlib.Path(cfg.results_dir) / "config.yaml")
 
     model.run(trainer, cfg, data_module=data_module)
 

@@ -4,6 +4,7 @@ import lightning as L
 import logging
 import numpy as np
 import pandas as pd
+import hydra
 import pathlib
 import torch
 import yaml
@@ -19,6 +20,10 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 __all__ = ["SpeciesDetector"]
+
+class TrainingMethod(enum.Enum):
+    CONTINUOUS = "continuous"
+    MULTISTAGE = "multistage"
 
 class POOL(enum.Enum):
     MAX = "max"
@@ -39,9 +44,15 @@ class SpeciesDetector(L.LightningModule):
     pool_method: str = "max"
     attn_dim: int | None = None
     attn_learning_rate: float | None = None
+    attn_weight_decay: float | None = None
     train_sample_size: int = 1
     eval_sample_size: int = 1
     key_per_target: bool = False
+
+    training_method: str = "continuous"
+    mean_stage_epochs: int | None = None
+    attn_stage_epochs: int | None = None
+    final_stage_epochs: int | None = None
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
@@ -50,66 +61,75 @@ class SpeciesDetector(L.LightningModule):
 
     def __post_init__(self) -> None:
         self.save_hyperparameters()
-        self.pool_method = POOL(self.pool_method)
+        # for multi-stage training
+        self.training_method = TrainingMethod(self.training_method)
+        if self.training_method != TrainingMethod.MULTISTAGE:
+            # time-sequence pooling method
+            self.pool_method = POOL(self.pool_method)
+        # class-balancing hyperparameter
         self.beta = torch.nn.Parameter(torch.tensor(self.beta, dtype=torch.float32), requires_grad=False)
+
+        # classifiers
         self.classifiers = torch.nn.ModuleDict({
             target_name: torch.nn.Linear(in_features=self.in_features, out_features=1, bias=True)
             for target_name in self.target_names
         })
-        if self.pool_method == POOL.FEATURE_ATTN or self.pool_method == POOL.PROB_ATTN:
-            self.attention_V = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
 
-            if self.key_per_target:
-                self.attention_U = torch.nn.ModuleDict({
-                    target_name: torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
-                    for target_name in self.target_names
-                })
-            else:
-                self.attention_U = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
-
-            self.attention_w = torch.nn.ModuleDict({
-                target_name: torch.nn.Linear(in_features=self.attn_dim, out_features=1)
+        # gated attention mechanism
+        self.attention_V = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
+        if self.key_per_target:
+            self.attention_U = torch.nn.ModuleDict({
+                target_name: torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
                 for target_name in self.target_names
             })
+        else:
+            self.attention_U = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
+        self.attention_w = torch.nn.ModuleDict({
+            target_name: torch.nn.Linear(in_features=self.attn_dim, out_features=1)
+            for target_name in self.target_names
+        })
+
+        # freeze the parameters since we're not applying attention mechanism at this time
+        if self.pool_method not in [POOL.FEATURE_ATTN, POOL.PROB_ATTN]:
+            for param_group in [self.attention_V, self.attention_U, self.attention_w]:
+                for param in param_group.parameters():
+                    param.requires_grad = False
 
     def run(
         self,
         trainer: L.Trainer,
         config: DictConfig,
         data_module: L.LightningDataModule | None = None,
-        train_dataloader: torch.utils.data.DataLoader | None = None,
-        val_dataloader: torch.utils.data.DataLoader | None = None,
-        test_dataloader: torch.utils.data.DataLoader | None = None,
-        device: int | None = None,
     ) -> None:
-        if not device:
-            device = trainer.strategy.root_device
-            log.info(f"Device: {device}")
+        device = trainer.strategy.root_device
 
         if config.get("train"):
             if self.pool_method == POOL.MAX:
-                if data_module is not None:
-                    data_module.setup(stage="fit")
-                    train_dataloader = data_module.train_dataloader()
+                data_module.setup(stage="fit")
+                train_dataloader = data_module.train_dataloader()
                 assert train_dataloader is not None, f"No training dataloader provided, either provide a data module or dataloaders"
                 log.info(f"Applying weight initialisation procedure for {self.pool_method}")
                 self._max_pool_weight_initialization(train_dataloader, device)
                 log.info(f"Weight initialisation complete")
 
-            log.info("Starting training!")
-            if data_module is not None:
-                trainer.fit(model=self, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
+            if self.training_method == TrainingMethod.MULTISTAGE:
+                log.info(f"Beginning multistage training!")
+                assert (self.mean_stage_epochs is not None) and (self.attn_stage_epochs is not None) and (self.final_stage_epochs is not None), \
+                    "You must define a training schedule by setting 'mean_stage_epochs', 'attn_stage_epochs' and 'final_stage_epochs' as integers"
+                ckpt_path = None
+                base_trainer_params = dict(logger=trainer.logger, callbacks=trainer.callbacks)
+                # train by stage
+                for stage in self.stages:
+                    stage_trainer_params = self.switch(stage=stage)
+                    trainer = hydra.utils.instantiate(config["trainer"], **base_trainer_params, **stage_trainer_params)
+                    trainer.fit(model=self, datamodule=data_module, ckpt_path=ckpt_path)
+                    ckpt_path = trainer.checkpoint_callback._last_checkpoint_saved
             else:
-                trainer.fit(
-                    model=self,
-                    train_dataloaders=train_dataloader,
-                    val_dataloaders=val_dataloader,
-                    ckpt_path=config.get("ckpt_path", None)
-                )
+                log.info(f"Beginning standard training!")
+                trainer.fit(model=self, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
 
-        predictions = None
         if config.get("test"):
-            log.info("Starting prediction!")
+            log.info(f"Beginning prediction on device: {device}!")
             ckpt_path = trainer.checkpoint_callback.best_model_path
 
             if ckpt_path == "":
@@ -120,6 +140,34 @@ class SpeciesDetector(L.LightningModule):
                 trainer.test(model=self, datamodule=data_module, ckpt_path=ckpt_path)
             else:
                 trainer.test(model=self, dataloaders=test_dataloader, ckpt_path=ckpt_path)
+
+    @property
+    def stages(self):
+        return list(range(3))
+
+    def switch(self, stage: int):
+        log.info(f"Switching to stage {stage}")
+        if stage == 0:
+            self.pool_method = POOL.MEAN
+            for param_group in [self.attention_V, self.attention_U, self.attention_w]:
+                for param in param_group.parameters():
+                    param.requires_grad = False
+            max_epochs = self.mean_stage_epochs
+        elif stage == 1:
+            self.pool_method = POOL.PROB_ATTN
+            for param in self.classifiers.parameters():
+                param.requires_grad = False
+            for param_group in [self.attention_V, self.attention_U, self.attention_w]:
+                for param in param_group.parameters():
+                    param.requires_grad = True
+            max_epochs = self.attn_stage_epochs + self.mean_stage_epochs
+        elif stage == 2:
+            for param in self.classifiers.parameters():
+                param.requires_grad = True
+            max_epochs = self.attn_stage_epochs + self.mean_stage_epochs + self.final_stage_epochs
+        else:
+            raise ValueError(f"'{stage}' is not a valid stage")
+        return dict(max_epochs=max_epochs)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor | None]:
         # pool by taking a linear combination of *features* as a function of the data
@@ -138,26 +186,27 @@ class SpeciesDetector(L.LightningModule):
                     assert attention_U is not None, f"{target_name} is not a valid target"
                     A_U = torch.sigmoid(attention_U(x))
                 A = F.softmax(attention_w(A_V * A_U), dim=-2) # (N, T, 1)
-                y_target_logits = clf((x * A).sum(dim=-2))
-                y_target_probs = torch.sigmoid(y_target_logits)
+                y_target_probs = torch.sigmoid(clf((x * A).sum(dim=-2)))
                 y_probs.append(y_target_probs)
                 attn_w.append(A)
             return torch.cat(y_probs, dim=-1), torch.cat(attn_w, dim=-1)
-        # pool by taking a linear function of *probabilities* as a function of the data
+        # pool by taking a linear combination of probabilities as a function of the data
         elif self.pool_method == POOL.PROB_ATTN:
             y_probs = []
             attn_w = []
             A_V = torch.tanh(self.attention_V(x)) # (N, T, D)
-            A_U = torch.sigmoid(self.attention_U(x)) # (N, T, D)
+            if not self.key_per_target:
+                A_U = torch.sigmoid(self.attention_U(x)) # (N, T, D)
             for target_name in self.target_names:
                 clf = self.classifiers[target_name]
                 attention_w = self.attention_w[target_name]
                 assert clf is not None and attention_w is not None, f"'{target_name}' is not a valid target"
+                if self.key_per_target:
+                    attention_U = self.attention_U[target_name]
+                    assert attention_U is not None, f"{target_name} is not a valid target"
+                    A_U = torch.sigmoid(attention_U(x))
                 A = F.softmax(attention_w(A_V * A_U), dim=-2) # (N, T, 1)
-                y_target_logits = clf(x)
-                y_target_probs = torch.sigmoid(y_target_logits)
-                # y_target_probs = torch.logsumexp((A + 1e-6).log() + F.logsigmoid(y_target_logits), dim=-2).exp()
-                y_target_probs = (y_target_probs * A).sum(dim=-2)
+                y_target_probs = (torch.sigmoid(clf(x)) * A).sum(dim=-2)
                 y_probs.append(y_target_probs)
                 attn_w.append(A)
             return torch.cat(y_probs, dim=-1), torch.cat(attn_w, dim=-1)
@@ -167,8 +216,7 @@ class SpeciesDetector(L.LightningModule):
             for target_name in self.target_names:
                 clf = self.classifiers[target_name]
                 assert clf is not None, f"'{target_name}' is not a valid target"
-                y_target_logits = torch.max(clf(x), dim=-2).values
-                y_target_probs = torch.sigmoid(y_target_logits)
+                y_target_probs = torch.max(torch.sigmoid(clf(x)), dim=-2).values
                 y_probs.append(y_target_probs)
             return torch.cat(y_probs, dim=-1), None
         # pool by mean probability
@@ -177,8 +225,7 @@ class SpeciesDetector(L.LightningModule):
             for target_name in self.target_names:
                 clf = self.classifiers[target_name]
                 assert clf is not None, f"'{target_name}' is not a valid target"
-                y_target_logits = torch.mean(clf(x), dim=-2)
-                y_target_probs = torch.sigmoid(y_target_logits)
+                y_target_probs = torch.sigmoid(clf(x)).mean(dim=-2)
                 y_probs.append(y_target_probs)
             return torch.cat(y_probs, dim=-1), None
 
@@ -207,11 +254,14 @@ class SpeciesDetector(L.LightningModule):
 
     def model_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], num_samples: int = 1) -> Tuple[torch.Tensor, ...]:
         q_z, y, s = batch
+        # unpack the variational posterior and sample
         mean, log_var = q_z.chunk(2, dim=-1)
         mean = mean.unsqueeze(1).expand(-1, num_samples, -1, -1)
         log_var = log_var.unsqueeze(1).expand(-1, num_samples, -1, -1)
         z = mean + torch.randn_like(mean) * (0.5 * log_var).exp()
+        # forward pass
         y_probs, attn_w = self.forward(z)
+        # take the mean over samples
         y_probs = y_probs.mean(dim=1)
         if attn_w is not None:
             attn_w = attn_w.mean(dim=1)
@@ -243,9 +293,8 @@ class SpeciesDetector(L.LightningModule):
     def configure_optimizers(self) -> torch.optim.Optimizer:
         params = []
         params.append({'params': self.classifiers.parameters(), 'lr': self.clf_learning_rate})
-        if self.pool_method == POOL.FEATURE_ATTN or self.pool_method == POOL.PROB_ATTN:
-            attn_params = list(self.attention_V.parameters()) + list(self.attention_U.parameters()) + list(self.attention_w.parameters())
-            params.append({'params': attn_params, 'lr': self.attn_learning_rate})
+        attn_params = list(self.attention_V.parameters()) + list(self.attention_U.parameters()) + list(self.attention_w.parameters())
+        params.append({'params': attn_params, 'lr': self.attn_learning_rate})
         return torch.optim.Adam(params)
 
     def _max_pool_weight_initialization(
