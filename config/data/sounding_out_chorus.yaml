@@ -1,0 +1,13 @@
+_target_: src.core.data.sounding_out_chorus.SoundingOutChorusDataModule
+root:
+scope:
+training_mode: step
+train_batch_size: 6
+eval_batch_size: 6
+val_prop: 0.25
+num_workers: 8
+seed: 42
+persist_workers: false
+pin_memory: true
+segment_len: 58.368
+sample_rate: 48_000

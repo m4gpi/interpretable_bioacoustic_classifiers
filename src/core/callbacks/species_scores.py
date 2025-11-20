@@ -3,15 +3,11 @@ import numpy as np
 import pandas as pd
 import pathlib
 import torch
-import sklearn
 import wandb
-import warnings
 
 from typing import Any, Dict, List, Tuple
 
 from src.core.utils import metrics
-
-warnings.filterwarnings("ignore", category=sklearn.exceptions.UndefinedMetricWarning)
 
 __all__ = ["SpeciesScores"]
 
@@ -41,23 +37,6 @@ class SpeciesScores(L.Callback):
         self.val_predictions = []
         self.test_predictions = []
         self.predict_predictions = []
-
-    def score(self, results: pd.DataFrame) -> pd.DataFrame:
-        scores = []
-        for species_name in results.species_name.unique():
-            y = results.loc[results.species_name == species_name, "label"].values
-            y_prob = results.loc[results.species_name == species_name, "prob"].values
-            if np.isnan(y_prob).any():
-                prop_nans = np.isnan(y_prob).sum() / len(y_prob)
-                log.warning(f"NaNs found in predicted probabilities for {species_name} with a proportional count of {prop_nans}")
-                y_prob = np.nan_to_num(y_prob, nan=0.0)
-            assert not np.isnan(y).any(), f"NaNs found in true labels for {species_name}"
-            scores.append(dict(
-                species_name=species_name,
-                AP=metrics.average_precision(y, y_prob),
-                auROC=sklearn.metrics.roc_auc_score(y, y_prob),
-            ))
-        return pd.DataFrame(data=scores).set_index("species_name")
 
     def on_train_batch_end(
         self,
@@ -177,7 +156,7 @@ class SpeciesScores(L.Callback):
         )
 
     def _on_epoch_end(self, results: List[pd.DataFrame], pl_module: L.LightningModule) -> pd.DataFrame:
-        df = self.score(results)
+        df = metrics.score(results)
         df1 = self._freq_df(pl_module)
         df = df.join(df1, on="species_name").reset_index()
         df = self._attach_hparams(df, pl_module.hparams)

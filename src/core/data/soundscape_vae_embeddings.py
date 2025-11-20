@@ -1,7 +1,6 @@
 import attrs
 import pathlib
 import lightning as L
-import logging
 import numpy as np
 import pandas as pd
 import sklearn
@@ -10,9 +9,6 @@ import torch
 from typing import Any, Dict, List, Tuple
 
 from src.core.utils import tree
-
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
 
 __all__ = [
     "SoundscapeVAEEmbeddings",
@@ -24,6 +20,7 @@ class SoundscapeVAEEmbeddings(torch.utils.data.Dataset):
     features: pd.DataFrame = attrs.field()
     labels: pd.DataFrame = attrs.field()
     index: List[int] = attrs.field()
+    audio_dir: str | None = None
 
     x: torch.Tensor = attrs.field(init=False)
     y: torch.Tensor = attrs.field(init=False)
@@ -39,10 +36,18 @@ class SoundscapeVAEEmbeddings(torch.utils.data.Dataset):
         self.y = torch.tensor(self.labels.values, dtype=torch.int64)
 
     @property
+    def target_names(self) -> List[str]:
+        return self.labels.columns.tolist()
+
+    @property
+    def target_counts(self) -> List[int]:
+        return self.labels.sum(axis=0).tolist()
+
+    @property
     def model_params(self):
         return dict(
-            target_names=self.labels.columns.tolist(),
-            target_counts=self.labels.sum(axis=0).tolist(),
+            target_names=self.target_names,
+            target_counts=self.target_counts,
         )
 
 @attrs.define(kw_only=True)
@@ -61,7 +66,6 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
     num_workers: int = attrs.field(default=0, validator=attrs.validators.instance_of(int))
     persist_workers: bool | None = attrs.field(default=None)
     pin_memory: bool = attrs.field(default=True, validator=attrs.validators.instance_of(bool))
-    drop_last: bool = attrs.field(default=False, validator=attrs.validators.instance_of(bool))
 
     generator: torch.Generator = attrs.field(init=False)
     fold_id: int = attrs.field(default=None)
@@ -104,11 +108,10 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
         return dict(
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            drop_last=self.drop_last,
             persistent_workers=self.persist_workers,
         )
 
-    def setup(self, stage: str) -> None:
+    def setup(self, stage: str | None = None) -> None:
         index = pd.read_parquet(self.root / "index.parquet")
         assert ((index["model_name"] == self.model) & (index["version"] == self.version) & (index["scope"] == self.scope)).any(), \
             f"Data does not exist for {self.model} {self.version} {self.scope}"

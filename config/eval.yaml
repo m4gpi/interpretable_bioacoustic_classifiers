@@ -1,0 +1,17 @@
+ # @package _global_
+ # order of defaults determines the order in which configs override each other
+defaults:
+  - data: null
+  - model: null
+  - callbacks: null
+  - logger: null
+  - trainer: null
+  - paths: default
+  - hydra: default
+  - _self_
+
+task_name: test
+tags: ["dev"]
+ckpt_path: null
+seed: null
+

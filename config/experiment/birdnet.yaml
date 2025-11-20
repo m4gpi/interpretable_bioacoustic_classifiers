@@ -1,0 +1,10 @@
+# @package _global_
+
+# python src/cli/eval.py +experiment=birdnet
+defaults:
+  - override /data: sounding_out_chorus
+  - override /model: null
+  - override /logger: null
+
+name: interpretable_bioacoustic_classifiers
+results_dir: ${paths.results_dir}/${name}

@@ -8,7 +8,7 @@ defaults:
   - override /logger: wandb
 
 name: interpretable_bioacoustic_classifiers
-results_dir: ${paths.results_dir}/${logger.wandb.project}/${name}
+results_dir: ${paths.results_dir}/${name}
 
 train: true
 test: true
@@ -35,7 +35,7 @@ callbacks:
     model: ${data.model}
     version: ${data.version}
     scope: ${data.scope}
-    save_dir: ${results_dir}/scores
+    save_dir: ${results_dir}
     run_id: ${run_id}
     fold_id: ${data.fold_id}
 
@@ -43,5 +43,5 @@ logger:
   wandb:
     id: ${run_id}
     resume: null
-    project: interpretable_bioacoustic_classifiers
+    project: ${name}
     group: ${data.scope}

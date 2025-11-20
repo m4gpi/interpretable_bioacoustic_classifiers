@@ -1,5 +1,10 @@
 import numpy as np
+import pandas as pd
+import sklearn
 import torch
+import warnings
+
+warnings.filterwarnings("ignore", category=sklearn.exceptions.UndefinedMetricWarning)
 
 from numpy.typing import NDArray
 from torch.nn import functional as F
@@ -81,3 +86,20 @@ def recall_at_k(
     # recall_at_k is the ratio of predicted positive classes in the top k to those actually in the top k
     recall = predicted_positive[mask] / actual_positive[mask]
     return recall.mean(axis=0)
+
+def score(results: pd.DataFrame) -> pd.DataFrame:
+    scores = []
+    for species_name in results.species_name.unique():
+        y = results.loc[results.species_name == species_name, "label"].values
+        y_prob = results.loc[results.species_name == species_name, "prob"].values
+        if np.isnan(y_prob).any():
+            prop_nans = np.isnan(y_prob).sum() / len(y_prob)
+            log.warning(f"NaNs found in predicted probabilities for {species_name} with a proportional count of {prop_nans}")
+            y_prob = np.nan_to_num(y_prob, nan=0.0)
+        assert not np.isnan(y).any(), f"NaNs found in true labels for {species_name}"
+        scores.append(dict(
+            species_name=species_name,
+            AP=average_precision(y, y_prob),
+            auROC=sklearn.metrics.roc_auc_score(y, y_prob),
+        ))
+    return pd.DataFrame(data=scores).set_index("species_name")
