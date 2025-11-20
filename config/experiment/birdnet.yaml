@@ -3,7 +3,7 @@
 # python src/cli/eval.py +experiment=birdnet
 defaults:
   - override /data: sounding_out_chorus
-  - override /model: null
+  - override /model: birdnet
   - override /logger: null
 
 name: interpretable_bioacoustic_classifiers

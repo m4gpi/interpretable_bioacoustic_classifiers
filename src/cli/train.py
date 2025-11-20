@@ -14,7 +14,6 @@ from typing import Any, List, Dict, Tuple
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
-from src.cli.utils import run_id
 from src.cli.utils.instantiators import instantiate_callbacks, instantiate_loggers
 
 logging.basicConfig(level=logging.INFO)
@@ -40,7 +39,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     model: L.LightningModule = hydra.utils.instantiate(cfg.model, **data_module.data.model_params)
 
     log.info("Instantiating callbacks...")
-    callbacks: List[Callback] = instantiate_callbacks(cfg.get("callbacks"))
+    callbacks: List[L.Callback] = instantiate_callbacks(cfg.get("callbacks"))
 
     log.info("Instantiating loggers...")
     loggers: List[Logger] = instantiate_loggers(cfg.get("logger"))
@@ -59,7 +58,11 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             })
 
     try:
-        model.run(trainer, cfg, data_module=data_module)
+        model.run(
+            trainer=trainer,
+            config=cfg,
+            data_module=data_module
+        )
     except Exception as e:
         log.error(e)
     finally:
