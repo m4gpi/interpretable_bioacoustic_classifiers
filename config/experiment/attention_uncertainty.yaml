@@ -6,15 +6,15 @@ defaults:
   - override /app: attention_uncertainty
 
 app:
-  audio_dir: /its/home/kag25/data/sounding_out
+  audio_dir: ${oc.env:HOME}/data/sounding_out
   model_class: src.core.models.species_detector.SpeciesDetector
   model_checkpoint_path: logs/train/runs/2025-11-11_10-25-55/checkpoints/epoch_999.ckpt
 
 data:
-  root: /its/home/kag25/projects/ecolistening/interpretable_bioacoustic_classifiers/data/soundscape_vae_embeddings
+  root: ${paths.data_dir}/soundscape_vae_embeddings
   model: smooth_nifti_vae
   version: v1
-  scope: SO/UK
+  scope: SO_UK
 
 transforms:
   spectrogram:

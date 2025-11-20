@@ -45,8 +45,8 @@ class SpeciesDetector(L.LightningModule):
     attn_dim: int | None = None
     attn_learning_rate: float | None = None
     attn_weight_decay: float | None = None
-    train_sample_size: int = 1
-    eval_sample_size: int = 1
+    train_sample_size: int | None = None
+    eval_sample_size: int | None = None
     key_per_target: bool = False
 
     training_method: str = "continuous"
@@ -77,17 +77,26 @@ class SpeciesDetector(L.LightningModule):
 
         # gated attention mechanism
         self.attention_V = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
+        # all layers initialized according to Glorot & Bengio (2010) and biases set to zero
+        torch.nn.init.xavier_uniform_(self.attention_V.weight)
+        torch.nn.init.zeros_(self.attention_V.bias)
         if self.key_per_target:
-            self.attention_U = torch.nn.ModuleDict({
-                target_name: torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
-                for target_name in self.target_names
-            })
+            self.attention_U = torch.nn.ModuleDict({})
+            for target_name in self.target_names:
+                layer = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
+                torch.nn.init.xavier_uniform_(layer.weight)
+                torch.nn.init.zeros_(layer.bias)
+                self.attention_U[target_name] = layer
         else:
             self.attention_U = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
-        self.attention_w = torch.nn.ModuleDict({
-            target_name: torch.nn.Linear(in_features=self.attn_dim, out_features=1)
-            for target_name in self.target_names
-        })
+            torch.nn.init.xavier_uniform_(self.attention_U.weight)
+            torch.nn.init.zeros_(self.attention_U.bias)
+        # no biases needed for attention weight layer
+        self.attention_w = torch.nn.ModuleDict({})
+        for target_name in self.target_names:
+            layer = torch.nn.Linear(in_features=self.attn_dim, out_features=1, bias=False)
+            torch.nn.init.xavier_uniform_(layer.weight)
+            self.attention_w[target_name] = layer
 
         # freeze the parameters since we're not applying attention mechanism at this time
         if self.pool_method not in [POOL.FEATURE_ATTN, POOL.PROB_ATTN]:
@@ -146,6 +155,7 @@ class SpeciesDetector(L.LightningModule):
         return list(range(3))
 
     def switch(self, stage: int):
+        # a basic state machine for transitioning between training phases
         log.info(f"Switching to stage {stage}")
         if stage == 0:
             self.pool_method = POOL.MEAN
@@ -252,19 +262,26 @@ class SpeciesDetector(L.LightningModule):
             l1_penalty_2=l1_2.detach().sum(),
         )
 
-    def model_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], num_samples: int = 1) -> Tuple[torch.Tensor, ...]:
-        q_z, y, s = batch
-        # unpack the variational posterior and sample
-        mean, log_var = q_z.chunk(2, dim=-1)
-        mean = mean.unsqueeze(1).expand(-1, num_samples, -1, -1)
-        log_var = log_var.unsqueeze(1).expand(-1, num_samples, -1, -1)
-        z = mean + torch.randn_like(mean) * (0.5 * log_var).exp()
+    def model_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], num_samples: int | None = None) -> Tuple[torch.Tensor, ...]:
+        # if a normal distribution over features is provided, sample N times
+        if num_samples is not None:
+            q, y, s = batch
+            mean, log_var = q.chunk(2, dim=-1)
+            mean = mean.unsqueeze(1).expand(-1, num_samples, -1, -1)
+            log_var = log_var.unsqueeze(1).expand(-1, num_samples, -1, -1)
+            x = mean + torch.randn_like(mean) * (0.5 * log_var).exp()
+        else:
+            x, y, s = batch
+
         # forward pass
-        y_probs, attn_w = self.forward(z)
+        y_probs, attn_w = self.forward(x)
+
         # take the mean over samples
-        y_probs = y_probs.mean(dim=1)
-        if attn_w is not None:
-            attn_w = attn_w.mean(dim=1)
+        if num_samples is not None:
+            y_probs = y_probs.mean(dim=1)
+            if attn_w is not None:
+                attn_w = attn_w.mean(dim=1)
+
         return y, y_probs, attn_w, s
 
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
@@ -294,7 +311,7 @@ class SpeciesDetector(L.LightningModule):
         params = []
         params.append({'params': self.classifiers.parameters(), 'lr': self.clf_learning_rate})
         attn_params = list(self.attention_V.parameters()) + list(self.attention_U.parameters()) + list(self.attention_w.parameters())
-        params.append({'params': attn_params, 'lr': self.attn_learning_rate})
+        params.append({'params': attn_params, 'lr': self.attn_learning_rate, "weight_decay": self.attn_weight_decay})
         return torch.optim.Adam(params)
 
     def _max_pool_weight_initialization(

@@ -66,7 +66,6 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
     generator: torch.Generator = attrs.field(init=False)
     fold_id: int = attrs.field(default=None)
     num_folds: int = attrs.field(default=None)
-    fold_seed: int = attrs.field(default=42)
 
     data: torch.utils.data.Dataset = attrs.field(init=False)
     train_data: torch.utils.data.Subset = attrs.field(init=False)
@@ -117,7 +116,7 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
         self._validate_features_and_labels_present(self.train_features_path, self.train_labels_path)
         self._validate_features_and_labels_present(self.test_features_path, self.test_labels_path)
 
-        # ensure train and test have the same set of labels
+        # align train and test label columns
         train_labels = pd.read_parquet(self.train_labels_path)
         test_labels = pd.read_parquet(self.test_labels_path)
         train_labels = train_labels.loc[:, train_labels.columns[train_labels.sum(axis=0) > self.min_train_label_count]]
@@ -134,18 +133,28 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
             index=test_labels.index.get_level_values(0),
         )
         if self.num_folds is not None and self.fold_id is not None:
-            folder = sklearn.model_selection.KFold(n_splits=self.num_folds, random_state=self.fold_seed, shuffle=True)
+            # same seed across runs ensures we get consistent splits
+            # allows for indexing splits by their fold_id
+            folder = sklearn.model_selection.KFold(n_splits=self.num_folds, random_state=self.seed, shuffle=True)
             folds = list(folder.split(range(len(self.data))))
             train_idx, val_idx = folds[self.fold_id]
-            self.train_data = torch.utils.data.Subset(self.data, train_idx)
-            self.val_data = torch.utils.data.Subset(self.data, val_idx)
         else:
-            self.generator = torch.Generator().manual_seed(self.seed)
-            self.train_data, self.val_data = torch.utils.data.random_split(
-                self.data,
-                (1 - self.val_prop, self.val_prop),
-                generator=self.generator,
+            train_idx, val_idx = sklearn.model_selection.train_test_split(
+                range(len(self.data)),
+                test_size=self.val_prop,
+                random_state=self.seed,
+                shuffle=True,
             )
+        self.train_data = SoundscapeVAEEmbeddings(
+            features=pd.read_parquet(self.train_features_path).iloc[train_idx],
+            labels=train_labels.iloc[train_idx][target_names],
+            index=train_labels.iloc[train_idx].index.get_level_values(0),
+        )
+        self.val_data = SoundscapeVAEEmbeddings(
+            features=pd.read_parquet(self.train_features_path).iloc[val_idx],
+            labels=train_labels.iloc[val_idx][target_names],
+            index=train_labels.iloc[val_idx].index.get_level_values(0),
+        )
         return self
 
     def train_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:

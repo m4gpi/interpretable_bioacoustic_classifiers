@@ -8,7 +8,7 @@ defaults:
   - override /logger: wandb
 
 name: interpretable_bioacoustic_classifiers
-results_dir: ${paths.results_dir}/${logger.wandb.project}/${name}/${data.scope}/${data.model}/${data.version}
+results_dir: ${paths.results_dir}/${logger.wandb.project}/${name}
 
 train: true
 test: true
@@ -18,11 +18,12 @@ data:
   root: ${paths.data_dir}/soundscape_vae_embeddings
 
 trainer:
+  max_epochs: 2000
   log_every_n_steps: 1
 
 callbacks:
   model_checkpoint:
-    dirpath: ${results_dir}/checkpoints
+    dirpath: ${results_dir}/checkpoints/${run_id}
     filename: epoch_{epoch:03d}
     monitor: val/loss
     mode: min
@@ -31,8 +32,12 @@ callbacks:
     save_last: True
   species_scores:
     _target_: src.core.callbacks.species_scores.SpeciesScores
+    model: ${data.model}
+    version: ${data.version}
+    scope: ${data.scope}
+    save_dir: ${results_dir}/scores
     run_id: ${run_id}
-    save_dir: ${results_dir}
+    fold_id: ${data.fold_id}
 
 logger:
   wandb:

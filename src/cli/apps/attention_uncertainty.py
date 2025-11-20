@@ -150,7 +150,13 @@ class App:
         ModelClass = getattr(importlib.import_module(module), class_name)
 
         log.info(f"Loading checkpoint <{self.model_checkpoint_path}>")
-        model = ModelClass.load_from_checkpoint(self.model_checkpoint_path)
+        import code; code.interact(local=locals())
+        # HACK:
+        checkpoint = torch.load(self.model_checkpoint_path)
+        del checkpoint["hyper_parameters"]["species_list_path"]
+        model = ModelClass(**{**checkpoint["hyper_parameters"], **data_module.data.model_params})
+        model.load_state_dict(checkpoint["state_dict"])
+        # model = ModelClass.load_from_checkpoint(self.model_checkpoint_path)
 
         transforms = instantiate_transforms(cfg.transforms)
         log_mel_spectrogram = transforms["spectrogram"]
