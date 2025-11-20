@@ -35,6 +35,7 @@ class SpeciesScores(L.Callback):
         self.save_dir.mkdir(exist_ok=True, parents=True)
         (self.save_dir / "val_scores.parquet").mkdir(exist_ok=True, parents=True)
         (self.save_dir / "test_scores.parquet").mkdir(exist_ok=True, parents=True)
+        (self.save_dir / "test_results.parquet").mkdir(exist_ok=True, parents=True)
         self.val_table = None
         self.train_predictions = []
         self.val_predictions = []
@@ -76,7 +77,8 @@ class SpeciesScores(L.Callback):
         pl_module: L.LightningModule,
     ) -> None:
         if len(self.train_predictions):
-            scores, results = self._on_epoch_end(self.train_predictions, pl_module)
+            results = pd.concat(self.train_predictions)
+            scores = self._on_epoch_end(results, pl_module)
             pl_module.log_dict({
                 f"train/{metric}": value
                 for metric, value in scores[["auROC", "AP"]].mean(axis=0).to_dict().items()
@@ -101,7 +103,8 @@ class SpeciesScores(L.Callback):
         pl_module: L.LightningModule,
     ) -> None:
         if len(self.val_predictions):
-            scores, results = self._on_epoch_end(self.val_predictions, pl_module)
+            results = pd.concat(self.val_predictions)
+            scores = self._on_epoch_end(results, pl_module)
             pl_module.log_dict({
                 f"val/{metric}": value
                 for metric, value in scores[["auROC", "AP"]].mean(axis=0).to_dict().items()
@@ -130,11 +133,13 @@ class SpeciesScores(L.Callback):
         pl_module: L.LightningModule,
     ) -> None:
         if len(self.test_predictions):
-            scores, results = self._on_epoch_end(self.test_predictions, pl_module)
+            results = pd.concat(self.test_predictions)
+            scores = self._on_epoch_end(results, pl_module)
             # if pl_module.logger is not None and hasattr(pl_module.logger, "experiment"):
                 # pl_module.logger.experiment.log({"test_scores": wandb.Table(dataframe=scores)})
             scores.to_parquet(self.save_dir / "test_scores.parquet" / f"run_id={self.run_id}.parquet")
             results.to_parquet(self.save_dir / "test_results.parquet" / f"run_id={self.run_id}.parquet")
+            # recall at k, proportion of species in the top K were predicted?
             print(scores.to_markdown())
             # log summary stats
             summary_stats = scores.groupby("run_id").agg(
@@ -143,6 +148,11 @@ class SpeciesScores(L.Callback):
                 AP_mean=("AP", "mean"),
                 AP_std=("AP", "std"),
             ).reset_index()
+            results_pivot = results.pivot(columns="species_name", index="file_i")
+            summary_stats["recall_at_k"] = metrics.recall_at_k(
+                results_pivot["label"].to_numpy(),
+                results_pivot["prob"].to_numpy(),
+            )
             summary_stats = self._attach_hparams(summary_stats, pl_module.hparams)
             # if pl_module.logger is not None and hasattr(pl_module.logger, "experiment") and callable(pl_module.logger.experiment.log):
                 # pl_module.logger.experiment.log({"test_scores_summary": wandb.Table(dataframe=summary_stats.T)})
@@ -167,12 +177,11 @@ class SpeciesScores(L.Callback):
         )
 
     def _on_epoch_end(self, results: List[pd.DataFrame], pl_module: L.LightningModule) -> pd.DataFrame:
-        results = pd.concat(results)
         df = self.score(results)
         df1 = self._freq_df(pl_module)
         df = df.join(df1, on="species_name").reset_index()
         df = self._attach_hparams(df, pl_module.hparams)
-        return df, results
+        return df
 
     def _update_table(self, table: wandb.Table, df: pd.DataFrame):
         if table is None:

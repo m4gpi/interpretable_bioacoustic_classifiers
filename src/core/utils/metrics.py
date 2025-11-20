@@ -51,3 +51,33 @@ def average_precision(
     mask = np.float32(np.sum(labels, axis=-1) != 0)
     raw_av_prec = np.sum(pr_curve * labels, axis=-1) / np.maximum(np.sum(labels, axis=-1), 1.0)
     return mask * raw_av_prec
+
+def recall_at_k(
+    labels: NDArray,
+    probs: NDArray
+) -> NDArray:
+    """
+    Recall at K treats a multi-label binary task as a multi-class task
+    Probabilities are ranked, accuracy calculated as the proportion of correct
+    classifications of all positive labels
+    """
+    N, M = labels.shape
+    # k is the total number of positives
+    actual_positive = labels.sum(axis=1)
+    # for each sample, assign a rank to probabilities in descending order
+    top_k_mask = np.zeros_like(probs, dtype=bool)
+    for i in range(N):
+        # sort probabilities in descending order
+        order = np.argsort(-probs[i], kind="mergesort")
+        # highest probabilites get the highest rank, highest starts at 1 and increments
+        rank = np.empty_like(probs[i], dtype=int)
+        rank[order] = np.arange(1, M + 1)
+        # fetch the top k classes
+        top_k_mask[i] = rank <= actual_positive[i]
+    # how many in the positive labels are also in the predicted top k?
+    predicted_positive = (top_k_mask & (labels == 1)).sum(axis=1)
+    # evaluate meaningful cases where there are actually positive labels, samples with zeros are omitted
+    mask = actual_positive != 0
+    # recall_at_k is the ratio of predicted positive classes in the top k to those actually in the top k
+    recall = predicted_positive[mask] / actual_positive[mask]
+    return recall.mean(axis=0)
