@@ -119,6 +119,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
         # reuse the seed from pre-training
         record = index[query].iloc[0]
         self.seed = record.seed
+        L.seed_everything(self.seed)
 
         self._validate_features_and_labels_present(self.train_features_path, self.train_labels_path)
         self._validate_features_and_labels_present(self.test_features_path, self.test_labels_path)
@@ -147,7 +148,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
             folder = sklearn.model_selection.KFold(
                 n_splits=self.num_folds,
                 random_state=self.seed,
-                shuffle=True
+                shuffle=True,
             )
             folds = list(folder.split(range(len(self.data))))
             train_idx, val_idx = folds[self.fold_id]
