@@ -10,6 +10,7 @@ defaults:
   - hydra: default
   - _self_
 
+gpus: [0, 1, 2, 3]
 task_name: train
 tags: ["dev"]
 train: True

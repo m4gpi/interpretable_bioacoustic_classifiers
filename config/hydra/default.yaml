@@ -17,3 +17,6 @@ job_logging:
   handlers:
     file:
       filename: ${hydra.runtime.output_dir}/${task_name}.log
+
+launcher:
+  class: launcher.joblib_gpu_launcher.JoblibGPULauncher
