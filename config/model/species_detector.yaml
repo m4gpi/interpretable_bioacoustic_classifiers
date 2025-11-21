@@ -12,7 +12,7 @@ attn_weight_decay:
 train_sample_size: 1
 eval_sample_size: 100
 key_per_target: false
-training_method:
+training_method: continuous
 mean_stage_epochs:
 attn_stage_epochs:
 final_stage_epochs:

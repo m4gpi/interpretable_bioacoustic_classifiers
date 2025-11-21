@@ -1,10 +1,20 @@
  # @package _global_
  # order of defaults determines the order in which configs override each other
 defaults:
-  - data: soundscape_vae_embeddings
-  - app: default
+  - data: soundscape_embeddings
+  - app: dashboard
   - hydra: default
   - paths: default
   - _self_
 
-task_name: app
+task_name: dashboard
+
+data:
+  root: ${paths.data_dir}/soundscape_vae_embeddings
+  model: smooth_nifti_vae
+  version: v1
+  scope: SO_UK
+
+transforms:
+  spectrogram:
+    _target_: src.core.utils.log_mel_spectrogram.LogMelSpectrogram

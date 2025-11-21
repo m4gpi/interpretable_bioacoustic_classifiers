@@ -1,0 +1,4 @@
+_target_: src.cli.apps.dashboard.App
+audio_dir: ${oc.env:HOME}/data/sounding_out
+model_class: src.core.models.species_detector.SpeciesDetector
+ckpt_path: 

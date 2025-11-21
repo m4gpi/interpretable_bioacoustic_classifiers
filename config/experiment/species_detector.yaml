@@ -2,13 +2,14 @@
 
 # python src/cli/train.py +experiment=species_detector
 defaults:
-  - override /data: soundscape_vae_embeddings
+  - override /data: soundscape_embeddings
   - override /model: species_detector
   - override /trainer: gpu
   - override /logger: wandb
 
-name: interpretable_bioacoustic_classifiers
-results_dir: ${paths.results_dir}/${name}
+project: species_cross_validation
+group: test
+results_dir: ${paths.results_dir}/${project}/${group}
 
 train: true
 test: true
@@ -43,5 +44,5 @@ logger:
   wandb:
     id: ${run_id}
     resume: null
-    project: ${name}
-    group: ${data.scope}
+    project: ${project}
+    group: ${group}

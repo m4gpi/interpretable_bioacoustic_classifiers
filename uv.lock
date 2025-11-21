@@ -304,7 +304,7 @@ wheels = [
 
 [[package]]
 name = "birdnet"
-version = "0.1.7"
+version = "0.1.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
@@ -316,9 +316,9 @@ dependencies = [
     { name = "tensorflow" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9e/8a/b93d2a49633273f7f6245aee782d6ad83cff7e942536cd53d3b147f224dd/birdnet-0.1.7.tar.gz", hash = "sha256:454035d87df58325e6288e92309d669edf4d8d5cfdbe0379f84e9cd86d600172", size = 66266986, upload-time = "2025-03-19T15:10:07.148Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3f/3e/8e33d32277bac94d5c98a49a018dd3ebcb356b8c8ed7aeca2519ad0659a5/birdnet-0.1.6.tar.gz", hash = "sha256:c8dac4ef3a186fc1dbbcbc5b248c018daf41d86974ac95706c7d561a08689718", size = 61622881, upload-time = "2024-09-04T14:54:01.339Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c9/47/3a67193d7b0f5ff6fcf851c70c5951be0dfd6069cde4641508f72e1c0f59/birdnet-0.1.7-py3-none-any.whl", hash = "sha256:a83a146fd0a57264276404d5d54f39275e6d894f34208999e8c50f35cc2d43e8", size = 23821, upload-time = "2025-03-19T15:10:02.507Z" },
+    { url = "https://files.pythonhosted.org/packages/72/03/d2e1db941d4df4cb975116be63999ef8c368bb25738807fe5152c9383741/birdnet-0.1.6-py3-none-any.whl", hash = "sha256:f3c0baaa6cf9b5db576ccc7f254c7ea790c5c1f76839502e0fd5c2837de9f991", size = 23529, upload-time = "2024-09-04T14:53:56.17Z" },
 ]
 
 [[package]]
@@ -1196,6 +1196,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "pyarrow" },
     { name = "python-dotenv" },
+    { name = "ranzen", extra = ["all"] },
     { name = "rootutils" },
     { name = "seaborn" },
     { name = "tabulate" },
@@ -1216,7 +1217,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anywidget", specifier = ">=0.9.13" },
-    { name = "birdnet", specifier = ">=0.1.6" },
+    { name = "birdnet", specifier = "==0.1.6" },
     { name = "cmasher", specifier = ">=1.9.2" },
     { name = "dash", specifier = ">=3.2.0" },
     { name = "dash-mantine-components", specifier = ">=2.4.0" },
@@ -1235,6 +1236,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.4.3" },
     { name = "pyarrow", specifier = ">=15.0.2" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
+    { name = "ranzen", extras = ["all"], specifier = ">=2.5.1,<3.0.0" },
     { name = "rootutils", specifier = "==1.0.7" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "tabulate", specifier = ">=0.9.0" },
@@ -1912,6 +1914,19 @@ wheels = [
 ]
 
 [[package]]
+name = "loguru"
+version = "0.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "win32-setctime", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/75/1f/d3818863e4be96bd641c4643c535a98f0fa2a12efa7c8ba35f763fa778ee/loguru-0.6.0.tar.gz", hash = "sha256:066bd06758d0a513e9836fd9c6b5a75bfb3fd36841f4b996bc60b547a309d41c", size = 123158, upload-time = "2022-01-29T13:47:31.879Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/21/e1d1da2586865a159fc73b611f36bdd50b6c4043cb6132d3d5e972988028/loguru-0.6.0-py3-none-any.whl", hash = "sha256:4e2414d534a2ab57573365b3e6d0234dfb1d84b68b7f3b948e6fb743860a77c3", size = 58317, upload-time = "2022-01-29T13:47:29.921Z" },
+]
+
+[[package]]
 name = "lxml"
 version = "6.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2270,6 +2285,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/6d/fd/91545e604bc3dad7dca9ed03284086039b294c6b3d75c0d2fa45f9e9caf3/nbformat-5.10.4.tar.gz", hash = "sha256:322168b14f937a5d11362988ecac2a4952d3d8e3a2cbeb2319584631226d5b3a", size = 142749, upload-time = "2024-04-04T11:20:37.371Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a9/82/0340caa499416c78e5d8f5f05947ae4bc3cba53c9f038ab6e9ed964e22f1/nbformat-5.10.4-py3-none-any.whl", hash = "sha256:3b48d6c8fbca4b299bf3982ea7db1af21580e4fec269ad087b9e81588891200b", size = 78454, upload-time = "2024-04-04T11:20:34.895Z" },
+]
+
+[[package]]
+name = "neoconfigen"
+version = "2.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "hydra-core" },
+    { name = "jinja2" },
+    { name = "markupsafe" },
+    { name = "typing-inspect" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/95/68/86eb74fd22ebc4e22bf647656918a7681a8ac71a4c55b84525eda781dd12/neoconfigen-2.5.0.tar.gz", hash = "sha256:90b82bfa8f157279732438cec5f1580d5c034a56e846245ae6fb12b0c0f90dfa", size = 8109, upload-time = "2024-03-11T13:04:14.873Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/97/b4/b6e96820f66a747f8c053893a6fcb0e7fb3d3c64a7bb92f6d8fa84c34f46/neoconfigen-2.5.0-py3-none-any.whl", hash = "sha256:36d7b87dbfe3405a82fe3a2c3f03d2f016cc04abfed764deb98aa047991f907a", size = 9456, upload-time = "2024-03-11T13:04:12.945Z" },
 ]
 
 [[package]]
@@ -3190,6 +3220,29 @@ wheels = [
 ]
 
 [[package]]
+name = "ranzen"
+version = "2.5.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7e/8b/c4780363283c1ad4b08948dc22a7081fa3362721a62e899f85d0fd8e566d/ranzen-2.5.1.tar.gz", hash = "sha256:6a9e21a44c9795000cc08cdf579968cf79a54b97824b2d5d9aca4ded986d2bdc", size = 48138, upload-time = "2024-03-23T17:00:40.428Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c0/2b/3b4940afb6349255f72dc5626bc3cf16eb9957038d8d0f7207915644648e/ranzen-2.5.1-py3-none-any.whl", hash = "sha256:5ec6b78aa8c7c8fffc4a3437bdb491ef0036ae5f5af089dd664d2000007e5e8a", size = 57340, upload-time = "2024-03-23T17:00:38.226Z" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "attrs" },
+    { name = "hydra-core" },
+    { name = "loguru" },
+    { name = "neoconfigen" },
+    { name = "pandas" },
+    { name = "wandb" },
+]
+
+[[package]]
 name = "referencing"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3962,6 +4015,19 @@ wheels = [
 ]
 
 [[package]]
+name = "typing-inspect"
+version = "0.7.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mypy-extensions" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c3/da/864ce66818e308b38209d4b1ef0585921d28eb07621ba7d905a0e96bcc80/typing_inspect-0.7.1.tar.gz", hash = "sha256:047d4097d9b17f46531bf6f014356111a1b6fb821a24fe7ac909853ca2a782aa", size = 11799, upload-time = "2021-06-07T16:12:11.264Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ad/fa/77565f652ce57ed56d3a63d537c885a18e4451cf2d56d944991aeb3c82bd/typing_inspect-0.7.1-py3-none-any.whl", hash = "sha256:3cd7d4563e997719a710a3bfe7ffb544c6b72069b6812a02e9b414a8fa3aaa6b", size = 8386, upload-time = "2021-06-07T16:12:10.151Z" },
+]
+
+[[package]]
 name = "typing-inspection"
 version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
@@ -4093,6 +4159,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/bd/f4/c67440c7fb409a71b7404b7aefcd7569a9c0d6bd071299bf4198ae7a5d95/widgetsnbextension-4.0.15.tar.gz", hash = "sha256:de8610639996f1567952d763a5a41af8af37f2575a41f9852a38f947eb82a3b9", size = 1097402, upload-time = "2025-11-01T21:15:55.178Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3f/0e/fa3b193432cfc60c93b42f3be03365f5f909d2b3ea410295cf36df739e31/widgetsnbextension-4.0.15-py3-none-any.whl", hash = "sha256:8156704e4346a571d9ce73b84bee86a29906c9abfd7223b7228a28899ccf3366", size = 2196503, upload-time = "2025-11-01T21:15:53.565Z" },
+]
+
+[[package]]
+name = "win32-setctime"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b3/8f/705086c9d734d3b663af0e9bb3d4de6578d08f46b1b101c2442fd9aecaa2/win32_setctime-1.2.0.tar.gz", hash = "sha256:ae1fdf948f5640aae05c511ade119313fb6a30d7eabe25fef9764dca5873c4c0", size = 4867, upload-time = "2024-12-07T15:28:28.314Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/07/c6fe3ad3e685340704d314d765b7912993bcb8dc198f0e7a89382d37974b/win32_setctime-1.2.0-py3-none-any.whl", hash = "sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390", size = 4083, upload-time = "2024-12-07T15:28:26.465Z" },
 ]
 
 [[package]]

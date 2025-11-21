@@ -1,4 +1,4 @@
-_target_: src.core.data.soundscape_vae_embeddings.SoundscapeVAEEmbeddingsDataModule
+_target_: src.core.data.soundscape_embeddings.SoundscapeEmbeddingsDataModule
 root:
 model:
 version:

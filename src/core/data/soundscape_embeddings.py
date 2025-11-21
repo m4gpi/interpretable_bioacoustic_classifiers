@@ -11,12 +11,12 @@ from typing import Any, Dict, List, Tuple
 from src.core.utils import tree
 
 __all__ = [
-    "SoundscapeVAEEmbeddings",
-    "SoundscapeVAEEmbeddingsDataModule",
+    "SoundscapeEmbeddings",
+    "SoundscapeEmbeddingsDataModule",
 ]
 
 @attrs.define(kw_only=True)
-class SoundscapeVAEEmbeddings(torch.utils.data.Dataset):
+class SoundscapeEmbeddings(torch.utils.data.Dataset):
     features: pd.DataFrame = attrs.field()
     labels: pd.DataFrame = attrs.field()
     index: List[int] = attrs.field()
@@ -51,7 +51,7 @@ class SoundscapeVAEEmbeddings(torch.utils.data.Dataset):
         )
 
 @attrs.define(kw_only=True)
-class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
+class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     root: str | pathlib.Path = attrs.field(converter=pathlib.Path)
     model: str = attrs.field(default=None)
     scope: str = attrs.field(default=None)
@@ -118,27 +118,33 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
 
         self._validate_features_and_labels_present(self.train_features_path, self.train_labels_path)
         self._validate_features_and_labels_present(self.test_features_path, self.test_labels_path)
-
+        # load features
+        train_features = pd.read_parquet(self.train_features_path)
+        test_features = pd.read_parquet(self.test_features_path)
         # align train and test label columns
         train_labels = pd.read_parquet(self.train_labels_path)
         test_labels = pd.read_parquet(self.test_labels_path)
         train_labels = train_labels.loc[:, train_labels.columns[train_labels.sum(axis=0) > self.min_train_label_count]]
         target_names = list(set(train_labels.columns).intersection(set(test_labels.columns)))
 
-        self.data = SoundscapeVAEEmbeddings(
-            features=pd.read_parquet(self.train_features_path),
+        self.data = SoundscapeEmbeddings(
+            features=train_features,
             labels=train_labels[target_names],
             index=train_labels.index.get_level_values(0),
         )
-        self.test_data = SoundscapeVAEEmbeddings(
-            features=pd.read_parquet(self.test_features_path),
+        self.test_data = SoundscapeEmbeddings(
+            features=test_features,
             labels=test_labels[target_names],
             index=test_labels.index.get_level_values(0),
         )
         if self.num_folds is not None and self.fold_id is not None:
             # same seed across runs ensures we get consistent splits
             # allows for indexing splits by their fold_id
-            folder = sklearn.model_selection.KFold(n_splits=self.num_folds, random_state=self.seed, shuffle=True)
+            folder = sklearn.model_selection.KFold(
+                n_splits=self.num_folds,
+                random_state=self.seed,
+                shuffle=True
+            )
             folds = list(folder.split(range(len(self.data))))
             train_idx, val_idx = folds[self.fold_id]
         else:
@@ -148,15 +154,16 @@ class SoundscapeVAEEmbeddingsDataModule(L.LightningDataModule):
                 random_state=self.seed,
                 shuffle=True,
             )
-        self.train_data = SoundscapeVAEEmbeddings(
-            features=pd.read_parquet(self.train_features_path).iloc[train_idx],
-            labels=train_labels.iloc[train_idx][target_names],
-            index=train_labels.iloc[train_idx].index.get_level_values(0),
+        index = train_features.index.get_level_values("file_i").unique()
+        self.train_data = SoundscapeEmbeddings(
+            features=train_features.loc[index[train_idx]],
+            labels=train_labels.loc[index[train_idx], target_names],
+            index=index[train_idx],
         )
-        self.val_data = SoundscapeVAEEmbeddings(
-            features=pd.read_parquet(self.train_features_path).iloc[val_idx],
-            labels=train_labels.iloc[val_idx][target_names],
-            index=train_labels.iloc[val_idx].index.get_level_values(0),
+        self.val_data = SoundscapeEmbeddings(
+            features=train_features.loc[index[val_idx]],
+            labels=train_labels.loc[index[val_idx], target_names],
+            index=index[val_idx],
         )
         return self
 

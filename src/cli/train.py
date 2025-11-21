@@ -50,7 +50,6 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if loggers:
         for logger in loggers:
             logger.log_hyperparams({
-                "name": cfg.get("name"),
                 "data": dict(cfg.data),
                 "model": dict(cfg.model),
                 "logger": dict(cfg.logger),

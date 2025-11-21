@@ -34,8 +34,6 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-from src.core.data.soundscape_vae_embeddings import SoundscapeVAEEmbeddingsDataModule
-from src.core.models.species_detector import SpeciesDetector
 from src.core.utils.log_mel_spectrogram import LogMelSpectrogram
 from src.core.utils import metrics
 from src.cli.utils.instantiators import instantiate_transforms
@@ -136,8 +134,8 @@ def encode(
 
 @attrs.define()
 class App:
-    audio_dir: pathlib.Path = attrs.field(converter=lambda p: pathlib.Path(p).expanduser(), validator=attrs.validators.instance_of(pathlib.Path))
-    model_checkpoint_path: pathlib.Path = attrs.field(converter=lambda p: pathlib.Path(p).expanduser(), validator=attrs.validators.instance_of(pathlib.Path))
+    audio_dir: pathlib.Path = attrs.field(converter=lambda p: pathlib.Path(p).expanduser(), validator=lambda *_, p: p.exists())
+    ckpt_path: pathlib.Path = attrs.field(converter=lambda p: pathlib.Path(p).expanduser(), validator=lambda *_, p: p.exists())
     model_class: str = attrs.field(default=None, validator=attrs.validators.instance_of(str))
 
     def setup(self, cfg: DictConfig) -> dash.Dash:
@@ -150,7 +148,6 @@ class App:
         ModelClass = getattr(importlib.import_module(module), class_name)
 
         log.info(f"Loading checkpoint <{self.model_checkpoint_path}>")
-        import code; code.interact(local=locals())
         # HACK:
         checkpoint = torch.load(self.model_checkpoint_path)
         del checkpoint["hyper_parameters"]["species_list_path"]
