@@ -48,6 +48,7 @@ class SpeciesDetector(L.LightningModule):
     train_sample_size: int | None = None
     eval_sample_size: int | None = None
     key_per_target: bool = False
+    seed: int | None = None
 
     training_method: str = "continuous"
     mean_stage_epochs: int | None = None
@@ -68,13 +69,14 @@ class SpeciesDetector(L.LightningModule):
             self.pool_method = POOL(self.pool_method)
         # class-balancing hyperparameter
         self.beta = torch.nn.Parameter(torch.tensor(self.beta, dtype=torch.float32), requires_grad=False)
-
+        # ensure initialisation and sampling proceed deterministically according to pre-training
+        if self.seed is not None:
+            torch.manual_seed(self.seed)
         # classifiers
         self.classifiers = torch.nn.ModuleDict({
             target_name: torch.nn.Linear(in_features=self.in_features, out_features=1, bias=True)
             for target_name in self.target_names
         })
-
         # gated attention mechanism
         self.attention_V = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
         # all layers initialized according to Glorot & Bengio (2010) and biases set to zero
@@ -97,7 +99,6 @@ class SpeciesDetector(L.LightningModule):
             layer = torch.nn.Linear(in_features=self.attn_dim, out_features=1, bias=False)
             torch.nn.init.xavier_uniform_(layer.weight)
             self.attention_w[target_name] = layer
-
         # freeze the parameters since we're not applying attention mechanism at this time
         if self.pool_method not in [POOL.FEATURE_ATTN, POOL.PROB_ATTN]:
             for param_group in [self.attention_V, self.attention_U, self.attention_w]:
@@ -311,7 +312,8 @@ class SpeciesDetector(L.LightningModule):
         params = []
         params.append({'params': self.classifiers.parameters(), 'lr': self.clf_learning_rate})
         attn_params = list(self.attention_V.parameters()) + list(self.attention_U.parameters()) + list(self.attention_w.parameters())
-        params.append({'params': attn_params, 'lr': self.attn_learning_rate, "weight_decay": self.attn_weight_decay})
+        if self.pool_method in [POOL.PROB_ATTN, POOL.FEATURE_ATTN]:
+            params.append({'params': attn_params, 'lr': self.attn_learning_rate, "weight_decay": self.attn_weight_decay})
         return torch.optim.Adam(params)
 
     def _max_pool_weight_initialization(

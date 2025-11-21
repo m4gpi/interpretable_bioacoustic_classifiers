@@ -13,7 +13,6 @@ results_dir: ${paths.results_dir}/${project}/${group}
 
 train: true
 test: true
-seed: 42
 
 data:
   root: ${paths.data_dir}/soundscape_vae_embeddings

@@ -20,7 +20,7 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
     features: pd.DataFrame = attrs.field()
     labels: pd.DataFrame = attrs.field()
     index: List[int] = attrs.field()
-    audio_dir: str | None = None
+    seed: int = attrs.field(default=None)
 
     x: torch.Tensor = attrs.field(init=False)
     y: torch.Tensor = attrs.field(init=False)
@@ -48,6 +48,7 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
         return dict(
             target_names=self.target_names,
             target_counts=self.target_counts,
+            seed=self.seed,
         )
 
 @attrs.define(kw_only=True)
@@ -62,7 +63,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     val_prop: float = attrs.field(default=0.0, validator=attrs.validators.instance_of(float))
     min_train_label_count: int = attrs.field(default=10, validator=attrs.validators.instance_of(int))
 
-    seed: int = attrs.field(default=8, validator=attrs.validators.instance_of(int))
+    seed: int = attrs.field(default=None, validator=attrs.validators.instance_of(int))
     num_workers: int = attrs.field(default=0, validator=attrs.validators.instance_of(int))
     persist_workers: bool | None = attrs.field(default=None)
     pin_memory: bool = attrs.field(default=True, validator=attrs.validators.instance_of(bool))
@@ -113,8 +114,11 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
 
     def setup(self, stage: str | None = None) -> None:
         index = pd.read_parquet(self.root / "index.parquet")
-        assert ((index["model_name"] == self.model) & (index["version"] == self.version) & (index["scope"] == self.scope)).any(), \
-            f"Data does not exist for {self.model} {self.version} {self.scope}"
+        query = (index["model_name"] == self.model) & (index["version"] == self.version) & (index["scope"] == self.scope)
+        assert query.any(), f"Data does not exist for {self.model} {self.version} {self.scope}"
+        # reuse the seed from pre-training
+        record = index[query].iloc[0]
+        self.seed = record.seed
 
         self._validate_features_and_labels_present(self.train_features_path, self.train_labels_path)
         self._validate_features_and_labels_present(self.test_features_path, self.test_labels_path)
@@ -159,11 +163,13 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
             features=train_features.loc[index[train_idx]],
             labels=train_labels.loc[index[train_idx], target_names],
             index=index[train_idx],
+            seed=self.seed,
         )
         self.val_data = SoundscapeEmbeddings(
             features=train_features.loc[index[val_idx]],
             labels=train_labels.loc[index[val_idx], target_names],
             index=index[val_idx],
+            seed=self.seed,
         )
         return self
 
