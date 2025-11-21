@@ -63,7 +63,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     val_prop: float = attrs.field(default=0.0, validator=attrs.validators.instance_of(float))
     min_train_label_count: int = attrs.field(default=10, validator=attrs.validators.instance_of(int))
 
-    seed: int = attrs.field(default=None, validator=attrs.validators.instance_of(int))
+    seed: int = attrs.field(default=None)
     num_workers: int = attrs.field(default=0, validator=attrs.validators.instance_of(int))
     persist_workers: bool | None = attrs.field(default=None)
     pin_memory: bool = attrs.field(default=True, validator=attrs.validators.instance_of(bool))
