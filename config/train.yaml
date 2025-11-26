@@ -1,7 +1,7 @@
  # @package _global_
  # order of defaults determines the order in which configs override each other
 defaults:
-  - data: soundscape_vae_embeddings
+  - data: soundscape_embeddings
   - model: species_detector
   - callbacks: default
   - logger: null

@@ -78,32 +78,33 @@ class SpeciesDetector(L.LightningModule):
             for target_name in self.target_names
         })
         # gated attention mechanism
-        self.attention_V = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
-        # all layers initialized according to Glorot & Bengio (2010) and biases set to zero
-        torch.nn.init.xavier_uniform_(self.attention_V.weight)
-        torch.nn.init.zeros_(self.attention_V.bias)
-        if self.key_per_target:
-            self.attention_U = torch.nn.ModuleDict({})
+        if self.attn_dim is not None:
+            self.attention_V = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
+            # all layers initialized according to Glorot & Bengio (2010) and biases set to zero
+            torch.nn.init.xavier_uniform_(self.attention_V.weight)
+            torch.nn.init.zeros_(self.attention_V.bias)
+            if self.key_per_target:
+                self.attention_U = torch.nn.ModuleDict({})
+                for target_name in self.target_names:
+                    layer = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
+                    torch.nn.init.xavier_uniform_(layer.weight)
+                    torch.nn.init.zeros_(layer.bias)
+                    self.attention_U[target_name] = layer
+            else:
+                self.attention_U = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
+                torch.nn.init.xavier_uniform_(self.attention_U.weight)
+                torch.nn.init.zeros_(self.attention_U.bias)
+            # no biases needed for attention weight layer
+            self.attention_w = torch.nn.ModuleDict({})
             for target_name in self.target_names:
-                layer = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
+                layer = torch.nn.Linear(in_features=self.attn_dim, out_features=1, bias=False)
                 torch.nn.init.xavier_uniform_(layer.weight)
-                torch.nn.init.zeros_(layer.bias)
-                self.attention_U[target_name] = layer
-        else:
-            self.attention_U = torch.nn.Linear(in_features=self.in_features, out_features=self.attn_dim)
-            torch.nn.init.xavier_uniform_(self.attention_U.weight)
-            torch.nn.init.zeros_(self.attention_U.bias)
-        # no biases needed for attention weight layer
-        self.attention_w = torch.nn.ModuleDict({})
-        for target_name in self.target_names:
-            layer = torch.nn.Linear(in_features=self.attn_dim, out_features=1, bias=False)
-            torch.nn.init.xavier_uniform_(layer.weight)
-            self.attention_w[target_name] = layer
-        # freeze the parameters since we're not applying attention mechanism at this time
-        if self.pool_method not in [POOL.FEATURE_ATTN, POOL.PROB_ATTN]:
-            for param_group in [self.attention_V, self.attention_U, self.attention_w]:
-                for param in param_group.parameters():
-                    param.requires_grad = False
+                self.attention_w[target_name] = layer
+            # freeze the parameters since we're not applying attention mechanism at this time
+            if self.pool_method not in [POOL.FEATURE_ATTN, POOL.PROB_ATTN]:
+                for param_group in [self.attention_V, self.attention_U, self.attention_w]:
+                    for param in param_group.parameters():
+                        param.requires_grad = False
 
     def run(
         self,
@@ -311,8 +312,8 @@ class SpeciesDetector(L.LightningModule):
     def configure_optimizers(self) -> torch.optim.Optimizer:
         params = []
         params.append({'params': self.classifiers.parameters(), 'lr': self.clf_learning_rate})
-        attn_params = list(self.attention_V.parameters()) + list(self.attention_U.parameters()) + list(self.attention_w.parameters())
-        if self.pool_method in [POOL.PROB_ATTN, POOL.FEATURE_ATTN]:
+        if self.attn_dim is not None:
+            attn_params = list(self.attention_V.parameters()) + list(self.attention_U.parameters()) + list(self.attention_w.parameters())
             params.append({'params': attn_params, 'lr': self.attn_learning_rate, "weight_decay": self.attn_weight_decay})
         return torch.optim.Adam(params)
 
