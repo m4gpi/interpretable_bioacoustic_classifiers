@@ -91,11 +91,17 @@ class LogMelSpectrogram(object):
         self.griffin_lim_momentum = griffin_lim_momentum
         self.mel_filterbank_norm = mel_filterbank_norm
 
-    def forward(self, wav: Tensor) -> Tensor:
+    def forward(self, wav: NDArray | Tensor) -> Tensor:
+        return_type = type(wav)
+        if return_type == Tensor:
+            device = wav.device
+            wav = wav.numpy()
         spec = librosa.stft(wav.squeeze(), **self.fft_params)
         spec, phase = librosa.magphase(spec, power=1)
         mel = (spec.T @ self.mel_filterbanks.T).T
         log_mel = np.log(np.maximum(1e-6, mel))
+        if return_type == Tensor:
+            return torch.as_tensor(log_mel.T, device=device, dtype=torch.float32).unsqueeze(0)
         return log_mel
 
     def backward(self, log_mel: Tensor) -> Tensor:
