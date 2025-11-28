@@ -19,8 +19,10 @@ def main(cfg: DictConfig):
 
     log.info(f"Instantiating app <{cfg.app._target_}>")
     app = hydra.utils.instantiate(cfg.app)
-    log.info(f"Starting app <{cfg.app._target_}>")
-    app.setup(cfg).run(debug=True)
+    log.info(f"Bulding...")
+    app = app.setup(cfg)
+    log.info(f"Starting server!")
+    app.run(port=cfg.get("port"), debug=cfg.get("debug"))
 
 if __name__ == '__main__':
     main()

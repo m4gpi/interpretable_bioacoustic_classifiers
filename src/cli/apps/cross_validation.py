@@ -1,0 +1,312 @@
+import attrs
+import dash
+import dash_mantine_components as dmc
+import logging
+import pandas as pd
+import pathlib
+import pyarrow.dataset as ds
+import pyarrow as pa
+import rootutils
+import tqdm
+
+from dash import Dash, dcc, ctx, html
+from dash import Output, Input, State, callback, no_update
+from matplotlib import colors as mcolors
+from omegaconf import DictConfig
+from plotly import express as px
+from plotly import graph_objects as go
+
+from typing import List
+
+rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+__all__ = ["App"]
+
+schema = pa.schema({
+    'species_name': pa.string(),
+    'AP': pa.float64(),
+    'auROC': pa.float64(),
+    'train_label_counts': pa.int64(),
+    'run_id': pa.string(),
+    'model': pa.string(),
+    'version': pa.string(),
+    'scope': pa.string(),
+    'fold_id': pa.int64(),
+    'in_features': pa.int64(),
+    'l1_penalty': pa.float64(),
+    'beta': pa.float64(),
+    'clf_learning_rate': pa.float64(),
+    'penalty_multiplier': pa.float64(),
+    'label_smoothing': pa.float64(),
+    'pool_method': pa.string(),
+    'attn_dim': pa.int64(),
+    'attn_learning_rate': pa.float64(),
+    'attn_weight_decay': pa.float64(),
+    'train_sample_size': pa.int64(),
+    'eval_sample_size': pa.int64(),
+    'key_per_target': pa.bool8(),
+    'seed': pa.int64(),
+    'training_method': pa.string(),
+    'mean_stage_epochs': pa.int64(),
+    'attn_stage_epochs': pa.int64(),
+    'final_stage_epochs': pa.int64(),
+    'epoch': pa.int64(),
+})
+
+def empty_figure():
+    fig = go.Figure()
+    fig.add_annotation(
+        text="No data available",
+        xref="paper", yref="paper",
+        x=0.5, y=0.5, showarrow=False,
+        font=dict(size=20, color="gray")
+    )
+    fig.update_layout(
+        xaxis={'visible': False},
+        yaxis={'visible': False},
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        margin=dict(t=0, b=0, l=0, r=0),
+    )
+    return fig
+
+@attrs.define()
+class App:
+    results_dir: pathlib.Path = attrs.field(converter=lambda p: pathlib.Path(p).expanduser())
+
+    def setup(self, cfg: DictConfig) -> dash.Dash:
+        val_df = []
+        log.info("Loading validation scores")
+        val_df = ds.dataset(self.results_dir / "val_scores.parquet", format="parquet", schema=schema).to_table().to_pandas()
+        # drop rows where key_per_target == False
+        hyperparams = []
+        val_df = val_df[((val_df["pool_method"] == "prob_attn") & (val_df["key_per_target"] == True)) | (val_df.pool_method.isin(["mean", "max"]))]
+        # first, across all model types, pick the epoch with the best model-class cross-fold score
+        log.info("Selecting the best epoch across model-class cross-fold")
+        kfolds_df = val_df.groupby(["model", "version", "scope", "pool_method", "clf_learning_rate", "attn_learning_rate", "l1_penalty", "attn_weight_decay", "epoch"], dropna=False)[["auROC", "AP"]].mean().reset_index()
+        model_df = kfolds_df.groupby(["model", "scope", "pool_method", "clf_learning_rate", "attn_learning_rate", "l1_penalty", "attn_weight_decay", "epoch"], dropna=False)[["auROC", "AP"]].mean().reset_index()
+        model_df["score"] = model_df["auROC"] + model_df["AP"] # sum the mAUROC and mAP as a simple heuristic to pick the best
+        best_epoch_df = model_df.iloc[model_df.groupby(["model", "scope", "pool_method", "clf_learning_rate", "attn_learning_rate", "l1_penalty", "attn_weight_decay"], dropna=False)["score"].idxmax()]
+        val_df = val_df.merge(
+            best_epoch_df[["model", "scope", "pool_method", "clf_learning_rate", "attn_learning_rate", "l1_penalty", "attn_weight_decay", "epoch"]],
+            on=["model", "scope", "pool_method", "clf_learning_rate", "attn_learning_rate", "l1_penalty", "attn_weight_decay", "epoch"],
+            how="inner"
+        )
+        # second, for prob_attn models select across clf_learning_rate and l1_penalty those that have the best model-class cross-fold score
+        # we should end up with the same number of attention results as max and mean
+        log.info("Selecting the best parameters from prob attention across model-class cross-fold to compare with max/mean")
+        attn_df = val_df[val_df["pool_method"] == "prob_attn"]
+        attn_kfolds_df = attn_df.groupby(["model", "version", "scope", "pool_method", "clf_learning_rate", "attn_learning_rate", "l1_penalty", "attn_weight_decay", "epoch"], dropna=False)[["auROC", "AP"]].mean().reset_index()
+        attn_model_df = attn_kfolds_df.groupby(["model", "scope", "pool_method", "clf_learning_rate", "attn_learning_rate", "l1_penalty", "attn_weight_decay", "epoch"], dropna=False)[["auROC", "AP"]].mean().reset_index()
+        attn_model_df["score"] = attn_model_df["auROC"] + attn_model_df["AP"] # sum the mAUROC and mAP as a simple heuristic to pick the best
+        best_attn_params_df = attn_model_df.iloc[attn_model_df.groupby(["model", "scope", "pool_method", "clf_learning_rate", "l1_penalty"])["score"].idxmax()]
+        # recombine results with max and mean
+        df = pd.concat([
+            attn_df.merge(
+                best_attn_params_df[["model", "scope", "pool_method", "clf_learning_rate", "attn_learning_rate", "l1_penalty", "attn_weight_decay", "epoch"]],
+                on=["model", "scope", "pool_method", "clf_learning_rate", "attn_learning_rate", "l1_penalty", "attn_weight_decay",  "epoch"],
+                how="inner"
+            ),
+            val_df[val_df.pool_method.isin(["max", "mean"])],
+        ], axis=0)
+        # factorise by shared hyperparameters, ignoring epoch and attention parameters because we've already sub-selected
+        column, groups = pd.factorize(df[["model", "scope", "clf_learning_rate", "l1_penalty"]].apply(tuple, axis=1))
+        df["parameter_group"] = column.astype(str)
+        # display a summary table
+        summary_df = df.groupby(["model", "scope", "pool_method", "clf_learning_rate", "attn_learning_rate", "l1_penalty", "attn_weight_decay", "epoch", "parameter_group"], dropna=False)[["auROC", "AP"]].mean().reset_index()
+        summary_df["score"] = summary_df["AP"] + summary_df["auROC"]
+        summary_df = summary_df.sort_values(by="score", ascending=False)
+        summary_df["auROC"] = summary_df["auROC"].round(4)
+        summary_df["AP"] = summary_df["AP"].round(4)
+        summary_df["score"] = summary_df["score"].round(4)
+
+        height = 400
+
+        app = dash.Dash(__name__)
+
+        def Table(data: pd.DataFrame, caption: str = "") -> dmc.Table:
+            return dmc.Table(
+                layout="fixed",
+                style={"width": "100%"},
+                children=[
+                    dmc.TableThead(
+                        dmc.TableTr([
+                            dmc.TableTh(col)
+                            for col in data.columns
+                        ])
+                    ),
+                    dmc.TableTbody([
+                        dmc.TableTr([
+                            dmc.TableTd(record[col])
+                            for col in data.columns
+                        ])
+                        for record in data.to_dict(orient="records")
+                    ]),
+                    dmc.TableCaption(caption)
+                ]
+            )
+
+        app.layout = dmc.MantineProvider(
+            children=dmc.AppShell([
+                dmc.Title("Cross Validation Scores", ta="center"),
+                dmc.Group(
+                    grow=True,
+                    children=[
+                        dmc.Box([
+                            dmc.Text("Select a dataset"),
+                            dmc.Select(
+                                id="dataset-select",
+                                data=df.scope.unique(),
+                            ),
+                        ]),
+                        dmc.Box([
+                            dmc.Text("Select a model"),
+                            dmc.Select(
+                                id="model-select",
+                            ),
+                        ]),
+                        dmc.Box([
+                            dmc.Chip(
+                                id="show-points",
+                                children="Show Points"
+                            ),
+                        ]),
+                        dmc.Button(
+                            id="render-button",
+                            children="Render",
+                        ),
+                    ]
+                ),
+                dmc.Group(
+                    grow=True,
+                    children=[
+                        dcc.Loading(
+                            dmc.Box(id="summary-table"),
+                        ),
+                    ],
+                ),
+                dmc.Group(
+                    grow=True,
+                    children=[
+                        dcc.Loading(
+                            dcc.Graph(id="average-precision-graph", figure=empty_figure())
+                        ),
+                    ]
+                ),
+                dmc.Group(
+                    grow=True,
+                    children=[
+                        dcc.Loading(
+                            dcc.Graph(id="roc-auc-graph", figure=empty_figure())
+                        ),
+                    ]
+                ),
+            ])
+        )
+
+        @app.callback(
+            Output("model-select", "data"),
+            Input("dataset-select", "value"),
+        )
+        def set_model_select(scope: str) -> List[str]:
+            return df.loc[df["scope"] == scope, "model"].unique()
+
+        @app.callback(
+            Output("summary-table", "children"),
+            State("dataset-select", "value"),
+            State("model-select", "value"),
+            Input("render-button", "n_clicks"),
+            prevent_initial_call=True,
+        )
+        def show_summary(
+            scope: str,
+            model: str,
+            n_clicks: int,
+        ) -> dmc.Table:
+            return Table(summary_df.iloc[:10], caption="Best model parameters using 5-folds cross validation across 3 random seeds")
+
+        @app.callback(
+            Output("average-precision-graph", "figure"),
+            State("dataset-select", "value"),
+            State("model-select", "value"),
+            Input("render-button", "n_clicks"),
+            Input("show-points", "checked"),
+            prevent_initial_call=True,
+        )
+        def plot_average_precision_scores(
+            scope: str,
+            model: str,
+            n_clicks: int,
+            show_points: bool,
+        ) -> go.Figure:
+            log.info("plotting AP")
+            params = dict(
+                x="parameter_group",
+                y="AP",
+                color="pool_method",
+                hover_data=[
+                    "species_name",
+                    "AP",
+                    "auROC",
+                    "clf_learning_rate",
+                    "attn_learning_rate",
+                    "l1_penalty",
+                    "attn_weight_decay",
+                    "epoch",
+                    "fold_id",
+                    "parameter_group",
+                ],
+                category_orders=dict(
+                    parameter_group=summary_df.parameter_group.tolist(),
+                ),
+            )
+            if show_points:
+                fig = px.strip(df, **params)
+            else:
+                fig = px.violin(df, **params, box=True)
+                fig.update_traces(meanline_visible=True)
+            fig.update_layout(height=height, title_text="Average Precision (AP)")
+            return fig
+
+        @app.callback(
+            Output("roc-auc-graph", "figure"),
+            State("dataset-select", "value"),
+            State("model-select", "value"),
+            Input("render-button", "n_clicks"),
+            Input("show-points", "checked"),
+            prevent_initial_call=True,
+        )
+        def plot_roc_auc_scores(
+            model: str,
+            scope: str,
+            n_clicks: int,
+            show_points: bool,
+        ) -> go.Figure:
+            log.info("plotting ROC AUC")
+            params = dict(
+                x="parameter_group",
+                y="auROC",
+                color="pool_method",
+                hover_data=[
+                    *hyperparams,
+                    "epoch",
+                    "species_name",
+                    "AP",
+                    "auROC",
+                    "fold_id",
+                ],
+                category_orders=dict(
+                    parameter_group=summary_df.parameter_group.tolist(),
+                ),
+            )
+            if show_points:
+                fig = px.strip(df, **params)
+            else:
+                fig = px.violin(df, **params, box=True)
+                fig.update_traces(meanline_visible=True)
+            fig.update_layout(height=height, title_text="ROC AUC")
+            return fig
+
+        return app

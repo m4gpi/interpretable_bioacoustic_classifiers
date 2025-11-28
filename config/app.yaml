@@ -7,7 +7,9 @@ defaults:
   - paths: default
   - _self_
 
+debug: true
 task_name: dashboard
+port: 8055
 
 data:
   root: ${paths.data_dir}/soundscape_vae_embeddings
