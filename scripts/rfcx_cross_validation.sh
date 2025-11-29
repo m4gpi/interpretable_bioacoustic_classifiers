@@ -1,0 +1,385 @@
+#!/bin/bash
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[1]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=smooth_nifti_vae \
+   data.version=v3 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.penalty_multiplier=2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_smooth_nifti
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[2]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=smooth_nifti_vae \
+   data.version=v3 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.penalty_multiplier=2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_smooth_nifti
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[7]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=smooth_nifti_vae \
+   data.version=v4 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.penalty_multiplier=2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_smooth_nifti
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[5]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=smooth_nifti_vae \
+   data.version=v4 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.penalty_multiplier=2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_smooth_nifti
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[1]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=smooth_nifti_vae \
+   data.version=v3 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.penalty_multiplier=2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_smooth_nifti
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[?]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=smooth_nifti_vae \
+   data.version=v5 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.penalty_multiplier=2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_smooth_nifti
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[3]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=base_vae \
+   data.version=v7 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_base
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[4]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=base_vae \
+   data.version=v7 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_base
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[3]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=base_vae \
+   data.version=v8 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_base
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[?]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=base_vae \
+   data.version=v8 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_base
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[3]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=base_vae \
+   data.version=v9 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_base
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=8 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[?]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=base_vae \
+   data.version=v9 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_base
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[1]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=nifti_vae \
+   data.version=v14 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_nifti
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[?]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=nifti_vae \
+   data.version=v14 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_nifti
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[?]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=nifti_vae \
+   data.version=v15 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_nifti
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[?]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=nifti_vae \
+   data.version=v15 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_nifti
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[?]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=nifti_vae \
+   data.version=v16 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_nifti
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=4 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[?]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=nifti_vae \
+   data.version=v16 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=RFCX_bird,RFCX_frog \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/rfcx_nifti

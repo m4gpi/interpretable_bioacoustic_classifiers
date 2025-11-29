@@ -1,0 +1,386 @@
+#!/bin/bash
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[2]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=smooth_nifti_vae \
+   data.version=v0 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.penalty_multiplier=2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_smooth_nifti_v0
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[0]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=smooth_nifti_vae \
+   data.version=v1 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.attn_dim=10 \
+   model.penalty_multiplier=2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_smooth_nifti_v1
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[0]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=smooth_nifti_vae \
+   data.version=v2 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.penalty_multiplier=2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_smooth_nifti_v2
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[3]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=base_vae \
+   data.version=v4 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_base_v4
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[4]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=base_vae \
+   data.version=v5 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_base_v5
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[5]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=base_vae \
+   data.version=v6 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_base_v6
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[5]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=nifti_vae \
+   data.version=v12 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_nifti_v12
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[6]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=nifti_vae \
+   data.version=v17 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_nifti_v17
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[5]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=nifti_vae \
+   data.version=v18 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=mean,max \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_nifti_v18
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[0]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=smooth_nifti_vae \
+   data.version=v0 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.penalty_multiplier=2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_smooth_nifti_v0
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[1]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=smooth_nifti_vae \
+   data.version=v1 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.penalty_multiplier=2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_smooth_nifti_v1
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[2]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=smooth_nifti_vae \
+   data.version=v2 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.penalty_multiplier=2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_smooth_nifti_v2
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[3]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=base_vae \
+   data.version=v4 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_base_v4
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[4]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=base_vae \
+   data.version=v5 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_base_v5
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[5]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=base_vae \
+   data.version=v6 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_base_v6
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[6]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=nifti_vae \
+   data.version=v12 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_nifti_v12
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[1]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=nifti_vae \
+   data.version=v17 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_nifti_v17
+
+uv run src/cli/train.py --multirun \
+   hydra/launcher=joblib \
+   hydra.launcher.n_jobs=6 \
+   hydra.launcher.batch_size=1 \
+   +experiment=species_detector \
+   'trainer.devices=[6]' \
+   trainer.max_epochs=2000 \
+   trainer.check_val_every_n_epoch=50 \
+   data.model=nifti_vae \
+   data.version=v18 \
+   data.num_folds=5 \
+   data.fold_id=0,1,2,3,4 \
+   data.scope=SO_EC \
+   model.eval_sample_size=100 \
+   model.pool_method=prob_attn \
+   model.attn_dim=10 \
+   model.attn_weight_decay=1.e-2,1.e-3 \
+   model.attn_learning_rate=1.e-3,5.e-4 \
+   model.l1_penalty=1.e-1,5.e-2,1.e-2 \
+   model.clf_learning_rate=1.e-1,5.e-2,3.e-2,1.e-2 \
+   model.key_per_target=true \
+   paths.results_dir=/mnt/data0/kag25/species_cross_validation/so_ec_nifti_v18
