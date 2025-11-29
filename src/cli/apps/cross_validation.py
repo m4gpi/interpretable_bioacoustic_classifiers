@@ -46,8 +46,6 @@ class App:
     results_df: pd.DataFrame = attrs.field(init=False)
     summary_df: pd.DataFrame = attrs.field(init=False)
 
-    def __attrs_post_init__(self):
-
     def setup(self, cfg: DictConfig) -> dash.Dash:
         self.prepare_data()
         log.info("Building...")

@@ -72,7 +72,11 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         if wandb.run is not None:
             wandb.finish()
 
-@hydra.main(version_base="1.3", config_path="../../config", config_name="train.yaml")
+@hydra.main(
+    version_base="1.3",
+    config_path=str(rootutils.find_root() / "config"),
+    config_name="train.yaml"
+)
 def main(cfg: DictConfig):
     train(cfg)
 

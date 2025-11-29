@@ -68,7 +68,11 @@ def evaluate(cfg):
         if wandb.run is not None:
             wandb.finish()
 
-@hydra.main(version_base="1.3", config_path="../../config", config_name="eval.yaml")
+@hydra.main(
+    version_base="1.3",
+    config_path=str(rootutils.find_root() / "config"),
+    config_name="eval.yaml"
+)
 def main(cfg: DictConfig):
     evaluate(cfg)
 
