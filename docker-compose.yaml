@@ -1,0 +1,15 @@
+services:
+  app:
+    container_name: interpretable_bioacoustic_classifiers
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - ${PORT}:${PORT}
+    volumes:
+      - ${DATA_DIR}:/data
+      - .:/app
+    command: /bin/bash
+    tty: true
+    stdin_open: true
