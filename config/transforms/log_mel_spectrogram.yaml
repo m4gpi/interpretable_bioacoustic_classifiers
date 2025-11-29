@@ -1,0 +1,11 @@
+log_mel_spectrogram:
+  _target_: src.core.transforms.log_mel_spectrogram.LogMelSpectrogram
+  sample_rate: 48000
+  window_length: 512
+  hop_length: 384
+  num_mel_bins: 64
+  mel_min_hertz: 150
+  mel_max_hertz: 15_000
+  mel_scaling_factor: 4581.0
+  mel_break_frequency: 1_750.0
+

@@ -155,8 +155,7 @@ class App:
         model.load_state_dict(checkpoint["state_dict"])
         # model = ModelClass.load_from_checkpoint(self.model_checkpoint_path)
 
-        transforms = instantiate_transforms(cfg.transforms)
-        log_mel_spectrogram = transforms["spectrogram"]
+        log_mel_spectrogram = instantiate_transforms(cfg.transforms)
 
         # hard coded VAE audio resolution parameters
         duration = 59.904

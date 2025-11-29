@@ -115,8 +115,8 @@ class SoundingOutChorus(torch.utils.data.Dataset):
         self.y = self.labels.to_numpy()
 
     @property
-    def target_names(self) -> List[str]:
-        return self.labels.columns.tolist()
+    def model_params(self) -> Dict:
+        return {}
 
     def load_sample(self, file_name: str) -> torch.Tensor:
         file_path = self.data_dir / file_name
@@ -182,7 +182,7 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
         SoundingOutChorus(root=self.root, download=True)
         return self
 
-    def setup(self):
+    def setup(self, stage: str):
         self.data = SoundingOutChorus(self.root, test=False, download=False, **self.dataset_params)
         self.val_data, self.train_data = torch.utils.data.random_split(self.data, (self.val_prop, 1 - self.val_prop), generator=self.generator)
         self.test_data = SoundingOutChorus(self.root, test=True, download=False, **self.dataset_params)

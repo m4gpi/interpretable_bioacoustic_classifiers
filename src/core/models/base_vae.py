@@ -22,8 +22,8 @@ from torch.distributions.normal import Normal
 from torch.optim import Optimizer
 from typing import Any, Dict, Tuple
 
-from temporal_vae.transforms import unframe_fold, frame_fold
-from temporal_vae.models.components import (
+from src.core.transforms.frame import unframe_fold, frame_fold
+from src.core.models.components import (
     Activation,
     NormType,
     init_cnn_feature_encoder,
@@ -32,22 +32,21 @@ from temporal_vae.models.components import (
     init_mlp_content_decoder,
     init_alignment_encoder,
 )
-from temporal_vae.metrics import negative_log_likelihood, gaussian_kl_divergence_standard_prior
-from temporal_vae.artefact import load_artefact, save_artefact
-from temporal_vae.utils import soft_clip, linear_decay, exponential_decay, nth_percentile, bounded_sigmoid
-from temporal_vae.sketch import plot_mel_spectrogram
-from temporal_vae.utils import to_snake_case, detach_values, prefix_keys, try_or
+from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence_standard_prior
+from src.core.utils import soft_clip, linear_decay, exponential_decay, nth_percentile, bounded_sigmoid
+from src.core.utils.sketch import plot_mel_spectrogram
+from src.core.utils import to_snake_case, detach_values, prefix_keys, try_or
 
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 __all__ = ["BaseVAE"]
-
 
 class DecoderVarianceMode(enum.Enum):
     FIXED: str = "FIXED"
     LINEAR_DECAY: str = "LINEAR_DECAY"
     EXPONENTIAL_DECAY: str = "EXPONENTIAL_DECAY"
     LEARNED: str = "LEARNED"
-
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
 class BaseVAE(L.LightningModule):
@@ -95,13 +94,8 @@ class BaseVAE(L.LightningModule):
     scheduler_frequency: int = 1
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+        log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.fit(self, train_dataloaders=data_module.train_dataloader(), val_dataloaders=data_module.val_dataloader())
-        artefact_id = save_artefact(f"{to_snake_case(self.__class__.__name__)}.pt", dict(
-            model_state_dict=self.state_dict(),
-            optimiser_state_dict=self.optimizers().state_dict(),
-            scheduler_state_dict=self.lr_schedulers().state_dict(),
-        ), config, run=self.logger.experiment)
-        print(f"Model Artefact ID: {artefact_id}")
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)

@@ -22,7 +22,11 @@ def main(cfg: DictConfig):
     log.info(f"Bulding...")
     app = app.setup(cfg)
     log.info(f"Starting server!")
-    app.run(port=cfg.get("port"), debug=cfg.get("debug"))
+    app.run(
+        host=cfg.get("host"),
+        port=cfg.get("port"),
+        debug=cfg.get("debug")
+    )
 
 if __name__ == '__main__':
     main()

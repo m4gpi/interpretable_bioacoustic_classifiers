@@ -102,10 +102,6 @@ class RainforestConnection(torch.utils.data.Dataset):
         self.x = self.metadata.file_name.to_numpy()
         self.y = torch.as_tensor(self.labels.to_numpy())
 
-    @property
-    def target_names(self) -> List[str]:
-        return self.labels.columns.tolist()
-
     def load_sample(self, file_name: str) -> torch.Tensor:
         file_path = self.data_dir / file_name
         metadata = torchaudio.info(str(file_path))
@@ -114,6 +110,10 @@ class RainforestConnection(torch.utils.data.Dataset):
         frame_offset = torch.randint(low=0, high=high, size=(1,))
         waveform, _ = torchaudio.load(str(file_path), num_frames=num_frames_segment)
         return torchaudio.functional.resample(waveform, orig_freq=metadata.sample_rate, new_freq=self.sample_rate).squeeze()
+
+    @property
+    def model_params(self) -> Dict:
+        return {}
 
     def _check_files(self) -> None:
         """assert files exist and zip unpacked"""
@@ -212,7 +212,7 @@ class RainforestConnectionDataModule(L.LightningDataModule):
         RainforestConnection(root=self.root, download=True)
         return self
 
-    def setup(self):
+    def setup(self, stage: str):
         self.data = RainforestConnection(self.root, test=False, download=False, **self.dataset_params)
         self.val_data, self.train_data = torch.utils.data.random_split(self.data, (self.val_prop, 1 - self.val_prop), generator=self.generator)
         self.test_data = RainforestConnection(self.root, test=True, download=False, **self.dataset_params)

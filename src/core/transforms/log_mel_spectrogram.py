@@ -11,7 +11,7 @@ from scipy import signal
 from torch import Tensor, nn
 from typing import Any, Dict
 
-__all__ = ["LogMelSpectrogram"]
+__all__ = ["LogMelSpectrogram", "hz_to_mel", "mel_to_hz", "mel_filterbanks"]
 
 def hz_to_mel(
     frequencies: NDArray | float,

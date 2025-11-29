@@ -3,6 +3,7 @@
 defaults:
   - data: soundscape_embeddings
   - model: species_detector
+  - transforms: default
   - callbacks: default
   - logger: null
   - trainer: default

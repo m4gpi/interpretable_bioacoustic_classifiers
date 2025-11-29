@@ -4,10 +4,11 @@ scope:
 training_mode: step
 train_batch_size: 6
 eval_batch_size: 6
-val_prop: 0.25
+val_prop: 0.2
+test_prop: 0.2
 num_workers: 8
 seed: 42
 persist_workers: false
 pin_memory: true
-segment_len: 58.368
+segment_len: 59.904
 sample_rate: 48_000

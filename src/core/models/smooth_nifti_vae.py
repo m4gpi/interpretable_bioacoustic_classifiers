@@ -1,8 +1,10 @@
 import enum
+import logging
 import numpy as np
 import pandas as pd
 import torch
 import wandb
+
 from dataclasses import dataclass
 from matplotlib import pyplot as plt
 from pathlib import Path
@@ -11,15 +13,17 @@ from torch.distributions.normal import Normal
 from torchvision.transforms import functional as T
 from typing import Any, Dict, Tuple, List
 
-from temporal_vae.artefact import save_artefact
-from temporal_vae.constants import Stage
-from temporal_vae.models.components import Activation, NormType, ResidualConv2d, init_alignment_encoder
-from temporal_vae.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, autoregressive_prior
-from temporal_vae.models.base_vae import BaseVAE
-from temporal_vae.transforms import unframe_fold as unframe, frame_fold as frame, translation
-from temporal_vae.sketch import plot_mel_spectrogram
-from temporal_vae.utils import soft_clip, linear_decay, bounded_sigmoid, nth_percentile
-from temporal_vae.utils import detach_values, prefix_keys, to_snake_case
+from src.core.constants import Stage
+from src.core.models.components import Activation, NormType, ResidualConv2d, init_alignment_encoder
+from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, autoregressive_prior
+from src.core.models.base_vae import BaseVAE
+from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
+from src.core.transforms.translation import translation
+from src.core.utils.sketch import plot_mel_spectrogram
+from src.core.utils import soft_clip, linear_decay, bounded_sigmoid, nth_percentile, detach_values, prefix_keys, to_snake_case
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 __all__ = ["SmoothNiftiVAE"]
 
@@ -354,6 +358,6 @@ class SmoothNiftiVAE(BaseVAE):
     def on_predict_epoch_end(self, predictions: List[pd.DataFrame], save_path: str | None = None, **kwargs: Any) -> pd.DataFrame:
         predictions = pd.concat(predictions)
         predictions.to_parquet(save_path, engine="pyarrow", index=True)
-        print(f"Predictions saved to {str(save_path)}")
+        log.info(f"Predictions saved to {str(save_path)}")
         return predictions
 

@@ -2,8 +2,11 @@
 
 # python src/cli/app.py experiment=attention_uncertainty
 defaults:
+  - transforms: log_mel_spectrogram
   - override /data: soundscape_vae_embeddings
   - override /app: attention_uncertainty
+
+task_name: dashboard
 
 app:
   audio_dir: ${oc.env:HOME}/data/sounding_out
@@ -15,7 +18,3 @@ data:
   model: smooth_nifti_vae
   version: v1
   scope: SO_UK
-
-transforms:
-  spectrogram:
-    _target_: src.core.utils.log_mel_spectrogram.LogMelSpectrogram

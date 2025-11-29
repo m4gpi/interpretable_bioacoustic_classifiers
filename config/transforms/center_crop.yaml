@@ -1,0 +1,4 @@
+center_crop:
+  _target_: torchvision.transforms.CenterCrop
+  size: [7488, 64]
+

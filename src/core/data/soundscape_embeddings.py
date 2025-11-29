@@ -58,6 +58,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     scope: str = attrs.field(default=None)
     version: str = attrs.field(default=None)
 
+    transforms: attrs.field(default=None)
     train_batch_size: int | None = attrs.field(default=None)
     eval_batch_size: int | None = attrs.field(default=None)
     val_prop: float = attrs.field(default=0.0, validator=attrs.validators.instance_of(float))

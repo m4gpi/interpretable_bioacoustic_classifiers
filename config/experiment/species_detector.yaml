@@ -1,6 +1,7 @@
 # @package _global_
 
 # python src/cli/train.py +experiment=species_detector
+
 defaults:
   - override /data: soundscape_embeddings
   - override /model: species_detector
@@ -8,9 +9,7 @@ defaults:
   - override /logger: wandb
 
 project: species_cross_validation
-group: test
-results_dir: ${paths.results_dir}/${project}/${group}
-
+results_dir: ${paths.results_dir}/${project}
 train: true
 test: true
 
@@ -44,4 +43,3 @@ logger:
     id: ${run_id}
     resume: null
     project: ${project}
-    group: ${group}
