@@ -6,7 +6,7 @@ defaults:
   - paths: default
   - _self_
 
-task_name: default
+task_name: app
 host: 0.0.0.0
 port: 8055
 debug: false

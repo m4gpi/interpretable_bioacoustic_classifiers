@@ -9,7 +9,6 @@ defaults:
   - override /logger: wandb
 
 project: species_cross_validation
-results_dir: ${paths.results_dir}/${project}
 train: true
 test: true
 

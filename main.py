@@ -25,7 +25,7 @@ def eval(args):
 @cli.command()
 @click.argument("args", nargs=-1)
 def app(args):
-    from src.cli.app import main
+    from src.app.main import main
     sys.argv = ["app"] + list(args)
     main()
 

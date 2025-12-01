@@ -1,2 +1,2 @@
-_target_: src.cli.apps.cross_validation.App
+_target_: src.app.pages.cross_validation.App
 results_dir:
