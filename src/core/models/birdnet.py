@@ -21,7 +21,15 @@ __all__ = ["BirdNET"]
 @attrs.define()
 class BirdNET:
     min_confidence: float = attrs.field(default=0.0)
-    version: str = attrs.field(default="V2.4")
+    version: str = attrs.field(default="v2.4")
+
+    @property
+    def model_params(self):
+        return dict()
+
+    @property
+    def target_names(self):
+        return [label for label in requests.get(BIRDNET_LABEL_TXT_FILE).text.split("\n")]
 
     def encode(self, file_names: List[str], target_names: List[str]) -> pd.DataFrame:
         results = []
@@ -43,10 +51,9 @@ class BirdNET:
     def evaluate(self, trainer: None, data_module: L.LightningDataModule, config: DictConfig, **kwargs: Any):
         run_id = config.get("run_id")
 
-        data_module.setup()
+        data_module.setup(stage="eval")
         data = data_module.test_data
-        birdnet_targets = [label for label in requests.get(BIRDNET_LABEL_TXT_FILE).text.split("\n")]
-        target_names = list(set(birdnet_targets).intersection(set(data.target_names)))
+        target_names = list(set(self.birdnet_targets).intersection(set(data.target_names)))
 
         labels = data.labels.reset_index()
         file_names = (data.data_dir / labels.file_name).tolist()
@@ -56,15 +63,17 @@ class BirdNET:
             .melt(id_vars=["file_i", "file_name"], value_vars=target_names, value_name="label")
             .merge(probs, on=["file_name", "species_name"], how="inner")
         )
-        results["model"] = self.__class__.__name__
+        results["run_id"] = run_id
+        results["model"] = "birdnet"
         results["version"] = self.version
         results["scope"] = data_module.scope
 
         scores = metrics.score(results)
         scores["run_id"] = run_id
-        scores["model"] = self.__class__.__name__
+        scores["model"] = "birdnet"
         scores["version"] = self.version
         scores["scope"] = data_module.scope
+
         print(scores.to_markdown())
 
         summary_stats = scores.groupby("run_id").agg(
@@ -81,10 +90,12 @@ class BirdNET:
         )
         print(summary_stats.to_markdown())
 
-        results_dir = pathlib.Path(config.get("results_dir")) / "test_results.parquet"
+        out_dir = pathlib.Path(config.get("paths").get("results_dir")).expanduser()
+        out_dir.mkdir(exist_ok=True, parents=True)
+        results_dir = out_dir / "test_results.parquet"
         results_dir.mkdir(exist_ok=True, parents=True)
-        scores_dir = pathlib.Path(config.get("results_dir")) / "test_scores.parquet"
+        scores_dir = out_dir / "test_scores.parquet"
         scores_dir.mkdir(exist_ok=True, parents=True)
 
-        results.to_parquet(results_dir / f"{run_id}.parquet")
-        scores.to_parquet(scores_dir / f"{run_id}.parquet")
+        results.to_parquet(results_dir / f"run_id={run_id}.parquet")
+        scores.to_parquet(scores_dir / f"run_id={run_id}.parquet")

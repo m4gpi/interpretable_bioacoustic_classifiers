@@ -15,6 +15,7 @@ __all__ = [
     "SoundscapeEmbeddingsDataModule",
 ]
 
+
 @attrs.define(kw_only=True)
 class SoundscapeEmbeddings(torch.utils.data.Dataset):
     features: pd.DataFrame = attrs.field()
@@ -61,7 +62,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     transforms: attrs.field(default=None)
     train_batch_size: int | None = attrs.field(default=None)
     eval_batch_size: int | None = attrs.field(default=None)
-    val_prop: float = attrs.field(default=0.0, validator=attrs.validators.instance_of(float))
+    val_prop: float = attrs.field(default=0.2, validator=attrs.validators.instance_of(float))
     min_train_label_count: int = attrs.field(default=10, validator=attrs.validators.instance_of(int))
 
     seed: int = attrs.field(default=None)
@@ -112,6 +113,10 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
             pin_memory=self.pin_memory,
             persistent_workers=self.persist_workers,
         )
+
+    # FIXME
+    # def prepare_data(self):
+        # MODELS[self.model].load_from_checkpoint(self.root / "model.pt")
 
     def setup(self, stage: str | None = None) -> None:
         index = pd.read_parquet(self.root / "index.parquet")

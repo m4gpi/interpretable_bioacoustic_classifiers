@@ -6,5 +6,4 @@ defaults:
   - override /model: birdnet
   - override /logger: null
 
-name: interpretable_bioacoustic_classifiers
-results_dir: ${paths.results_dir}/${name}
+project: birdnet

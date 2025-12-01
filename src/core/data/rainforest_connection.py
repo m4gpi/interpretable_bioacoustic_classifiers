@@ -112,6 +112,10 @@ class RainforestConnection(torch.utils.data.Dataset):
         return torchaudio.functional.resample(waveform, orig_freq=metadata.sample_rate, new_freq=self.sample_rate).squeeze()
 
     @property
+    def target_names(self):
+        return self.labels.columns.tolist()
+
+    @property
     def model_params(self) -> Dict:
         return {}
 

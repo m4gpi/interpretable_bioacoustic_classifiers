@@ -1,5 +1,6 @@
 import collections
 import torch
+import re
 
 from torch.functional import F
 from typing import Any, Callable, Dict, List, Tuple
@@ -13,11 +14,19 @@ def try_or(func: Callable, default: Any) -> Any:
     except Exception as e:
         return default
 
-def to_snake_case(word):
-    word = re.sub(r"([A-Z]+)([A-Z][a-z])", r'\1_\2', word)
-    word = re.sub(r"([a-z\d])([A-Z])", r'\1_\2', word)
-    word = word.replace("-", "_")
-    return word.lower()
+def to_snake_case(s: str) -> str:
+    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r'\1_\2', s)
+    s = re.sub(r"([a-z\d])([A-Z])", r'\1_\2', s)
+    s = s.replace("-", "_")
+    return s.lower()
+
+def to_camel_case(s: str) -> str:
+    parts = re.split(r'[^a-zA-Z0-9]+', s.strip().lower())
+    return parts[0] + ''.join(word.capitalize() for word in parts[1:] if word)
+
+def to_pascal_case(s: str) -> str:
+    parts = re.split(r'[^a-zA-Z0-9]+', s.strip())
+    return ''.join(word.capitalize() for word in parts if word)
 
 def merge_dicts(d1, d2) -> Dict[Any, Any]:
     return {k: d1.get(k) or d2.get(k) for k in set(list(d1.keys()) + list(d2.keys())) }

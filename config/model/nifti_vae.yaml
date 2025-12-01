@@ -1,4 +1,4 @@
-_target_: src.core.models.base_vae.BaseVAE
+_target_: src.core.models.smooth_nifti_vae.SmoothNiftiVAE
 sigma_z_max: 0.2
 sigma_z_mode: FIXED
 p_dt_step_start: 0

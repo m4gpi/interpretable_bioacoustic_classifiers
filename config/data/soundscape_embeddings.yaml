@@ -6,6 +6,7 @@ scope:
 train_batch_size:
 eval_batch_size:
 val_prop: 0.2
+min_train_label_count: 10
 num_workers: 0
 pin_memory: False
 num_folds:

@@ -114,6 +114,7 @@ class SpeciesScores(L.Callback):
         if len(self.test_predictions):
             results = pd.concat(self.test_predictions)
             scores = self._on_epoch_end(results, pl_module)
+            results = self._attach_hparams(results, pl_module.hparams)
             # if pl_module.logger is not None and hasattr(pl_module.logger, "experiment"):
                 # pl_module.logger.experiment.log({"test_scores": wandb.Table(dataframe=scores)})
             scores.to_parquet(self.save_dir / "test_scores.parquet" / f"run_id={self.run_id}.parquet")

@@ -1,8 +1,14 @@
 import argparse
+import hydra
 import numpy as np
 import pandas as pd
 import torch
+import rootutils
 import logging
+import warnings
+import yaml
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 from collections import defaultdict
 from matplotlib import pyplot as plt
@@ -10,17 +16,23 @@ from pathlib import Path
 from torchvision import transforms as T
 from tqdm import tqdm
 
+rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+
+from src.core.data.soundscape_embeddings import SoundscapeEmbeddingsDataModule
 from src.core.models.species_detector import SpeciesDetector
-from src.core.constants import LOG_MEL_SPECTROGRAM_PARAMS
+from src.core.models.base_vae import BaseVAE
+from src.core.models.smooth_nifti_vae import SmoothNiftiVAE
 from src.core.data.sounding_out_chorus import SoundingOutChorus
 from src.core.utils.sketch import plot_mel_spectrogram, make_ax_invisible
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
+from src.core.utils import tree
+from src.cli.utils.instantiators import instantiate_transforms
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 def main(
-    model_info_path: Path,
+    data_dir: Path,
     scores_path: Path,
     save_dir: Path,
     seed_num: int = 0,
@@ -28,19 +40,23 @@ def main(
 ) -> None:
     device = f"cuda:{device_id}" if device_id is not None else "cpu"
     # load model info
-    model_info = pd.read_parquet(model_info_path)
+    index = pd.read_parquet(data_dir / "index.parquet")
     # filter to SO UK
-    df = model_info[(model_info["dataset"] == "SO") & (model_info["scope"] == "country=='UK'")].copy()
-    df = df.rename(columns={"model_name": "model_class"})
-    df.loc[df["model_class"] == "NIFTI", "delta_t"] = 0.0
-    df.loc[df["model_class"] == "Smooth NIFTI", "delta_t"] = 1.0
+    df = index[index["scope"] == "SO_UK"].copy()
+    # FIXME: check temporal shift parameter...
+    df.loc[df["model_name"] == "nifti_vae", "delta_t"] = 0.0
+    df.loc[df["model_name"] == "smooth_nifti_vae", "delta_t"] = 1.0
     # init audio dataset and audio params
     log.info("loading SO UK dataset")
-    spectrogram = LogMelSpectrogram(**LOG_MEL_SPECTROGRAM_PARAMS)
+    with open(rootutils.find_root() / "config" / "transforms" / "cropped_log_mel_spectrogram.yaml", "r") as f:
+        transform_conf = yaml.safe_load(f.read())
+        transforms = instantiate_transforms(transform_conf)
+        log_mel_spectrogram_params = transform_conf["log_mel_spectrogram"]
+        del log_mel_spectrogram_params["_target_"]
+    spectrogram = transforms.transforms[0]
     hops_per_second = spectrogram.sample_rate / spectrogram.hop_length
     frame_length_seconds = 192 / hops_per_second
     frame_length_hops = 192
-    transforms = T.Compose([spectrogram, T.CenterCrop(size=[7488, 64])])
     data = SoundingOutChorus("~/data/sounding_out", sample_rate=spectrogram.sample_rate, test=False)
     # define the species we want to render examples and generate interpolations for
     log.info("identify the habitat where selected species occur most frequently")
@@ -67,53 +83,68 @@ def main(
     log.info("loading scores")
     scores = pd.read_parquet(scores_path).reset_index()
     scores = scores[
-        (scores["model_id"].isin(df["model_id"])) &
         (scores["species_name"].isin([s["species_name"] for s in species_params])) &
-        (scores["dataset"] == "SO") &
-        (scores["scope"] == "country=='UK'")
+        (scores["scope"] == "SO_UK")
     ]
     # sort by model class for figure order, load and cache all models
     log.info("loading and caching VAEs and CLFs")
     name_map = {
-        "Base": "Classic VAE",
-        "NIFTI": "Shift Invariant\nVAE",
-        "Smooth NIFTI": "Shift Invariant \&\nTemporally Smooth\nVAE",
+        "base_vae": "VAE",
+        "nifti_vae": "SIVAE",
+        "smooth_nifti_vae": "TSSIVAE",
     }
-    df["model_class"] = pd.Categorical(df["model_class"], categories=name_map.keys(), ordered=True)
-    # pick the first 3 models of each class
+    df["model_class"] = df["model_name"].map(name_map)
+    df["model_class"] = pd.Categorical(df["model_class"], categories=name_map.values(), ordered=True)
     df = df.sort_values("model_class").groupby("model_class").nth(seed_num).reset_index()
+
     vaes = []
     clfs = []
+    z_model_habitat_means = defaultdict(tree)
     for i, row in df.iterrows():
-        # download the VAE
-        vae = load_artefact(row.artefact_id).eval().to(device)
-        # load species logistic regression model weights
-        checkpoint = torch.load(row.clf_checkpoint_path)
-        clf = {
-            param.split(".")[1]: checkpoint["state_dict"][param]
-            for param in checkpoint["state_dict"].keys()
-            if param.startswith("classifiers") and param.endswith("weight")
-        }
+        # load the pretrained VAE
+        with open(rootutils.find_root() / "config" / "model" / f"{row.model_name}.yaml", "r") as f:
+            model_conf = yaml.safe_load(f.read())
+            vae = hydra.utils.instantiate(model_conf)
+        checkpoint = torch.load(data_dir / row.vae_checkpoint_path)
+        vae.load_state_dict(checkpoint["model_state_dict"])
         vaes.append(vae)
-        clfs.append(clf)
-    # encode the habitat mean representation, encode each individually and compute the average
-    log.info("encoding habitat-wise silent embeddings")
-    z_model_habitat_features = defaultdict(lambda: defaultdict(list))
-    habitats = data.metadata[data.metadata.country == "UK"].habitat.unique()
-    with torch.no_grad():
-        for habitat in habitats:
-            file_names = data.metadata[data.metadata.habitat == habitat].file_name
-            for file_name in tqdm(file_names, total=len(file_names)):
-                x = transforms(data.load_sample(file_name))
-                for (i, row), vae in zip(df.iterrows(), vaes):
-                    z = vae.encode(x.unsqueeze(0).to(device))[0].chunk(2, dim=-1)[0]
-                    z_model_habitat_features[habitat][row.model_class].append(z)
-    z_model_habitat_means = {}
-    for habitat in habitats:
-        z_model_habitat_means[habitat] = {}
-        for i, row in df.iterrows():
-            z_mean = torch.cat(z_model_habitat_features[habitat][row.model_class]).mean(dim=[0, 1], keepdims=True)
-            z_model_habitat_means[habitat].update({row.model_class: z_mean})
+        log.info(f"Loaded {row.model_name} from {row.vae_checkpoint_path}")
+        # load species logistic regression model weights
+        # checkpoint = torch.load(row["clf_checkpoint_path"])
+        # clf = {
+        #     param.split(".")[1]: checkpoint["state_dict"][param]
+        #     for param in checkpoint["state_dict"].keys()
+        #     if param.startswith("classifiers") and param.endswith("weight")
+        # }
+        # clfs.append(clf)
+        # compute the habitat model average embedding
+        dm = SoundscapeEmbeddingsDataModule(
+            root=data_dir,
+            model=row.model_name,
+            version=row.version,
+            scope="SO_UK",
+            transforms=None, # FIXME this shouldnt be required
+        )
+        dm.setup()
+        # FIXME hack in the habitat labels using the file name
+        embeddings = dm.data
+        embeddings.labels = embeddings.labels.reset_index()
+        embeddings.labels["habitat"] = embeddings.labels.file_name.str.split("-", expand=True)[0]
+        embeddings.labels.set_index(["file_i", "file_name", "country", "habitat"])
+        # encode the habitat mean representation for this model
+        z_mean = (
+            embeddings
+            .features
+            .iloc[:, range(128)]
+            .merge(embeddings.labels[["file_i", "habitat"]], on="file_i", how="left")
+            .drop("file_i", axis=1)
+            .groupby("habitat")
+            .mean()
+        )
+        for habitat in z_mean.index:
+            z_model_habitat_mean = torch.tensor(z_mean.loc[habitat])
+            z_model_habitat_means[habitat][row.model_name] = z_model_habitat_mean.unsqueeze(0).unsqueeze(0)
+
     log.info("building plot, rendering spectrograms and interpolated reconstructions")
     # plot spectrograms and interpolated reconstructions
     vmax, vmin = 0.0, -80
@@ -140,7 +171,7 @@ def main(
             # plot the original
             plot_mel_spectrogram(
                 x.squeeze().t(),
-                **LOG_MEL_SPECTROGRAM_PARAMS,
+                **log_mel_spectrogram_params,
                 vmax=vmax,
                 vmin=vmin,
                 ax=ax,
@@ -153,8 +184,7 @@ def main(
             if i != 0:
                 ax.tick_params(labelleft=False, left=False)
                 ax.set_ylabel("")
-            for j, model_class in enumerate(["Base", "NIFTI", "Smooth NIFTI"]):
-                row = df[df["model_class"] == model_class].iloc[0]
+            for j, row in df.iterrows():
                 vae, clf = vaes[j], clfs[j]
                 if i == 0:
                     title_ax = axes[j + 1, 0]
@@ -162,21 +192,21 @@ def main(
                     make_ax_invisible(title_ax)
                 # load scores for this species and mode;
                 model_species_scores = scores[
-                    (scores["model_class"] == row["model_class"]) &
-                    (scores["model_id"] == row["model_id"]) &
+                    (scores["model"] == row["model_name"]) &
+                    (scores["version"] == row["version"]) &
                     (scores["species_name"] == species_name)
                 ].iloc[0]
                 # fetch habitat silent embedding
                 z = z_model_habitat_means[habitat][row.model_class]
                 # fetch weights of log reg model
-                log.info(f"generating {species_name} with {row.model_class}")
+                log.info(f"generating {species_name} with {row.model_name}:{row.version}")
                 W = clf[species_name]
                 # linear interpolation across the hyperplane by delta
                 # delta needs to be tuned per species
                 norm = torch.linalg.norm(W)
                 z_tilde = z + ((z @ W.T / norm) + delta) * (W / norm)
                 # decode using VAE with alignment factor dt
-                if row.model_class == "Base":
+                if row.model_name == "base_vae":
                     x_tilde = vae.decode(z_tilde).cpu()
                 else:
                     # dt is tunable by VAE
@@ -187,7 +217,7 @@ def main(
                 # plot reconstruction
                 plot_mel_spectrogram(
                     x_tilde_db.squeeze().t(),
-                    **LOG_MEL_SPECTROGRAM_PARAMS,
+                    **log_mel_spectrogram_params,
                     vmax=vmax,
                     vmin=vmin,
                     cmap="Greys",
@@ -210,7 +240,7 @@ def main(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--model-info-path",
+        "--data-dir",
         type=lambda p: Path(p),
         required=True,
         help="/path/to/saved/",
@@ -224,7 +254,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save-dir",
         type=lambda p: Path(p),
-        required=True,
+        required=False,
         help="/path/to/saved/",
     )
     parser.add_argument(

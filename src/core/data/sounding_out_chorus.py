@@ -115,6 +115,10 @@ class SoundingOutChorus(torch.utils.data.Dataset):
         self.y = self.labels.to_numpy()
 
     @property
+    def target_names(self):
+        return self.labels.columns.tolist()
+
+    @property
     def model_params(self) -> Dict:
         return {}
 

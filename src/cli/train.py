@@ -25,17 +25,12 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("seed"):
         L.seed_everything(cfg.seed, workers=True)
 
-    # results_dir = pathlib.Path(cfg.get("paths").get("results_dir")).expanduser()
-    # (results_dir / "config").mkdir(parents=True, exist_ok=True)
-    # raw_config = OmegaConf.to_container(cfg, resolve=True)
-    # OmegaConf.save(raw_config, results_dir / "config" / f"{cfg.get('run_id')}.yaml")
-    # log.info(json.dumps(raw_config, indent=1))
-
     log.info("Instantiating transforms...")
     transforms: List[L.Callback] = instantiate_transforms(cfg.get("transforms"))
 
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     data_module: L.LightningDataModule = hydra.utils.instantiate(cfg.data, transforms=transforms)
+    data_module.setup(stage="fit")
 
     log.info(f"Instantiating model <{cfg.model._target_}>")
     model: L.LightningModule = hydra.utils.instantiate(cfg.model, **data_module.data.model_params)
@@ -49,8 +44,6 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
     trainer: L.Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=loggers)
 
-    import code; code.interact(local=locals())
-
     if loggers:
         for logger in loggers:
             logger.log_hyperparams({
@@ -59,6 +52,12 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
                 "logger": dict(cfg.logger),
                 "trainer": dict(cfg.trainer),
             })
+
+    results_dir = pathlib.Path(cfg.get("paths").get("results_dir")).expanduser()
+    (results_dir / "config").mkdir(parents=True, exist_ok=True)
+    raw_config = OmegaConf.to_container(cfg, resolve=True)
+    OmegaConf.save(raw_config, results_dir / "config" / f"{cfg.get('run_id')}.yaml")
+    log.info(json.dumps(raw_config, indent=1))
 
     try:
         model.run(
