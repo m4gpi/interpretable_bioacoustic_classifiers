@@ -53,7 +53,7 @@ class BirdNET:
 
         data_module.setup(stage="eval")
         data = data_module.test_data
-        target_names = list(set(self.birdnet_targets).intersection(set(data.target_names)))
+        target_names = list(set(self.target_names).intersection(set(data.target_names)))
 
         labels = data.labels.reset_index()
         file_names = (data.data_dir / labels.file_name).tolist()
