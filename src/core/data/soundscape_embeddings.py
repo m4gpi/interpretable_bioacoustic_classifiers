@@ -148,6 +148,11 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
             labels=test_labels[target_names],
             index=test_labels.index.get_level_values(0),
         )
+
+        if self.num_folds is None and self.val_prop == 0.0:
+            self.train_data = self.data
+            return self
+
         if self.num_folds is not None and self.fold_id is not None:
             # same seed across runs ensures we get consistent splits
             # allows for indexing splits by their fold_id

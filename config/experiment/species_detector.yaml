@@ -6,7 +6,7 @@ defaults:
   - override /data: soundscape_embeddings
   - override /model: species_detector
   - override /trainer: gpu
-  - override /logger: null # wandb
+  - override /logger: wandb
 
 project: species_cross_validation
 train: true

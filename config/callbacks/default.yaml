@@ -1,7 +1,7 @@
 defaults:
   - model_checkpoint
   - model_summary
-  - rich_progress_bar
+  # - rich_progress_bar
   - _self_
 
 model_checkpoint:
