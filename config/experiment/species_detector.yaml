@@ -11,9 +11,14 @@ defaults:
 project: species_cross_validation
 train: true
 test: true
+seed: 42
+
+model:
+  seed: ${seed}
 
 data:
   root: ${paths.data_dir}/soundscape_vae_embeddings
+  seed: ${seed}
 
 trainer:
   max_epochs: 2000

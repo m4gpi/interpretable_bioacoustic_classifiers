@@ -98,7 +98,7 @@ def main(
         results_table = pd.concat(dataset_results, axis=1)
         results_table.index.name = "Model"
 
-        with open(save_dir / f"P{dataset}_scores_table.latex", "w+") as f:
+        with open(save_dir / f"{dataset}_scores_table.latex", "w+") as f:
             with pd.option_context("max_colwidth", 1000):
                 latex = results_table.style.to_latex()
                 f.write(latex)

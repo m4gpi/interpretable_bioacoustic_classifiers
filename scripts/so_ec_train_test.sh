@@ -2,12 +2,12 @@
 
 RESULTS_DIR=/mnt/data0/kag25/species_detectors/
 
-# uv run main.py eval \
-#    +experiment=birdnet \
-#    data=sounding_out_chorus \
-#    data.scope=SO_EC \
-#    data.root=/its/home/kag25/data/sounding_out \
-#    paths.results_dir=$RESULTS_DIR
+uv run main.py eval \
+   +experiment=birdnet \
+   data=sounding_out_chorus \
+   data.scope=SO_EC \
+   data.root=/its/home/kag25/data/sounding_out \
+   paths.results_dir=$RESULTS_DIR
 
 # model                  base_vae
 # scope                     SO_EC
@@ -109,7 +109,7 @@ uv run main.py train \
    +experiment=species_detector \
    project=species_detector \
    'trainer.devices=[0]' \
-   trainer.max_epochs=1 \
+   trainer.max_epochs=1950 \
    +trainer.limit_val_batches=0.0 \
    data.model=nifti_vae \
    data.version=v12 \
@@ -193,7 +193,7 @@ uv run main.py train \
    +experiment=species_detector \
    project=species_detector \
    'trainer.devices=[0]' \
-   trainer.max_epochs=1 \
+   trainer.max_epochs=1950 \
    +trainer.limit_val_batches=0.0 \
    data.model=smooth_nifti_vae \
    data.version=v0 \
@@ -218,7 +218,7 @@ uv run main.py train \
    +experiment=species_detector \
    project=species_detector \
    'trainer.devices=[0]' \
-   trainer.max_epochs=1 \
+   trainer.max_epochs=1950 \
    +trainer.limit_val_batches=0.0 \
    data.model=smooth_nifti_vae \
    data.version=v1 \
@@ -243,7 +243,7 @@ uv run main.py train \
    +experiment=species_detector \
    project=species_detector \
    'trainer.devices=[0]' \
-   trainer.max_epochs=1 \
+   trainer.max_epochs=1950 \
    +trainer.limit_val_batches=0.0 \
    data.model=smooth_nifti_vae \
    data.version=v2 \

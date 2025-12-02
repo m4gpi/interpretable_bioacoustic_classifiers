@@ -110,13 +110,13 @@ def main(
         vaes.append(vae)
         log.info(f"Loaded {row.model_name} from {row.vae_checkpoint_path}")
         # load species logistic regression model weights
-        # checkpoint = torch.load(row["clf_checkpoint_path"])
-        # clf = {
-        #     param.split(".")[1]: checkpoint["state_dict"][param]
-        #     for param in checkpoint["state_dict"].keys()
-        #     if param.startswith("classifiers") and param.endswith("weight")
-        # }
-        # clfs.append(clf)
+        checkpoint = torch.load(row["clf_checkpoint_path"])
+        clf = {
+            param.split(".")[1]: checkpoint["state_dict"][param]
+            for param in checkpoint["state_dict"].keys()
+            if param.startswith("classifiers") and param.endswith("weight")
+        }
+        clfs.append(clf)
         # compute the habitat model average embedding
         dm = SoundscapeEmbeddingsDataModule(
             root=data_dir,

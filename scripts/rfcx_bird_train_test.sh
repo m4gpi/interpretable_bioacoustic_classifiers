@@ -2,12 +2,12 @@
 
 RESULTS_DIR=/mnt/data0/kag25/species_detectors/
 
-# uv run main.py eval \
-#    +experiment=birdnet \
-#    data=rainforest_connection \
-#    data.scope=RFCX_bird \
-#    data.root=/its/home/kag25/data/rainforest_connection \
-#    paths.results_dir=$RESULTS_DIR
+uv run main.py eval \
+   +experiment=birdnet \
+   data=rainforest_connection \
+   data.scope=RFCX_bird \
+   data.root=/its/home/kag25/data/rainforest_connection \
+   paths.results_dir=$RESULTS_DIR
 
 # model                  base_vae
 # scope                 RFCX_bird

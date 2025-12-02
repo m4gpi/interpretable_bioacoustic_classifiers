@@ -2,12 +2,12 @@
 
 RESULTS_DIR=/mnt/data0/kag25/species_detectors/
 
-# uv run main.py eval \
-#    +experiment=birdnet \
-#    data=sounding_out_chorus \
-#    data.scope=SO_UK \
-#    data.root=/its/home/kag25/data/sounding_out \
-#    paths.results_dir=$RESULTS_DIR
+uv run main.py eval \
+   +experiment=birdnet \
+   data=sounding_out_chorus \
+   data.scope=SO_UK \
+   data.root=/its/home/kag25/data/sounding_out \
+   paths.results_dir=$RESULTS_DIR
 
 # model                  base_vae
 # scope                     SO_UK
