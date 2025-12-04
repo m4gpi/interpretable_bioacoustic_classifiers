@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    OmegaConf.update(cfg, "run_id", os.urandom(6).hex(), force_add=True)
+    OmegaConf.update(cfg, "run_id", os.urandom(16).hex(), force_add=True)
 
     if cfg.get("seed"):
         L.seed_everything(cfg.seed, workers=True)

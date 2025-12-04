@@ -70,37 +70,60 @@ class RainforestConnection(torch.utils.data.Dataset):
             self._reset_index()
         self._extract_metadata()
         self._extract_labels()
+        self.metadata = pd.read_parquet(self.base_dir / f"metadata.parquet")
+        self.labels = pd.read_parquet(self.base_dir / f"labels.parquet")
         # scope the dataset by train / test
-        if test:
-            self.metadata = pd.read_parquet(self.base_dir / f"test_metadata.parquet")
-            self.metadata.index.name = "file_i"
-            self.labels = pd.read_parquet(self.base_dir / f"test_labels.parquet")
-        else:
-            self.metadata = pd.read_parquet(self.base_dir / f"train_metadata.parquet")
-            self.metadata.index.name = "file_i"
-            self.labels = pd.read_parquet(self.base_dir / f"train_labels.parquet")
-        self.labels.drop("species_id", axis=1, inplace=True)
+        self.test_metadata = pd.read_parquet(self.base_dir / f"test_metadata.parquet")
+        self.test_metadata.index.name = "file_i"
+        self.test_labels = pd.read_parquet(self.base_dir / f"test_labels.parquet")
+        self.test_labels.drop("species_id", axis=1, inplace=True)
+
+        self.train_metadata = pd.read_parquet(self.base_dir / f"train_metadata.parquet")
+        self.train_metadata.index.name = "file_i"
+        self.train_labels = pd.read_parquet(self.base_dir / f"train_labels.parquet")
+        self.train_labels.drop("species_id", axis=1, inplace=True)
+
         # scope by taxa
         if scope is not None:
-            # HACKY
-            self.labels = self.labels[self.labels.taxa == scope.split("_")[-1]]
+            self.train_labels = self.train_labels[self.train_labels.taxa == scope.split("_")[-1]]
+            self.test_labels = self.test_labels[self.test_labels.taxa == scope.split("_")[-1]]
+
+        self.train_labels = self.format_labels(self.train_metadata, self.train_labels)
+        self.test_labels = self.format_labels(self.test_metadata, self.test_labels)
+
+        self.metadata["file_path"] = self.data_dir / self.metadata["file_name"]
+        self.train_metadata["file_path"] = self.data_dir / self.train_metadata["file_name"]
+        self.test_metadata["file_path"] = self.data_dir / self.test_metadata["file_name"]
+
+        if test == True:
+            self.s = self.test_metadata.index
+            self.x = self.test_metadata.file_path.to_numpy()
+            self.y = self.test_labels.to_numpy()
+        elif test == False:
+            self.s = self.train_metadata.index
+            self.x = self.train_metadata.file_path.to_numpy()
+            self.y = self.train_labels.to_numpy()
+        else:
+            self.s = self.metadata.index
+            self.x = self.metadata.file_path.to_numpy()
+            self.y = self.labels.to_numpy()
+
+    def format_labels(self, metadata, labels):
         # count occurrences and drop duplicates
-        self.labels = self.labels.groupby(["file_i", "file_name", "taxa", "species_name"]).size().reset_index(name='counts')
+        labels = labels.groupby(["file_i", "file_name", "taxa", "species_name"]).size().reset_index(name='counts')
         # pad with missing file names
         indices = ["file_i", "file_name", "taxa", "species_name"]
-        file_list = self.metadata[["file_i", "file_name"]].drop_duplicates()
-        species_list = self.labels[["taxa", "species_name"]].drop_duplicates()
-        self.labels = file_list.merge(species_list, how="cross").merge(self.labels, on=indices, how="left").fillna(0.0)
+        file_list = metadata[["file_i", "file_name"]].drop_duplicates()
+        species_list = labels[["taxa", "species_name"]].drop_duplicates()
+        labels = file_list.merge(species_list, how="cross").merge(labels, on=indices, how="left").fillna(0.0)
         # expand species across columns
-        self.labels = self.labels.pivot(index=["file_i", "file_name", "taxa"], columns="species_name", values="counts")
+        labels = labels.pivot(index=["file_i", "file_name", "taxa"], columns="species_name", values="counts")
         # labels are binary presence/absence for each species
-        self.labels = self.labels.fillna(0.0).astype(bool).astype(int)
+        labels = labels.fillna(0.0).astype(bool).astype(int)
         # sort indices so they align as matrices
-        self.metadata = self.metadata.sort_index()
-        self.labels = self.labels.sort_index()
-        self.s = self.metadata.index
-        self.x = self.metadata.file_name.to_numpy()
-        self.y = torch.as_tensor(self.labels.to_numpy())
+        metadata = metadata.sort_index()
+        labels = labels.sort_index()
+        return labels
 
     def load_sample(self, file_name: str) -> torch.Tensor:
         file_path = self.data_dir / file_name

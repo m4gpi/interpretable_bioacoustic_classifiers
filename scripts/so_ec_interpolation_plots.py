@@ -63,18 +63,18 @@ def main(
     hops_per_second = spectrogram.sample_rate / spectrogram.hop_length
     frame_length_seconds = 192 / hops_per_second
     frame_length_hops = 192
-    data = SoundingOutChorus("~/data/sounding_out", sample_rate=spectrogram.sample_rate, test=False)
+    data = SoundingOutChorus("~/data/sounding_out", sample_rate=spectrogram.sample_rate)
     # define the species we want to render examples and generate interpolations for
     log.info("identify the habitat where selected species occur most frequently")
     species_params = [
-        { "species_name": "Coereba flaveola_Bananaquit", "file_name": "FS-11_0_20150806_0600.wav", "t_start_seconds": 32.4, "delta": 55 },
-        { "species_name": "Poliocrania exsul_Chestnut-backed Antbird", "file_name": "TE-03_0_20150716_0635.wav", "t_start_seconds": 25.2, "delta": 65 },
-        { "species_name": "Ramphocelus flammigerus_Flame-rumped Tanager", "file_name": "PO-11_0_20150815_1815.wav", "t_start_seconds": 0.0, "delta": 65 },
-        { "species_name": "Leptotila pallida_Pallid Dove", "file_name": "PO-11_0_20150818_0625.wav", "t_start_seconds": 6.5, "delta": 65 },
-        { "species_name": "Capsiempis flaveola_Yellow Tyrannulet", "file_name": "PO-03_0_20150815_0640.wav", "t_start_seconds": 16.0, "delta": 65 },
-        { "species_name": "Mionectes oleagineus_Ochre-bellied Flycatcher", "file_name": "FS-16_0_20150802_0645.wav", "t_start_seconds": 0.2, "delta": 65 },
-        { "species_name": "Microbates cinereiventris_Tawny-faced Gnatwren", "file_name": "TE-06_0_20150716_0645.wav", "t_start_seconds": 33.5, "delta": 65 },
-        { "species_name": "Manacus manacus_White-bearded Manakin", "file_name": "FS-04_0_20150802_0650.wav", "t_start_seconds": 41.2, "delta": 65 },
+        { "species_name": "Coereba flaveola_Bananaquit", "file_name": "train/data/FS-11_0_20150806_0600.wav", "t_start_seconds": 32.4, "delta": 30 },
+        { "species_name": "Poliocrania exsul_Chestnut-backed Antbird", "file_name": "train/data/TE-03_0_20150716_0635.wav", "t_start_seconds": 25.2, "delta": 20 },
+        { "species_name": "Ramphocelus flammigerus_Flame-rumped Tanager", "file_name": "test/data/PO-11_0_20150815_1815.wav", "t_start_seconds": 0.0, "delta": 30 },
+        { "species_name": "Leptotila pallida_Pallid Dove", "file_name": "train/data/PO-11_0_20150818_0625.wav", "t_start_seconds": 6.5, "delta": 30 },
+        { "species_name": "Capsiempis flaveola_Yellow Tyrannulet", "file_name": "train/data/PO-03_0_20150815_0640.wav", "t_start_seconds": 16.0, "delta": 30 },
+        { "species_name": "Mionectes oleagineus_Ochre-bellied Flycatcher", "file_name": "train/data/FS-16_0_20150802_0645.wav", "t_start_seconds": 0.2, "delta": 30 },
+        { "species_name": "Microbates cinereiventris_Tawny-faced Gnatwren", "file_name": "train/data/TE-06_0_20150716_0645.wav", "t_start_seconds": 33.5, "delta": 30 },
+        { "species_name": "Manacus manacus_White-bearded Manakin", "file_name": "train/data/FS-04_0_20150802_0650.wav", "t_start_seconds": 41.2, "delta": 30 },
     ]
     # identify the habitat where each species occurs most
     # for each species, we use that habitat average embedding as our background template for interpolation
@@ -102,6 +102,7 @@ def main(
     df["model_class"] = df["model_name"].map(name_map)
     df["model_class"] = pd.Categorical(df["model_class"], categories=name_map.values(), ordered=True)
     df = df.sort_values("model_class").groupby("model_class").nth(seed_num).reset_index()
+    habitat_map = {"TE": "EC1", "FS": "EC2", "PO": "EC3"}
 
     vaes = []
     clfs = []
@@ -111,18 +112,14 @@ def main(
         with open(rootutils.find_root() / "config" / "model" / f"{row.model_name}.yaml", "r") as f:
             model_conf = yaml.safe_load(f.read())
             vae = hydra.utils.instantiate(model_conf)
-        checkpoint = torch.load(data_dir / row.vae_checkpoint_path)
+        checkpoint = torch.load(row.vae_checkpoint_path, map_location=device)
         vae.load_state_dict(checkpoint["model_state_dict"])
-        vaes.append(vae)
+        vaes.append(vae.to(device))
         log.info(f"Loaded {row.model_name} from {row.vae_checkpoint_path}")
         # load species logistic regression model weights
-        # checkpoint = torch.load(row["clf_checkpoint_path"])
-        # clf = {
-        #     param.split(".")[1]: checkpoint["state_dict"][param]
-        #     for param in checkpoint["state_dict"].keys()
-        #     if param.startswith("classifiers") and param.endswith("weight")
-        # }
-        # clfs.append(clf)
+        checkpoint = torch.load(row["clf_checkpoint_path"], map_location=device)
+        clf = {param.split(".")[1]: checkpoint["state_dict"][param] for param in checkpoint["state_dict"].keys() if param.startswith("classifiers") and param.endswith("weight")}
+        clfs.append(clf)
         # compute the habitat model average embedding
         dm = SoundscapeEmbeddingsDataModule(
             root=data_dir,
@@ -136,6 +133,7 @@ def main(
         embeddings = dm.data
         embeddings.labels = embeddings.labels.reset_index()
         embeddings.labels["habitat"] = embeddings.labels.file_name.str.split("-", expand=True)[0]
+        embeddings.labels["habitat"] = embeddings.labels.habitat.map(habitat_map)
         embeddings.labels.set_index(["file_i", "file_name", "country", "habitat"])
         # encode the habitat mean representation for this model
         z_mean = (
@@ -148,7 +146,7 @@ def main(
             .mean()
         )
         for habitat in z_mean.index:
-            z_model_habitat_mean = torch.tensor(z_mean.loc[habitat])
+            z_model_habitat_mean = torch.tensor(z_mean.loc[habitat], dtype=torch.float32, device=device)
             z_model_habitat_means[habitat][row.model_name] = z_model_habitat_mean.unsqueeze(0).unsqueeze(0)
 
     log.info("building plot, rendering spectrograms and interpolated reconstructions")
@@ -172,7 +170,7 @@ def main(
             ax = axes[0, i + 1]
             t_start = int(t_start_seconds * hops_per_second)
             t_end = t_start + int(frame_length_seconds * hops_per_second)
-            x = transforms(data.load_sample(file_name)).squeeze()
+            x = transforms(data.load_sample(data.base_dir / file_name)).squeeze()
             x = 20 * np.log10(x[t_start:t_end].exp())
             # plot the original
             plot_mel_spectrogram(
@@ -194,7 +192,7 @@ def main(
                 vae, clf = vaes[j], clfs[j]
                 if i == 0:
                     title_ax = axes[j + 1, 0]
-                    title_ax.set_ylabel(name_map[row.model_class])
+                    title_ax.set_ylabel(name_map[row.model_name])
                     make_ax_invisible(title_ax)
                 # load scores for this species and mode;
                 model_species_scores = scores[
@@ -203,7 +201,7 @@ def main(
                     (scores["species_name"] == species_name)
                 ].iloc[0]
                 # fetch habitat silent embedding
-                z = z_model_habitat_means[habitat][row.model_class]
+                z = z_model_habitat_means[habitat][row.model_name]
                 # fetch weights of log reg model
                 log.info(f"generating {species_name} with {row.model_name}:{row.version}")
                 W = clf[species_name]
@@ -236,7 +234,7 @@ def main(
                 if i != 0:
                     ax.tick_params(labelleft=False, left=False)
                     ax.set_ylabel("")
-                AP = np.format_float_positional(model_species_scores['mAP'], precision=2)
+                AP = np.format_float_positional(model_species_scores['AP'], precision=2)
                 auROC = np.format_float_positional(model_species_scores['auROC'], precision=2)
                 ax.set_title(f"AP: {AP}, auROC: {auROC}")
     fig.suptitle("SO EC")

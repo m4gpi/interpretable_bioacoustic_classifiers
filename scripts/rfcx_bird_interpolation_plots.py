@@ -31,12 +31,6 @@ from src.cli.utils.instantiators import instantiate_transforms
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-MODELS = dict(
-    smooth_nifti_vae=SmoothNiftiVAE,
-    nifti_vae=SmoothNiftiVAE, # same model, just with smooth_prop set to 0
-    base_vae=BaseVAE,
-)
-
 def main(
     data_dir: Path,
     scores_path: Path,
@@ -50,8 +44,8 @@ def main(
     # filter to RFCX bird
     df = index[index["scope"] == "RFCX_bird"].copy()
     # FIXME: check temporal shift parameter...
-    df.loc[df["model_name"] == "nifti_vae", "delta_t"] = 0.0
-    df.loc[df["model_name"] == "smooth_nifti_vae", "delta_t"] = 1.0
+    df.loc[df["model_name"] == "nifti_vae", "delta_t"] = 1.0
+    df.loc[df["model_name"] == "smooth_nifti_vae", "delta_t"] = 0.0
     # init audio dataset and audio params
     log.info("loading RFCX bird dataset")
     with open(rootutils.find_root() / "config" / "transforms" / "cropped_log_mel_spectrogram.yaml", "r") as f:
@@ -66,14 +60,14 @@ def main(
     data = RainforestConnection("~/data/rainforest_connection", sample_rate=spectrogram.sample_rate, test=False)
     # define the species we want to render examples and generate interpolations for
     species_params = [
-        { "species_name": "Coereba flaveola_Bananaquit", "file_name": "0a9cdd8a5.flac", "t_start_seconds": 49.2, "delta": 50 },
-        { "species_name": "Turdus plumbeus_Red-legged Thrush", "file_name": "9cb1f4a34.flac", "t_start_seconds": 28.8, "delta": 50 },
-        { "species_name": "Setophaga angelae_Elfin Woods Warbler", "file_name": "88b5c9c1b.flac", "t_start_seconds": 40.5, "delta": 40 },
-        { "species_name": "Vireo altiloquus_Black-whiskered Vireo", "file_name": "c4b778e64.flac", "t_start_seconds": 28.25, "delta": 50 },
-        { "species_name": "Patagioenas squamosa_Scaly-naped Pigeon", "file_name": "21e2f2977.flac", "t_start_seconds": 23, "delta": 40 },
-        { "species_name": "Nesospingus speculiferus_Puerto Rican Tanager", "file_name": "1702d35a0.flac", "t_start_seconds": 29.1, "delta": 40 },
-        { "species_name": "Spindalis portoricensis_Puerto Rican Spindalis", "file_name": "16553d5cd.flac", "t_start_seconds": 33.5, "delta": 50 },
-        { "species_name": "Melanerpes portoricensis_Puerto Rican Woodpecker", "file_name": "745171bf2.flac", "t_start_seconds": 4.5, "delta": 50 },
+        { "species_name": "Coereba flaveola_Bananaquit", "file_name": "train/0a9cdd8a5.flac", "t_start_seconds": 49.2, "delta": 20 },
+        { "species_name": "Turdus plumbeus_Red-legged Thrush", "file_name": "train/9cb1f4a34.flac", "t_start_seconds": 28.8, "delta": 20 },
+        { "species_name": "Setophaga angelae_Elfin Woods Warbler", "file_name": "train/88b5c9c1b.flac", "t_start_seconds": 40.5, "delta": 20 },
+        { "species_name": "Vireo altiloquus_Black-whiskered Vireo", "file_name": "train/c4b778e64.flac", "t_start_seconds": 28.25, "delta": 20 },
+        { "species_name": "Patagioenas squamosa_Scaly-naped Pigeon", "file_name": "train/21e2f2977.flac", "t_start_seconds": 23, "delta": 20 },
+        { "species_name": "Nesospingus speculiferus_Puerto Rican Tanager", "file_name": "train/1702d35a0.flac", "t_start_seconds": 29.1, "delta": 20 },
+        { "species_name": "Spindalis portoricensis_Puerto Rican Spindalis", "file_name": "train/16553d5cd.flac", "t_start_seconds": 33.5, "delta": 20 },
+        { "species_name": "Melanerpes portoricensis_Puerto Rican Woodpecker", "file_name": "train/745171bf2.flac", "t_start_seconds": 4.5, "delta": 20 },
     ]
     # load final test scores
     log.info("loading scores")
@@ -101,18 +95,18 @@ def main(
         with open(rootutils.find_root() / "config" / "model" / f"{row.model_name}.yaml", "r") as f:
             model_conf = yaml.safe_load(f.read())
             vae = hydra.utils.instantiate(model_conf)
-        checkpoint = torch.load(data_dir / row.vae_checkpoint_path)
+        checkpoint = torch.load(row.vae_checkpoint_path, map_location=device)
         vae.load_state_dict(checkpoint["model_state_dict"])
-        vaes.append(vae)
+        vaes.append(vae.to(device))
         log.info(f"Loaded {row.model_name} from {row.vae_checkpoint_path}")
         # load species logistic regression model weights
-        # checkpoint = torch.load(row["clf_checkpoint_path"])
-        # clf = {
-        #     param.split(".")[1]: checkpoint["state_dict"][param]
-        #     for param in checkpoint["state_dict"].keys()
-        #     if param.startswith("classifiers") and param.endswith("weight")
-        # }
-        # clfs.append(clf)
+        checkpoint = torch.load(row["clf_checkpoint_path"], map_location=device)
+        clf = {
+            param.split(".")[1]: checkpoint["state_dict"][param]
+            for param in checkpoint["state_dict"].keys()
+            if param.startswith("classifiers") and param.endswith("weight")
+        }
+        clfs.append(clf)
         # compute the model average embedding
         dm = SoundscapeEmbeddingsDataModule(
             root=data_dir,
@@ -124,7 +118,7 @@ def main(
         dm.setup()
         # encode the mean representation for this model
         z_mean = dm.data.features.iloc[:, range(128)].mean()
-        z_model_means[row.model_name] = torch.tensor(z_mean).unsqueeze(0).unsqueeze(0)
+        z_model_means[row.model_name] = torch.tensor(z_mean, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
 
     log.info("building plot, rendering spectrograms and interpolated reconstructions")
     # plot spectrograms and interpolated reconstructions
@@ -147,7 +141,7 @@ def main(
             ax = axes[0, i + 1]
             t_start = int(t_start_seconds * hops_per_second)
             t_end = t_start + int(frame_length_seconds * hops_per_second)
-            x = transforms(data.load_sample(file_name)).squeeze()
+            x = transforms(data.load_sample(data.base_dir / file_name)).squeeze()
             x = 20 * np.log10(x[t_start:t_end].exp())
             # plot the original
             plot_mel_spectrogram(
@@ -169,7 +163,7 @@ def main(
                 vae, clf = vaes[j], clfs[j]
                 if i == 0:
                     title_ax = axes[j + 1, 0]
-                    title_ax.set_ylabel(name_map[row.model_class])
+                    title_ax.set_ylabel(name_map[row.model_name])
                     make_ax_invisible(title_ax)
                 # load scores for this species and mode;
                 model_species_scores = scores[
@@ -178,10 +172,10 @@ def main(
                     (scores["species_name"] == species_name)
                 ].iloc[0]
                 # fetch silent embedding
-                z = z_model_means[row.model_class]
+                z = z_model_means[row.model_name].to(device)
                 # fetch weights of log reg model
                 log.info(f"generating {species_name} with {row.model_name}:{row.version}")
-                W = clf[species_name]
+                W = clf[species_name].to(device)
                 # linear interpolation across the hyperplane by delta
                 # delta needs to be tuned per species
                 norm = torch.linalg.norm(W)
@@ -211,7 +205,7 @@ def main(
                 if i != 0:
                     ax.tick_params(labelleft=False, left=False)
                     ax.set_ylabel("")
-                AP = np.format_float_positional(model_species_scores['mAP'], precision=2)
+                AP = np.format_float_positional(model_species_scores['AP'], precision=2)
                 auROC = np.format_float_positional(model_species_scores['auROC'], precision=2)
                 ax.set_title(f"AP: {AP}, auROC: {auROC}")
     fig.suptitle("RFCX bird")

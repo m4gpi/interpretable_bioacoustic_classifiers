@@ -1,6 +1,6 @@
 #!/bin/bash
 
-RESULTS_DIR=/mnt/data0/kag25/species_detectors/
+RESULTS_DIR=./results/species_detectors/
 
 uv run main.py eval \
    +experiment=birdnet \

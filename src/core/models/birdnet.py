@@ -21,6 +21,7 @@ __all__ = ["BirdNET"]
 @attrs.define()
 class BirdNET:
     min_confidence: float = attrs.field(default=0.0)
+    min_train_label_count: int = attrs.field(default=10)
     version: str = attrs.field(default="v2.4")
 
     @property
@@ -53,11 +54,11 @@ class BirdNET:
 
         data_module.setup(stage="eval")
         data = data_module.test_data
-        target_names = list(set(self.target_names).intersection(set(data.target_names)))
+        target_names = data.train_labels.loc[:, data.train_labels.sum(axis=0) > self.min_train_label_count].columns
+        target_names = list(set(self.target_names).intersection(set(target_names)))
 
-        labels = data.labels.reset_index()
-        file_names = (data.data_dir / labels.file_name).tolist()
-        probs = self.encode(file_names, target_names)
+        labels = data.test_labels.reset_index()
+        probs = self.encode(data.test_metadata.file_path, target_names)
         results = (
             labels
             .melt(id_vars=["file_i", "file_name"], value_vars=target_names, value_name="label")

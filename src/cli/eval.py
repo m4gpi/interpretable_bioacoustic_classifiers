@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 def evaluate(cfg):
-    OmegaConf.update(cfg, "run_id", os.urandom(6).hex(), force_add=True)
+    OmegaConf.update(cfg, "run_id", os.urandom(16).hex(), force_add=True)
 
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     data_module = hydra.utils.instantiate(cfg.data)

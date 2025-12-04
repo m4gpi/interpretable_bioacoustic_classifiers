@@ -76,11 +76,6 @@ class SoundingOutChorus(torch.utils.data.Dataset):
         seed: int = 42,
     ) -> None:
         self.base_dir = pathlib.Path(root).expanduser()
-        self.data_dir = (
-            self.base_dir / "train" / self._DATA_DIR
-            if not test else
-            self.base_dir / "test" / self._DATA_DIR
-        )
         self.labels_dir = self.base_dir / self._LABELS_DIR
         self.maps_dir = self.base_dir / self._MAPS_DIR
         self.sample_rate = sample_rate
@@ -93,26 +88,49 @@ class SoundingOutChorus(torch.utils.data.Dataset):
         # load file info
         self.metadata = pd.read_parquet(self.base_dir / self._METADATA_FILENAME)
         self.metadata.index.name = "file_i"
-        # scope the dataset by train / test
-        if test is not None:
-            self.subset_idx = (
-                pd.read_parquet(self.base_dir / "test_indices.parquet")
-                if test else 
-                pd.read_parquet(self.base_dir / "train_indices.parquet")
-            )
-            self.metadata = self.metadata.loc[self.subset_idx.file_i]
+        # load the labels, pivot so species are on columns, collapse point counts to presence/absence
+        self.labels = (
+            pd.read_parquet(self.base_dir / "birds.parquet")
+            .reset_index()
+            .pivot(index=["file_i", "file_name", "country"], columns="species_name", values="counts")
+            .fillna(0.0)
+            .astype(bool)
+            .astype(int)
+        )
+        # scope by train / test
+        train_idx = pd.read_parquet(self.base_dir / "train_indices.parquet")
+        test_idx = pd.read_parquet(self.base_dir / "test_indices.parquet")
+        self.train_metadata = self.metadata.loc[train_idx.file_i]
+        self.train_labels = self.labels.loc[train_idx.file_i]
+        self.test_metadata = self.metadata.loc[test_idx.file_i]
+        self.test_labels = self.labels.loc[test_idx.file_i]
         # scope by country
         if scope is not None:
-            self.metadata = self.metadata[self.metadata.country == scope.split("_")[-1]]
-        # scope the labels by the same data
-        self.labels = pd.read_parquet(self.base_dir / "birds.parquet")
-        self.labels = self.labels.reset_index()[self.labels.reset_index().file_name.isin(self.metadata.reset_index().file_name)]
-        self.labels = self.labels.reset_index().pivot(index=["file_i", "file_name", "country"], columns="species_name", values="counts")
-        self.labels = self.labels.fillna(0.0).astype(bool).astype(int)
-        # setup loading pipeline
-        self.s = self.metadata.index
-        self.x = self.metadata.file_name.to_numpy()
-        self.y = self.labels.to_numpy()
+            idx, = np.where(self.metadata.country == scope.split("_")[-1])
+            scope_idx = self.metadata.iloc[idx].index
+            self.metadata = self.metadata.loc[scope_idx]
+            self.train_metadata = self.train_metadata[self.train_metadata.index.isin(scope_idx)]
+            self.test_metadata = self.test_metadata[self.test_metadata.index.isin(scope_idx)]
+            self.labels = self.labels.loc[scope_idx]
+            self.train_labels = self.train_labels[self.train_labels.index.get_level_values("file_i").isin(scope_idx)]
+            self.test_labels = self.test_labels[self.test_labels.index.get_level_values("file_i").isin(scope_idx)]
+
+        self.metadata["file_path"] = self.base_dir / self.metadata["stage"] / "data" / self.metadata["file_name"]
+        self.train_metadata["file_path"] = self.base_dir / "train" / "data" / self.train_metadata["file_name"]
+        self.test_metadata["file_path"] = self.base_dir / "test" / "data" / self.test_metadata["file_name"]
+
+        if test == True:
+            self.s = self.test_metadata.index
+            self.x = self.test_metadata.file_path.to_numpy()
+            self.y = self.test_labels.to_numpy()
+        elif test == False:
+            self.s = self.train_metadata.index
+            self.x = self.train_metadata.file_path.to_numpy()
+            self.y = self.train_labels.to_numpy()
+        else:
+            self.s = self.metadata.index
+            self.x = self.metadata.file_path.to_numpy()
+            self.y = self.labels.to_numpy()
 
     @property
     def target_names(self):
@@ -122,15 +140,15 @@ class SoundingOutChorus(torch.utils.data.Dataset):
     def model_params(self) -> Dict:
         return {}
 
-    def load_sample(self, file_name: str) -> torch.Tensor:
-        file_path = self.data_dir / file_name
-        metadata = torchaudio.info(str(file_path))
+    def load_sample(self, file_path: str) -> torch.Tensor:
+        metadata = torchaudio.info(file_path)
         num_frames_segment = int(self.num_frames_in_segment / self.sample_rate * metadata.sample_rate)
         high = max(1, metadata.num_frames - num_frames_segment)
         frame_offset = torch.randint(low=0, high=high, size=(1,))
-        waveform, _ = torchaudio.load(str(file_path), num_frames=num_frames_segment)
+        waveform, _ = torchaudio.load(file_path, num_frames=num_frames_segment)
         return torchaudio.functional.resample(waveform, orig_freq=metadata.sample_rate, new_freq=self.sample_rate).squeeze()
 
+    # FIXME
     def _extract_metadata(self) -> None:
         csv_params = dict(encoding="ISO-8859-1", parse_dates=True, date_parser=pd.to_datetime, sep=',')
         metadata = pd.concat([

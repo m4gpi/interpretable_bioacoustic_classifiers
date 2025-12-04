@@ -31,6 +31,15 @@ from src.cli.utils.instantiators import instantiate_transforms
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+plt.rcParams.update({
+    'axes.labelsize': 14,
+    'xtick.labelsize': 14,
+    'ytick.labelsize': 14,
+    'axes.titlesize': 15,
+    'legend.fontsize': 16,
+    'legend.title_fontsize': 16,
+})
+
 def main(
     data_dir: Path,
     scores_path: Path,
@@ -62,13 +71,13 @@ def main(
     log.info("identify the habitat where selected species occur most frequently")
     species_params = [
         # { "species_name": "Sylvia atricapilla_Eurasian Blackcap", "file_name": "PL-11_0_20150603_0645.wav", "t_start_seconds": 19, "delta": 30,  },
-        { "species_name": "Turdus merula_Eurasian Blackbird", "file_name": "PL-12_0_20150604_0345.wav", "t_start_seconds": 4.3, "delta": 30,  },
-        { "species_name": "Erithacus rubecula_European Robin", "file_name": "BA-04_0_20150620_0515.wav", "t_start_seconds": 29, "delta": 15,  },
-        { "species_name": "Phasianus colchicus_Ring-necked Pheasant", "file_name": "PL-03_0_20150605_0445.wav", "t_start_seconds": 29.5, "delta": 15,  },
-        { "species_name": "Troglodytes hiemalis_Winter Wren", "file_name": "PL-11_0_20150605_0500.wav", "t_start_seconds": 45.2, "delta": 15,  },
-        { "species_name": "Cyanistes caeruleus_Eurasian Blue Tit", "file_name": "PL-12_0_20150604_0345.wav", "t_start_seconds": 47,"delta": 15,  },
-        { "species_name": "Columba palumbus_Common Wood-Pigeon", "file_name": "BA-04_0_20150620_0615.wav", "t_start_seconds": 24.2,  "delta": 20,  },
-        { "species_name": "Corvus corone_Carrion Crow", "file_name": "BA-01_0_20150621_0445.wav", "t_start_seconds": 32.6, "delta": 20,  }
+        { "species_name": "Turdus merula_Eurasian Blackbird", "file_name": "train/data/PL-12_0_20150604_0345.wav", "t_start_seconds": 4.3, "delta": 30,  },
+        { "species_name": "Erithacus rubecula_European Robin", "file_name": "train/data/BA-04_0_20150620_0515.wav", "t_start_seconds": 29, "delta": 15,  },
+        { "species_name": "Phasianus colchicus_Ring-necked Pheasant", "file_name": "train/data/PL-03_0_20150605_0445.wav", "t_start_seconds": 29.5, "delta": 15,  },
+        { "species_name": "Troglodytes hiemalis_Winter Wren", "file_name": "train/data/PL-11_0_20150605_0500.wav", "t_start_seconds": 45.2, "delta": 15,  },
+        { "species_name": "Cyanistes caeruleus_Eurasian Blue Tit", "file_name": "train/data/PL-12_0_20150604_0345.wav", "t_start_seconds": 47,"delta": 15,  },
+        { "species_name": "Columba palumbus_Common Wood-Pigeon", "file_name": "train/data/BA-04_0_20150620_0615.wav", "t_start_seconds": 24.2,  "delta": 20,  },
+        { "species_name": "Corvus corone_Carrion Crow", "file_name": "train/data/BA-01_0_20150621_0445.wav", "t_start_seconds": 32.6, "delta": 20,  }
     ]
     # identify the habitat where each species occurs most
     # for each species, we use that habitat average embedding as our background template for interpolation
@@ -97,6 +106,9 @@ def main(
     df["model_class"] = pd.Categorical(df["model_class"], categories=name_map.values(), ordered=True)
     df = df.sort_values("model_class").groupby("model_class").nth(seed_num).reset_index()
 
+    df = df[(df.model_name == "nifti_vae") | (df.model_name == "base_vae")]
+
+    habitat_map = {"PL": "UK1", "KN": "UK2", "BA": "UK3"}
     vaes = []
     clfs = []
     z_model_habitat_means = defaultdict(tree)
@@ -105,17 +117,13 @@ def main(
         with open(rootutils.find_root() / "config" / "model" / f"{row.model_name}.yaml", "r") as f:
             model_conf = yaml.safe_load(f.read())
             vae = hydra.utils.instantiate(model_conf)
-        checkpoint = torch.load(data_dir / row.vae_checkpoint_path)
+        checkpoint = torch.load(row.vae_checkpoint_path, map_location=device)
         vae.load_state_dict(checkpoint["model_state_dict"])
-        vaes.append(vae)
+        vaes.append(vae.to(device))
         log.info(f"Loaded {row.model_name} from {row.vae_checkpoint_path}")
         # load species logistic regression model weights
-        checkpoint = torch.load(row["clf_checkpoint_path"])
-        clf = {
-            param.split(".")[1]: checkpoint["state_dict"][param]
-            for param in checkpoint["state_dict"].keys()
-            if param.startswith("classifiers") and param.endswith("weight")
-        }
+        checkpoint = torch.load(row["clf_checkpoint_path"], map_location=device)
+        clf = {param.split(".")[1]: checkpoint["state_dict"][param] for param in checkpoint["state_dict"].keys() if param.startswith("classifiers") and param.endswith("weight")}
         clfs.append(clf)
         # compute the habitat model average embedding
         dm = SoundscapeEmbeddingsDataModule(
@@ -130,6 +138,7 @@ def main(
         embeddings = dm.data
         embeddings.labels = embeddings.labels.reset_index()
         embeddings.labels["habitat"] = embeddings.labels.file_name.str.split("-", expand=True)[0]
+        embeddings.labels["habitat"] = embeddings.labels.habitat.map(habitat_map)
         embeddings.labels.set_index(["file_i", "file_name", "country", "habitat"])
         # encode the habitat mean representation for this model
         z_mean = (
@@ -142,7 +151,7 @@ def main(
             .mean()
         )
         for habitat in z_mean.index:
-            z_model_habitat_mean = torch.tensor(z_mean.loc[habitat])
+            z_model_habitat_mean = torch.tensor(z_mean.loc[habitat], dtype=torch.float32, device=device)
             z_model_habitat_means[habitat][row.model_name] = z_model_habitat_mean.unsqueeze(0).unsqueeze(0)
 
     log.info("building plot, rendering spectrograms and interpolated reconstructions")
@@ -151,7 +160,7 @@ def main(
     fig, axes = plt.subplots(
         nrows=len(df) + 1,
         ncols=len(species_params) + 1,
-        figsize=(2 * len(species_params), 1.5 * (len(df) + 1)),
+        figsize=(2 * len(species_params), 2.5 * (len(df) + 1)),
         height_ratios=[*[1.0 / (len(vaes) + 1) for _ in range(len(vaes) + 1)]],
         width_ratios=[0.01, *[0.95 / (len(species_params)) for _ in range(len(species_params))]],
         constrained_layout=True,
@@ -166,7 +175,7 @@ def main(
             ax = axes[0, i + 1]
             t_start = int(t_start_seconds * hops_per_second)
             t_end = t_start + int(frame_length_seconds * hops_per_second)
-            x = transforms(data.load_sample(file_name)).squeeze()
+            x = transforms(data.load_sample(data.base_dir / file_name)).squeeze()
             x = 20 * np.log10(x[t_start:t_end].exp())
             # plot the original
             plot_mel_spectrogram(
@@ -188,7 +197,7 @@ def main(
                 vae, clf = vaes[j], clfs[j]
                 if i == 0:
                     title_ax = axes[j + 1, 0]
-                    title_ax.set_ylabel(name_map[row.model_class])
+                    title_ax.set_ylabel(name_map[row.model_name])
                     make_ax_invisible(title_ax)
                 # load scores for this species and mode;
                 model_species_scores = scores[
@@ -197,7 +206,7 @@ def main(
                     (scores["species_name"] == species_name)
                 ].iloc[0]
                 # fetch habitat silent embedding
-                z = z_model_habitat_means[habitat][row.model_class]
+                z = z_model_habitat_means[habitat][row.model_name]
                 # fetch weights of log reg model
                 log.info(f"generating {species_name} with {row.model_name}:{row.version}")
                 W = clf[species_name]
@@ -230,10 +239,11 @@ def main(
                 if i != 0:
                     ax.tick_params(labelleft=False, left=False)
                     ax.set_ylabel("")
-                AP = np.format_float_positional(model_species_scores['mAP'], precision=2)
+                AP = np.format_float_positional(model_species_scores['AP'], precision=2)
                 auROC = np.format_float_positional(model_species_scores['auROC'], precision=2)
-                ax.set_title(f"AP: {AP}, auROC: {auROC}")
+                ax.set_title(f"AP: {AP}\nauROC: {auROC}")
     fig.suptitle("SO UK")
+    save_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_dir / f"so_uk_{seed_num}_interpolation_w_scores.pdf", format="pdf", bbox_inches="tight")
     log.info(f"figure saved to {(save_dir / f'so_uk_{seed_num}_interpolation_w_scores.pdf').expanduser()}")
 

@@ -14,11 +14,10 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 from src.core.utils import metrics
 
 plt.rcParams.update({
-    'axes.labelsize': 14,
-    'xtick.labelsize': 12,
-    'ytick.labelsize': 12,
-    'legend.fontsize': 12,
-    'legend.title_fontsize': 13,
+    'axes.labelsize': 16,
+    'xtick.labelsize': 16,
+    'ytick.labelsize': 16,
+    'legend.fontsize': 13,
 })
 
 def flatten_label(label):
@@ -75,7 +74,7 @@ def main(
         palette = np.stack([(darken_color(color, 0.8), lighten_color(color, 0.6)) for color in sns.color_palette("husl", 4)]).reshape(8, 3).tolist()
 
     so_df = so_df.reset_index()
-    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(20, 6), constrained_layout=True)
+    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(12, 4), constrained_layout=True)
 
     sns.violinplot(
         data=so_df,
@@ -92,11 +91,13 @@ def main(
         bw_adjust=0.75,
         legend=True,
         ax=ax1,
+        width=0.9,
     )
+    ax1.margins(y=0.00)
     ax1.set_yticks(np.arange(0.0, 1.1, 0.2))
     ax1.set_ylim([0.0, 1.0])
     ax1.set_xlabel("")
-    ax1.set_ylabel("Area under\nROC curve (auROC)")
+    ax1.set_ylabel("auROC")
     ax1.set_xticks([])
 
     sns.violinplot(
@@ -114,15 +115,16 @@ def main(
         bw_adjust=0.75,
         ax=ax2,
         legend=False,
+        width=0.9,
     )
     ax2.set_yticks(np.arange(0.0, 1.1, 0.2))
     ax2.set_ylim([0.0, 1.0])
     ax2.set_xlabel("Dataset")
-    ax2.set_ylabel("Average Precision (AP)")
+    ax2.set_ylabel("AP")
 
     handles, labels = ax1.get_legend_handles_labels()
     ax1.legend_.remove()
-    ax1.legend(handles, list(map(flatten_label, labels)), loc='upper left', bbox_to_anchor=(1.01, 1.04), ncols=1, title="")
+    ax1.legend(handles, list(map(flatten_label, labels)), loc="lower center", bbox_to_anchor=(.5, 1), ncols=4, title="")
     plt.savefig(save_dir / "so_violin.pdf", format="pdf", bbox_inches="tight")
     print(f"Saved: {(save_dir / 'so_violin.pdf').expanduser()}")
 
@@ -135,7 +137,7 @@ def main(
     }
     rfcx_df = df[df["dataset_name"].isin(['RFCX bird', 'RFCX frog'])]
     palette = sns.color_palette("husl", 4)
-    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(18.5, 6), constrained_layout=True)
+    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(12, 4), constrained_layout=True)
 
     sns.violinplot(
         data=rfcx_df,
@@ -151,9 +153,10 @@ def main(
         bw_adjust=0.75,
         legend=True,
         ax=ax1,
+        width=0.9,
     )
     ax1.set_xlabel("")
-    ax1.set_ylabel("Area under\nROC curve (auROC)")
+    ax1.set_ylabel("auROC")
     ax1.set_xticks([])
     sns.violinplot(
         data=rfcx_df,
@@ -169,12 +172,13 @@ def main(
         bw_adjust=0.75,
         ax=ax2,
         legend=False,
+        width=0.9,
     )
     ax2.set_xlabel("Dataset")
-    ax2.set_ylabel("Average Precision (AP)")
+    ax2.set_ylabel("AP")
     handles, labels = ax1.get_legend_handles_labels()
     ax1.legend_.remove()
-    ax1.legend(handles, list(map(flatten_label, labels)), loc='upper left', bbox_to_anchor=(1.01, 1.04), ncols=1, title="")
+    ax1.legend(handles, list(map(flatten_label, labels)), loc="lower center", bbox_to_anchor=(.5, 1), ncols=4, title="")
 
     plt.savefig(save_dir / "rfcx_violin.pdf", format="pdf", bbox_inches="tight")
     print(f"Saved: {(save_dir / 'rfcx_violin.pdf').expanduser()}")
