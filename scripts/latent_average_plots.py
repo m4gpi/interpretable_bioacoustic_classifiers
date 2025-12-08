@@ -52,6 +52,14 @@ def get_transforms():
         del log_mel_spectrogram_params["_target_"]
     return transforms
 
+plt.rcParams.update({
+    'axes.labelsize': 12,
+    'xtick.labelsize': 12,
+    'ytick.labelsize': 12,
+    'legend.fontsize': 12,
+    'legend.title_fontsize': 12,
+})
+
 @torch.no_grad()
 def main(
     data_dir: pathlib.Path,
@@ -117,13 +125,6 @@ def main(
     fig, axes = plt.subplots(ncols=len(specs), figsize=(8.1, 1.5), constrained_layout=True)
     vmax, vmin = 0.0, -80
     for i, (ax, (title, x_hat_db)) in enumerate(zip(axes, specs)):
-        if i != 0:
-            ax.set_yticks([])
-            ax.set_ylabel("")
-        if i != 2:
-            ax.set_xlabel("")
-        # plot reconstruction
-        ax.set_title(title)
         plot_mel_spectrogram(
             x_hat_db.squeeze().t(),
             **spectrogram_params,
@@ -132,6 +133,13 @@ def main(
             cmap="Greys",
             ax=ax
         )
+        if i != 0:
+            ax.set_yticks([])
+            ax.set_ylabel("")
+        if i != 2:
+            ax.set_xlabel("")
+        ax.set_xticks([0, 191], [0, 1.536])
+        ax.set_title(title)
 
     save_file = save_dir / f"latent_averages.pdf"
     print(save_file)
