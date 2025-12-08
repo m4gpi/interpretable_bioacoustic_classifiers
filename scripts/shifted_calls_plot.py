@@ -184,10 +184,9 @@ def main(
         ax.set_ylabel("")
         ax.tick_params(left=False, labelleft=False, bottom=False, labelbottom=False)
         if i == 0:
-            ax.set_title(rf"$\Delta \hat{{t}} = {{{np.format_float_positional(dt_hat.item(), precision=2, min_digits=2)}}}$")
-            # ax.set_title("Reconstruction\n" + rf"$\Delta \hat{{t}} = {{{np.format_float_positional(dt_hat.item(), precision=2)}}}$")
+            ax.set_title(rf"$\hat{{\delta}}_{{t}} = {{{np.format_float_positional(dt_hat.item(), precision=2, min_digits=2)}}}$")
         else:
-            ax.set_title(rf"$\Delta \hat{{t}} = {{{np.format_float_positional(dt_hat.item(), precision=2, min_digits=2)}}}$")
+            ax.set_title(rf"$\hat{{\delta}}_t = {{{np.format_float_positional(dt_hat.item(), precision=2, min_digits=2)}}}$")
         if i == len(results) - 1:
             ax.set_xticks([0, 96, 288, 384], labels=["", 0.0, 1.536, ""])
             ax.tick_params(bottom=True, labelbottom=True)
@@ -215,7 +214,7 @@ def main(
             ax.set_xlabel("")
             ax.tick_params(labelleft=False, left=False, labelbottom=False, bottom=False)
             if i == 0:
-                ax.set_title(rf"$\Delta \hat{{t}} = {{{np.format_float_positional(dt, precision=2, min_digits=2)}}}$")
+                ax.set_title(rf"$\hat{{\delta}}_t = {{{np.format_float_positional(dt, precision=2, min_digits=2)}}}$")
             if i == len(results) - 1:
                 ax.set_xticks([0, 96, 288, 384], labels=["", 0.0, 1.536, ""])
                 ax.tick_params(bottom=True, labelbottom=True)
