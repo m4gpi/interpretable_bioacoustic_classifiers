@@ -79,7 +79,7 @@ def main(
     habitat_map = {"PL": "UK1", "KN": "UK2", "BA": "UK3", "TE": "EC1", "FS": "EC2", "PO": "EC3"}
     for scope, model, version in [("SO_UK", "nifti_vae", "v12"), ("SO_EC", "nifti_vae", "v12")]:
         model_dict = df[(df.model_name == model) & (df.version == version) & (df.scope == scope)].iloc[0].to_dict()
-        vae = get_vae(model_dict).to(device)
+        vae = get_vae(model_dict).to(device).eval()
         dm = SoundscapeEmbeddingsDataModule(root=data_dir, model=model, version=version, scope=scope)
         dm.setup()
         embeddings = dm.train_data
