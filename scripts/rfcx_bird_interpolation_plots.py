@@ -31,6 +31,15 @@ from src.cli.utils.instantiators import instantiate_transforms
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+plt.rcParams.update({
+    'axes.labelsize': 16,
+    'xtick.labelsize': 16,
+    'ytick.labelsize': 16,
+    'axes.titlesize': 14,
+    'figure.titlesize': 16,
+    'legend.fontsize': 13,
+})
+
 def main(
     data_dir: Path,
     scores_path: Path,
@@ -66,7 +75,7 @@ def main(
         { "species_name": "Vireo altiloquus_Black-whiskered Vireo", "file_name": "train/c4b778e64.flac", "t_start_seconds": 28.25, "delta": 20 },
         { "species_name": "Patagioenas squamosa_Scaly-naped Pigeon", "file_name": "train/21e2f2977.flac", "t_start_seconds": 23, "delta": 20 },
         { "species_name": "Nesospingus speculiferus_Puerto Rican Tanager", "file_name": "train/1702d35a0.flac", "t_start_seconds": 29.1, "delta": 20 },
-        { "species_name": "Spindalis portoricensis_Puerto Rican Spindalis", "file_name": "train/16553d5cd.flac", "t_start_seconds": 33.5, "delta": 20 },
+        # { "species_name": "Spindalis portoricensis_Puerto Rican Spindalis", "file_name": "train/16553d5cd.flac", "t_start_seconds": 33.5, "delta": 20 },
         { "species_name": "Melanerpes portoricensis_Puerto Rican Woodpecker", "file_name": "train/745171bf2.flac", "t_start_seconds": 4.5, "delta": 20 },
     ]
     # load final test scores
@@ -81,11 +90,12 @@ def main(
     name_map = {
         "base_vae": "VAE",
         "nifti_vae": "SIVAE",
-        "smooth_nifti_vae": "TSSIVAE",
+        # "smooth_nifti_vae": "TSSIVAE",
     }
     df["model_class"] = df["model_name"].map(name_map)
     df["model_class"] = pd.Categorical(df["model_class"], categories=name_map.values(), ordered=True)
     df = df.sort_values("model_class").groupby("model_class").nth(seed_num).reset_index()
+    df = df[df["model_name"].isin(["base_vae", "nifti_vae"])]
 
     vaes = []
     clfs = []
@@ -117,7 +127,7 @@ def main(
         )
         dm.setup()
         # encode the mean representation for this model
-        z_mean = dm.data.features.iloc[:, range(128)].mean()
+        z_mean = dm.train_data.features.iloc[:, range(128)].mean()
         z_model_means[row.model_name] = torch.tensor(z_mean, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
 
     log.info("building plot, rendering spectrograms and interpolated reconstructions")
@@ -126,7 +136,7 @@ def main(
     fig, axes = plt.subplots(
         nrows=len(df) + 1,
         ncols=len(species_params) + 1,
-        figsize=(2 * len(species_params), 1.5 * (len(df) + 1)),
+        figsize=(2 * len(species_params), 2.5 * (len(df) + 1)),
         height_ratios=[*[1.0 / (len(vaes) + 1) for _ in range(len(vaes) + 1)]],
         width_ratios=[0.01, *[0.95 / (len(species_params)) for _ in range(len(species_params))]],
         constrained_layout=True,
@@ -207,7 +217,7 @@ def main(
                     ax.set_ylabel("")
                 AP = np.format_float_positional(model_species_scores['AP'], precision=2)
                 auROC = np.format_float_positional(model_species_scores['auROC'], precision=2)
-                ax.set_title(f"AP: {AP}, auROC: {auROC}")
+                ax.set_title(f"AP: {AP}\nauROC: {auROC}")
     fig.suptitle("RFCX bird")
     fig.savefig(save_dir / f"rfcx_bird_{seed_num}_interpolation_w_scores.pdf", format="pdf", bbox_inches="tight")
     log.info(f"figure saved to {(save_dir / f'rfcx_bird_{seed_num}_interpolation_w_scores.pdf').expanduser()}")

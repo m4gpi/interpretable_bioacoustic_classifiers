@@ -12,114 +12,69 @@ from matplotlib import lines as mlines
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 plt.rcParams.update({
-    'axes.labelsize': 14,
-    'xtick.labelsize': 12,
+    'axes.labelsize': 12,
+    'xtick.labelsize': 6,
     'ytick.labelsize': 12,
     'legend.fontsize': 12,
-    'legend.title_fontsize': 13,
+    'legend.title_fontsize': 12,
 })
 
 def main(
     results_dir: pathlib.Path,
     save_dir: pathlib.Path,
 ):
-    df = pd.read_parquet(results_dir / "test_scores.parquet", columns=["species_name", "AP", "auROC", "model", "scope", "version"])
+    df = pd.read_parquet(results_dir / "test_scores.parquet", columns=["species_name", "AP", "auROC", "model", "scope", "version", "train_label_counts"])
     name_map = {
         "birdnet": "BirdNET V2.4",
         "base_vae": "VAE",
         "nifti_vae": "SIVAE",
-        "smooth_nifti_vae": "TSSIVAE",
+        # "smooth_nifti_vae": "TSSIVAE",
     }
     df["model_class"] = df["model"].map(name_map)
     df["dataset_name"] = df["scope"].str.replace("_", " ")
+    df["species_name"] = df["species_name"].map(lambda s: s.split("_")[-1])
 
-    order = (df[df["model"].isin(["base_vae", "nifti_vae", "smooth_nifti_vae"])].groupby("species_name")["AP"].max().sort_values(ascending=False)).index
-    palette = np.stack([color for color in sns.color_palette("husl", 4)]).reshape(4, 3).tolist()
-
+    palette = np.stack([color for color in sns.color_palette("colorblind", 4)]).reshape(4, 3).tolist()
     df = df.reset_index()
 
-    vae_df = df[df["model"].isin(["base_vae", "nifti_vae", "smooth_nifti_vae"])]
-    fig, ax = plt.subplots(figsize=(14, 4))
-    sns.boxplot(
-        data=vae_df,
-        x="species_name",
-        y="AP",
-        hue="model_class",
-        hue_order=list(name_map.values())[1:],
-        order=order,
-        ax=ax,
-        palette=palette[1:],
-    )
-    ax.tick_params("x", rotation=90, labelsize=8)
-    ax.set_ylim([0.0, 1.0])
-    ax.set_ylabel("Average Precision (AP)")
-    ax.set_xlabel("Species")
+    for scope in df["scope"].unique():
+        vae_df = df[df["model"].isin(["base_vae", "nifti_vae"]) & (df["scope"] == scope)]
+        order = vae_df.groupby("species_name")["train_label_counts"].first().sort_values(ascending=False).index
+        fig, (ax1, ax2) = plt.subplots(figsize=(8.1, 3.5), nrows=2)
+        sns.boxplot(
+            data=vae_df,
+            x="species_name",
+            y="AP",
+            hue="model_class",
+            hue_order=list(name_map.values())[1:],
+            order=order,
+            ax=ax1,
+            palette=palette[1:-1],
+            legend=True,
+        )
+        ax1.set_ylim([0.0, 1.0])
+        ax1.set_ylabel("AP")
+        ax1.set_xticklabels([])
+        ax1.set_xlabel("")
+        sns.move_legend(ax1, loc='upper right', bbox_to_anchor=(1.0, 1.55), ncols=2, title="Model")
 
-    x_positions = dict([(text.get_text(), text.get_position()[0]) for text in ax.get_xticklabels()])
-    for _, row in df[df["model"] == "birdnet"].iterrows():
-        if row.species_name in vae_df.species_name.unique():
-            plt.scatter(
-                x_positions[row["species_name"]],
-                row["AP"],
-                color=palette[0],
-                marker='D',
-                s=2,
-                zorder=10,
-            )
-    handles, labels = ax.get_legend_handles_labels()
-    handles.append(mlines.Line2D(
-        [], [],
-        color=palette[0],
-        marker='D',
-        markersize=8,
-        label=name_map["birdnet"],
-    ))
-    labels.append(name_map["birdnet"])
-    ax.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.25), ncols=4, title="")
-    ax.margins(x=0.005)
-    fig.savefig(save_dir / "species_ap_box_plot.pdf", format="pdf", bbox_inches="tight")
-    print(f"Saved: {(save_dir / 'species_ap_box_plot.pdf').expanduser()}")
-
-    fig, ax = plt.subplots(figsize=(14, 4))
-    sns.boxplot(
-        data=vae_df,
-        x="species_name",
-        y="auROC",
-        hue="model_class",
-        hue_order=list(name_map.values()),
-        order=order,
-        ax=ax,
-        palette=palette,
-
-    )
-    ax.tick_params("x", rotation=90, labelsize=8)
-    ax.set_ylim([0.5, 1.0])
-    ax.set_ylabel("auROC")
-    ax.set_xlabel("Species")
-    x_positions = dict([(text.get_text(), text.get_position()[0]) for text in ax.get_xticklabels()])
-    for _, row in df[df["model"] == "birdnet"].iterrows():
-        if row.species_name in vae_df.species_name.unique():
-            plt.scatter(
-                x_positions[row["species_name"]],
-                row["AP"],
-                color=palette[0],
-                marker='D',
-                s=2,
-                zorder=10,
-            )
-    handles, labels = ax.get_legend_handles_labels()
-    handles.append(mlines.Line2D(
-        [], [],
-        color=palette[0],
-        marker='D',
-        markersize=8,
-        label=name_map["birdnet"],
-    ))
-    labels.append(name_map["birdnet"])
-    ax.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.25), ncols=4, title="")
-    ax.margins(x=0.005)
-    fig.savefig(save_dir / "species_auroc_box_plot.pdf", format="pdf", bbox_inches="tight")
-    print(f"Saved: {(save_dir / 'species_auroc_box_plot.pdf').expanduser()}")
+        sns.boxplot(
+            data=vae_df,
+            x="species_name",
+            y="auROC",
+            hue="model_class",
+            hue_order=list(name_map.values())[1:],
+            order=order,
+            ax=ax2,
+            palette=palette[1:-1],
+            legend=False,
+        )
+        ax2.tick_params("x", rotation=90)
+        ax2.set_ylim([0.5, 1.0])
+        ax2.set_ylabel("auROC")
+        ax2.set_xlabel("Species")
+        fig.savefig(save_dir / f"{scope}_box_plot.pdf", format="pdf", bbox_inches="tight")
+        print(f"Saved: {(save_dir / f'{scope}_box_plot.pdf').expanduser()}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

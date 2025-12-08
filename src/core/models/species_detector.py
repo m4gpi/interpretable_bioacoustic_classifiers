@@ -36,9 +36,9 @@ class SpeciesDetector(L.LightningModule):
     target_names: List[str]
     target_counts: List[int]
     in_features: int
-    l1_penalty: float
-    beta: float
-    clf_learning_rate: float
+    beta: float | None
+    l1_penalty: float | None = None
+    clf_learning_rate: float | None = None
     penalty_multiplier: int = 1.0
     label_smoothing: float = 0.0
     pool_method: str = "max"
@@ -180,6 +180,41 @@ class SpeciesDetector(L.LightningModule):
         else:
             raise ValueError(f"'{stage}' is not a valid stage")
         return dict(max_epochs=max_epochs)
+
+    def classifier_weights(self, target_name: str):
+        return self.classifiers[target_name].weight
+
+    def attention_weights(self, x: torch.Tensor, target_name: str):
+        attention_U = self.attention_U[target_name]
+        attention_w = self.attention_w[target_name]
+        A_V = torch.tanh(self.attention_V(x)) # (N, T, D)
+        A_U = torch.sigmoid(attention_U(x))
+        A = F.softmax(attention_w(A_V * A_U), dim=-2) # (N, T, 1)
+        return A
+
+    def species_frame_probs(self, x: torch.Tensor, target_name: str, num_samples: int = 100) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if num_samples is not None:
+            q = x
+            mean, log_var = q.chunk(2, dim=-1)
+            mean = mean.unsqueeze(1).expand(-1, num_samples, -1, -1)
+            log_var = log_var.unsqueeze(1).expand(-1, num_samples, -1, -1)
+            z = mean + torch.randn_like(mean) * (0.5 * log_var).exp()
+
+        clf = self.classifiers[target_name]
+        attention_U = self.attention_U[target_name]
+        attention_w = self.attention_w[target_name]
+        A_V = torch.tanh(self.attention_V(z))
+        A_U = torch.sigmoid(attention_U(z))
+        A = F.softmax(attention_w(A_V * A_U), dim=-2)
+        frame_probs, weighted_frame_probs = torch.sigmoid(clf(z)), torch.sigmoid(clf(z * A))
+
+        if num_samples is not None:
+            frame_probs = frame_probs.mean(dim=1)
+            weighted_frame_probs = weighted_frame_probs.mean(dim=1)
+            A = A.mean(dim=1)
+
+        return frame_probs, weighted_frame_probs, A
+
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor | None]:
         # pool by taking a linear combination of *features* as a function of the data

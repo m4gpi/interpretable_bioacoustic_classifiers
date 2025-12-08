@@ -35,12 +35,13 @@ def main(
     save_dir: pathlib.Path,
 ) -> None:
     df = pd.read_parquet(results_dir / "test_scores.parquet", columns=["species_name", "AP", "auROC", "model", "scope", "version"])
-    palette = list(sns.color_palette("husl", 4))
+    df = df[df["model"].isin(["base_vae", "nifti_vae", "birdnet"])]
+    palette = list(sns.color_palette("colorblind", 3))
     name_map = {
         "birdnet": "BirdNET V2.4",
         "base_vae": "VAE",
         "nifti_vae": "SIVAE",
-        "smooth_nifti_vae": "TSSIVAE",
+        # "smooth_nifti_vae": "TSSIVAE",
     }
 
     # ---- SO ---- #
@@ -56,8 +57,8 @@ def main(
             "base_vae_occ": "VAE (Occlusions only)",
             "nifti_vae": "SIVAE",
             "nifti_vae_occ": "SIVAE (Occlusions only)",
-            "smooth_nifti_vae": "TSSIVAE",
-            "smooth_nifti_vae_occ": "TSSIVAE (Occlusions only)",
+            # "smooth_nifti_vae": "TSSIVAE",
+            # "smooth_nifti_vae_occ": "TSSIVAE (Occlusions only)",
         }
         probs_df = pd.read_parquet(results_dir / "test_results.parquet", columns=["file_i", "species_name", "label", "prob", "model", "version", "scope"])
         occ_df = (
@@ -67,11 +68,12 @@ def main(
             .reset_index()
             .set_index("species_name")
         )
+        occ_df[occ_df["model"].isin(["base_vae", "nifti_vae", "birdnet"])]
         occ_df["model"] = occ_df["model"] + "_occ"
         occ_df["model_class"] = occ_df["model"].map(name_map)
         occ_df["dataset_name"] = occ_df["scope"].str.replace("_", " ")
         so_df = pd.concat([so_df, occ_df])
-        palette = np.stack([(darken_color(color, 0.8), lighten_color(color, 0.6)) for color in sns.color_palette("husl", 4)]).reshape(8, 3).tolist()
+        palette = np.stack([(darken_color(color, 0.8), lighten_color(color, 0.6)) for color in sns.color_palette("colorblind", 3)]).reshape(6, 3).tolist()
 
     so_df = so_df.reset_index()
     fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(12, 4), constrained_layout=True)
@@ -133,10 +135,10 @@ def main(
         "birdnet": "BirdNET V2.4",
         "base_vae": "VAE",
         "nifti_vae": "SIVAE",
-        "smooth_nifti_vae": "TSSIVAE",
+        # "smooth_nifti_vae": "TSSIVAE",
     }
     rfcx_df = df[df["dataset_name"].isin(['RFCX bird', 'RFCX frog'])]
-    palette = sns.color_palette("husl", 4)
+    palette = sns.color_palette("colorblind", 3)
     fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(12, 4), constrained_layout=True)
 
     sns.violinplot(
@@ -155,6 +157,9 @@ def main(
         ax=ax1,
         width=0.9,
     )
+    ax1.margins(y=0.00)
+    ax1.set_yticks(np.arange(0.0, 1.1, 0.2))
+    ax1.set_ylim([0.0, 1.0])
     ax1.set_xlabel("")
     ax1.set_ylabel("auROC")
     ax1.set_xticks([])
@@ -174,6 +179,8 @@ def main(
         legend=False,
         width=0.9,
     )
+    ax2.set_yticks(np.arange(0.0, 1.1, 0.2))
+    ax2.set_ylim([0.0, 1.0])
     ax2.set_xlabel("Dataset")
     ax2.set_ylabel("AP")
     handles, labels = ax1.get_legend_handles_labels()

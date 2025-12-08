@@ -32,12 +32,12 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 plt.rcParams.update({
-    'axes.labelsize': 16,
-    'xtick.labelsize': 16,
-    'ytick.labelsize': 16,
+    'axes.labelsize': 12,
+    'xtick.labelsize': 12,
+    'ytick.labelsize': 12,
     'axes.titlesize': 12,
-    'figure.titlesize': 16,
-    'legend.fontsize': 13,
+    'legend.fontsize': 12,
+    'legend.title_fontsize': 12,
 })
 
 def main(
@@ -50,13 +50,13 @@ def main(
     device = f"cuda:{device_id}" if device_id is not None else "cpu"
     # load model info
     index = pd.read_parquet(data_dir / "index.parquet")
-    # filter to SO EC
-    df = index[index["scope"] == "SO_EC"].copy()
+    # filter to SO UK
+    df = index[index["scope"] == "SO_UK"].copy()
     # FIXME: check temporal shift parameter...
     df.loc[df["model_name"] == "nifti_vae", "delta_t"] = 0.0
     df.loc[df["model_name"] == "smooth_nifti_vae", "delta_t"] = 1.0
     # init audio dataset and audio params
-    log.info("loading SO EC dataset")
+    log.info("loading SO UK dataset")
     with open(rootutils.find_root() / "config" / "transforms" / "cropped_log_mel_spectrogram.yaml", "r") as f:
         transform_conf = yaml.safe_load(f.read())
         transforms = instantiate_transforms(transform_conf)
@@ -66,18 +66,18 @@ def main(
     hops_per_second = spectrogram.sample_rate / spectrogram.hop_length
     frame_length_seconds = 192 / hops_per_second
     frame_length_hops = 192
-    data = SoundingOutChorus("~/data/sounding_out", sample_rate=spectrogram.sample_rate)
+    data = SoundingOutChorus("~/data/sounding_out", sample_rate=spectrogram.sample_rate, test=False)
     # define the species we want to render examples and generate interpolations for
     log.info("identify the habitat where selected species occur most frequently")
     species_params = [
-        { "species_name": "Coereba flaveola_Bananaquit", "file_name": "train/data/FS-11_0_20150806_0600.wav", "t_start_seconds": 32.4, "delta": 30 },
-        { "species_name": "Poliocrania exsul_Chestnut-backed Antbird", "file_name": "train/data/TE-03_0_20150716_0635.wav", "t_start_seconds": 25.2, "delta": 20 },
-        { "species_name": "Ramphocelus flammigerus_Flame-rumped Tanager", "file_name": "test/data/PO-11_0_20150815_1815.wav", "t_start_seconds": 0.0, "delta": 30 },
-        { "species_name": "Leptotila pallida_Pallid Dove", "file_name": "train/data/PO-11_0_20150818_0625.wav", "t_start_seconds": 6.5, "delta": 30 },
-        { "species_name": "Capsiempis flaveola_Yellow Tyrannulet", "file_name": "train/data/PO-03_0_20150815_0640.wav", "t_start_seconds": 16.0, "delta": 30 },
-        { "species_name": "Mionectes oleagineus_Ochre-bellied Flycatcher", "file_name": "train/data/FS-16_0_20150802_0645.wav", "t_start_seconds": 0.2, "delta": 30 },
-        { "species_name": "Microbates cinereiventris_Tawny-faced Gnatwren", "file_name": "train/data/TE-06_0_20150716_0645.wav", "t_start_seconds": 33.5, "delta": 30 },
-        { "species_name": "Manacus manacus_White-bearded Manakin", "file_name": "train/data/FS-04_0_20150802_0650.wav", "t_start_seconds": 41.2, "delta": 30 },
+        # { "species_name": "Sylvia atricapilla_Eurasian Blackcap", "file_name": "PL-11_0_20150603_0645.wav", "t_start_seconds": 19, "delta": 30,  },
+        { "species_name": "Turdus merula_Eurasian Blackbird", "file_name": "train/data/PL-12_0_20150604_0345.wav", "t_start_seconds": 4.3, "delta": 30,  },
+        { "species_name": "Erithacus rubecula_European Robin", "file_name": "train/data/BA-04_0_20150620_0515.wav", "t_start_seconds": 29, "delta": 15,  },
+        { "species_name": "Phasianus colchicus_Ring-necked Pheasant", "file_name": "train/data/PL-03_0_20150605_0445.wav", "t_start_seconds": 29.5, "delta": 15,  },
+        { "species_name": "Troglodytes hiemalis_Winter Wren", "file_name": "train/data/PL-11_0_20150605_0500.wav", "t_start_seconds": 45.2, "delta": 15,  },
+        { "species_name": "Cyanistes caeruleus_Eurasian Blue Tit", "file_name": "train/data/PL-12_0_20150604_0345.wav", "t_start_seconds": 47,"delta": 15,  },
+        { "species_name": "Columba palumbus_Common Wood-Pigeon", "file_name": "train/data/BA-04_0_20150620_0615.wav", "t_start_seconds": 24.2,  "delta": 20,  },
+        { "species_name": "Corvus corone_Carrion Crow", "file_name": "train/data/BA-01_0_20150621_0445.wav", "t_start_seconds": 32.6, "delta": 20,  }
     ]
     # identify the habitat where each species occurs most
     # for each species, we use that habitat average embedding as our background template for interpolation
@@ -93,24 +93,24 @@ def main(
     scores = pd.read_parquet(scores_path).reset_index()
     scores = scores[
         (scores["species_name"].isin([s["species_name"] for s in species_params])) &
-        (scores["scope"] == "SO_EC")
+        (scores["scope"] == "SO_UK")
     ]
     # sort by model class for figure order, load and cache all models
     log.info("loading and caching VAEs and CLFs")
     name_map = {
         "base_vae": "VAE",
         "nifti_vae": "SIVAE",
-        # "smooth_nifti_vae": "TSSIVAE",
+        "smooth_nifti_vae": "TSSIVAE",
     }
     df["model_class"] = df["model_name"].map(name_map)
     df["model_class"] = pd.Categorical(df["model_class"], categories=name_map.values(), ordered=True)
-    df = df[df["model_name"].isin(["base_vae", "nifti_vae"])]
     df = df.sort_values("model_class").groupby("model_class").nth(seed_num).reset_index()
-    habitat_map = {"TE": "EC1", "FS": "EC2", "PO": "EC3"}
 
+    habitat_map = {"PL": "UK1", "KN": "UK2", "BA": "UK3"}
     vaes = []
     clfs = []
     z_model_habitat_means = defaultdict(tree)
+
     for i, row in df.iterrows():
         # load the pretrained VAE
         with open(rootutils.find_root() / "config" / "model" / f"{row.model_name}.yaml", "r") as f:
@@ -129,29 +129,24 @@ def main(
             root=data_dir,
             model=row.model_name,
             version=row.version,
-            scope="SO_EC",
+            scope="SO_UK",
             transforms=None, # FIXME this shouldnt be required
         )
         dm.setup()
         # FIXME hack in the habitat labels using the file name
-        embeddings = dm.train_data
+        embeddings = dm.data
         embeddings.labels = embeddings.labels.reset_index()
         embeddings.labels["habitat"] = embeddings.labels.file_name.str.split("-", expand=True)[0]
         embeddings.labels["habitat"] = embeddings.labels.habitat.map(habitat_map)
         embeddings.labels.set_index(["file_i", "file_name", "country", "habitat"])
-        # encode the habitat mean representation for this model
-        z_mean = (
-            embeddings
-            .features
-            .iloc[:, range(128)]
-            .merge(embeddings.labels[["file_i", "habitat"]], on="file_i", how="left")
-            .drop("file_i", axis=1)
-            .groupby("habitat")
-            .mean()
-        )
-        for habitat in z_mean.index:
-            z_model_habitat_mean = torch.tensor(z_mean.loc[habitat], dtype=torch.float32, device=device)
-            z_model_habitat_means[habitat][row.model_name] = z_model_habitat_mean.unsqueeze(0).unsqueeze(0)
+        # realise N different starting points by drawing samples and averaging
+        for habitat, features in embeddings.features.merge(embeddings.labels[["file_i", "habitat"]], on="file_i", how="left").drop("file_i", axis=1).groupby("habitat"):
+            z_model_habitat_means[habitat][row.model_name] = []
+            z_mean, z_log_var = features.iloc[:, :128], features.iloc[:, 128:256]
+            for i in range(10):
+                z = z_mean.to_numpy() + np.random.randn(len(z_mean), 128) * np.exp(0.5 * z_log_var.to_numpy())
+                z0 = torch.tensor(z.sum(axis=0), dtype=torch.float32, device=device)
+                z_model_habitat_means[habitat][row.model_name].append(z0.unsqueeze(0).unsqueeze(0))
 
     log.info("building plot, rendering spectrograms and interpolated reconstructions")
     # plot spectrograms and interpolated reconstructions
@@ -204,46 +199,47 @@ def main(
                     (scores["version"] == row["version"]) &
                     (scores["species_name"] == species_name)
                 ].iloc[0]
-                # fetch habitat silent embedding
-                z = z_model_habitat_means[habitat][row.model_name]
-                # fetch weights of log reg model
-                log.info(f"generating {species_name} with {row.model_name}:{row.version}")
-                W = clf[species_name]
-                # linear interpolation across the hyperplane by delta
-                # delta needs to be tuned per species
-                norm = torch.linalg.norm(W)
-                z_tilde = z + ((z @ W.T / norm) + delta) * (W / norm)
-                # decode using VAE with alignment factor dt
-                if row.model_name == "base_vae":
-                    x_tilde = vae.decode(z_tilde).cpu()
-                else:
-                    # dt is tunable by VAE
-                    x_tilde = vae.decode(z_tilde, torch.ones(1, 1, 1, device=z.device) * row.delta_t).cpu()
-                # map to decibels
-                x_tilde_db = 20 * np.log10(x_tilde.exp())
-                ax = axes[j + 1, i + 1]
-                # plot reconstruction
-                plot_mel_spectrogram(
-                    x_tilde_db.squeeze().t(),
-                    **log_mel_spectrogram_params,
-                    vmax=vmax,
-                    vmin=vmin,
-                    cmap="Greys",
-                    ax=ax
-                )
-                ax.set_xticks([0, 191], [0.0, 1.536], rotation=90)
-                if j != len(df) - 1:
-                    ax.tick_params(labelbottom=False, bottom=False)
-                    ax.set_xlabel("")
-                if i != 0:
-                    ax.tick_params(labelleft=False, left=False)
-                    ax.set_ylabel("")
-                AP = np.format_float_positional(model_species_scores['AP'], precision=2)
-                auROC = np.format_float_positional(model_species_scores['auROC'], precision=2)
-                ax.set_title(f"AP: {AP}\nauROC: {auROC}")
-    fig.suptitle("SO EC")
-    fig.savefig(save_dir / f"so_ec_{seed_num}_interpolation_w_scores.pdf", format="pdf", bbox_inches="tight")
-    log.info(f"figure saved to {(save_dir / f'so_ec_{seed_num}_interpolation_w_scores.pdf').expanduser()}")
+                # fetch N habitat silent embeddings
+                for z in z_model_habitat_means[habitat][row.model_name]:
+                    # fetch weights of log reg model
+                    log.info(f"generating {species_name} with {row.model_name}:{row.version}")
+                    W = clf[species_name]
+                    # linear interpolation across the hyperplane by delta
+                    # delta needs to be tuned per species
+                    norm = torch.linalg.norm(W)
+                    z_tilde = z # z + ((z @ W.T / norm) + delta) * (W / norm)
+                    # decode using VAE with alignment factor dt
+                    if row.model_name == "base_vae":
+                        x_tilde = vae.decode(z_tilde).cpu()
+                    else:
+                        # dt is tunable by VAE
+                        x_tilde = vae.decode(z_tilde, torch.ones(1, 1, 1, device=z.device) * row.delta_t).cpu()
+                    # map to decibels
+                    x_tilde_db = (20 * np.log10(np.exp(x_tilde).T))
+                    ax = axes[j + 1, i + 1]
+                    # plot reconstruction
+                    plot_mel_spectrogram(
+                        x_tilde_db,
+                        **log_mel_spectrogram_params,
+                        vmax=vmax,
+                        vmin=vmin,
+                        cmap="Greys",
+                        ax=ax
+                    )
+                    ax.set_xticks([0, 191], [0.0, 1.536], rotation=90)
+                    if j != len(df) - 1:
+                        ax.tick_params(labelbottom=False, bottom=False)
+                        ax.set_xlabel("")
+                    if i != 0:
+                        ax.tick_params(labelleft=False, left=False)
+                        ax.set_ylabel("")
+                    AP = np.format_float_positional(model_species_scores['AP'], precision=2)
+                    auROC = np.format_float_positional(model_species_scores['auROC'], precision=2)
+                    ax.set_title(f"AP: {AP}\nauROC: {auROC}")
+    fig.suptitle("SO UK")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_dir / f"so_uk_{seed_num}_interpolation_w_scores.pdf", format="pdf", bbox_inches="tight")
+    log.info(f"figure saved to {(save_dir / f'so_uk_{seed_num}_interpolation_w_scores.pdf').expanduser()}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

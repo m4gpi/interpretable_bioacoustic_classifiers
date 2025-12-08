@@ -6,7 +6,7 @@ import pandas as pd
 import sklearn
 import torch
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 from src.core.utils import tree
 
@@ -59,7 +59,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     scope: str = attrs.field(default=None)
     version: str = attrs.field(default=None)
 
-    transforms: attrs.field(default=None)
+    transforms: List[Callable] = attrs.field(default=None)
     train_batch_size: int | None = attrs.field(default=None)
     eval_batch_size: int | None = attrs.field(default=None)
     val_prop: float = attrs.field(default=0.2, validator=attrs.validators.instance_of(float))
@@ -119,11 +119,11 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
         # MODELS[self.model].load_from_checkpoint(self.root / "model.pt")
 
     def setup(self, stage: str | None = None) -> None:
-        index = pd.read_parquet(self.root / "index.parquet")
-        query = (index["model_name"] == self.model) & (index["version"] == self.version) & (index["scope"] == self.scope)
+        self.index = pd.read_parquet(self.root / "index.parquet")
+        query = (self.index["model_name"] == self.model) & (self.index["version"] == self.version) & (self.index["scope"] == self.scope)
         assert query.any(), f"Data does not exist for {self.model} {self.version} {self.scope}"
         # reuse the seed from pre-training
-        record = index[query].iloc[0]
+        record = self.index[query].iloc[0]
         self.seed = record.seed
         L.seed_everything(self.seed)
 

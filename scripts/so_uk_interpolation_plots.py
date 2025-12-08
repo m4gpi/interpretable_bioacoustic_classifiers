@@ -32,12 +32,12 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 plt.rcParams.update({
-    'axes.labelsize': 14,
-    'xtick.labelsize': 14,
-    'ytick.labelsize': 14,
-    'axes.titlesize': 15,
-    'legend.fontsize': 16,
-    'legend.title_fontsize': 16,
+    'axes.labelsize': 16,
+    'xtick.labelsize': 16,
+    'ytick.labelsize': 16,
+    'axes.titlesize': 14,
+    'figure.titlesize': 16,
+    'legend.fontsize': 13,
 })
 
 def main(
@@ -104,14 +104,14 @@ def main(
     }
     df["model_class"] = df["model_name"].map(name_map)
     df["model_class"] = pd.Categorical(df["model_class"], categories=name_map.values(), ordered=True)
-    df = df.sort_values("model_class").groupby("model_class").nth(seed_num).reset_index()
-
-    df = df[(df.model_name == "nifti_vae") | (df.model_name == "base_vae")]
+    df = df.sort_values("seed").groupby("model_class").nth(seed_num).reset_index()
+    df = df[df["model_name"].isin(["base_vae", "nifti_vae"])]
 
     habitat_map = {"PL": "UK1", "KN": "UK2", "BA": "UK3"}
     vaes = []
     clfs = []
     z_model_habitat_means = defaultdict(tree)
+
     for i, row in df.iterrows():
         # load the pretrained VAE
         with open(rootutils.find_root() / "config" / "model" / f"{row.model_name}.yaml", "r") as f:
@@ -135,7 +135,7 @@ def main(
         )
         dm.setup()
         # FIXME hack in the habitat labels using the file name
-        embeddings = dm.data
+        embeddings = dm.train_data
         embeddings.labels = embeddings.labels.reset_index()
         embeddings.labels["habitat"] = embeddings.labels.file_name.str.split("-", expand=True)[0]
         embeddings.labels["habitat"] = embeddings.labels.habitat.map(habitat_map)
@@ -210,6 +210,7 @@ def main(
                 # fetch weights of log reg model
                 log.info(f"generating {species_name} with {row.model_name}:{row.version}")
                 W = clf[species_name]
+                # slightly different realisations by adding little noise to the representation and decode
                 # linear interpolation across the hyperplane by delta
                 # delta needs to be tuned per species
                 norm = torch.linalg.norm(W)
@@ -221,7 +222,7 @@ def main(
                     # dt is tunable by VAE
                     x_tilde = vae.decode(z_tilde, torch.ones(1, 1, 1, device=z.device) * row.delta_t).cpu()
                 # map to decibels
-                x_tilde_db = 20 * np.log10(x_tilde.exp())
+                x_tilde_db = 20 * np.log10(x_tilde.exp().mean(axis=0))
                 ax = axes[j + 1, i + 1]
                 # plot reconstruction
                 plot_mel_spectrogram(

@@ -97,3 +97,83 @@ def make_ax_invisible(ax: Axes) -> None:
     ax.set_yticks([])
     ax.set_xticks([])
 
+def plot_species_proba_spectrogram(
+    x: NDArray,
+    y_probs: NDArray,
+    frame_length: int,
+    sample_rate: int = 48_000,
+    hop_length: int = 384,
+    bounding_boxes: NDArray | None = None,
+    ax: Axes = None,
+    spectrogram_cmap = "Grays",
+    frame_prob_colour = "#42BC71",
+    **kwargs: Any
+) -> AxesImage:
+    hops_per_second = sample_rate / hop_length
+    hop_duration = 1 / hops_per_second
+    duration = x.shape[-2] * hop_duration
+    frame_duration = hop_duration * frame_length
+
+    im = plot_mel_spectrogram(x.T, ax=ax, cmap="Grays", sample_rate=sample_rate, hop_length=hop_length, **kwargs)
+
+    x_tick_labels = [np.format_float_positional(t, precision=3) for t in np.arange(0, duration, frame_duration * 5)]
+    ax.set_xticks(np.arange(0, x.shape[-2], frame_length * 5), x_tick_labels)
+
+    if bounding_boxes is not None:
+        for (t_start, t_end, f_start, f_end) in bounding_boxes:
+            rect = patches.Rectangle([t_start, f_start], t_end - t_start, f_end - f_start, linewidth=3, edgecolor="white", facecolor='none', zorder=10)
+            ax.add_patch(rect)
+
+    for t in np.arange(0, int(duration / frame_duration)):
+        ax.axvline(x=(t * frame_length), ymin=0, ymax=1, color="white", linestyle="dashed", alpha=0.75)
+
+    if threshold is not None:
+        ax2 = ax.twinx()
+        for i in range(y_probs.shape[0]):
+            x_start, x_end = i * frame_length, i * frame_length + frame_length
+            xs = np.arange(x_start, x_end)
+            ys = y_probs[i].repeat(frame_length)
+            # define a binary confusion matrix to track the prediction
+            flags = np.zeros((2, 2))
+            for t_start, t_end, _, _ in bounding_boxes:
+                ts = np.arange(t_start, t_end)
+                # if there's an intersection, we know theres a call here
+                overlap = set(xs).intersection(ts)
+                if len(overlap):
+                    if y_probs[i] > threshold: # true positive
+                        flags[0, 0] = 1
+                    else: # false negative
+                        flags[1, 0] = 1 
+                else:
+                    # then we're looking either at a bounding box that shouldn't be being considered
+                    # we're missing a condition...
+                    if y_probs[i] > threshold: # false positive
+                        flags[0, 1] = 1
+            if flags[0, 0] == 1:
+                colour = true_pos_colour
+            elif flags[1, 0] == 1:
+                colour = false_neg_colour
+            elif flags[0, 1] == 1:
+                colour = false_pos_colour
+            else:
+                colour = true_neg_colour
+            ax2.fill_between(xs, ys, step="pre", alpha=0.25, color=colour)
+            ax2.plot(xs, ys, drawstyle="steps", color=colour)
+
+        ax2.axhline(y=threshold, xmin=0, xmax=x.shape[-2], color=thresh_colour, linewidth=2.0, linestyle="dotted")
+        ax2.set_xlim(ax.get_xlim())
+        ax2.set_ylim(0, 1)
+        ax2.set_ylabel(r"$p(y_s|\mathbf{z}^t)$")
+
+    frames_line = lines.Line2D([], [], color="black", linestyle="--", linewidth=2, label='Frames')
+    bounding_box_patch = patches.Patch(edgecolor="black", facecolor='none', linewidth=2, label='Species Call')
+    thresh_line = lines.Line2D([], [], color=thresh_colour, linestyle='dotted', linewidth=2, label='Threshold')
+    spec_handles = [frames_line, thresh_line, bounding_box_patch]
+
+    tp_line = lines.Line2D([], [], color=true_pos_colour, linewidth=2, label='True Positive')
+    fp_line = lines.Line2D([], [], color=false_pos_colour, linewidth=2, label='False Positive')
+    fn_line = lines.Line2D([], [], color=false_neg_colour, linewidth=2, label='False Negative')
+    tn_line = lines.Line2D([], [], color="#c4c4c4", linewidth=2, label='True Negative')
+    pred_handles = [tp_line, fp_line, fn_line, tn_line]
+
+    return im, spec_handles, pred_handles, ax2
