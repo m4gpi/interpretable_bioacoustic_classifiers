@@ -219,7 +219,7 @@ class BaseVAE(L.LightningModule):
             U = block(U)
         frame_params = self.latent_frame_params
         if hop_length is not None: frame_params.update(dict(hop_length=hop_length // 2**(self.cnn_layers)))
-        U = frame_fold(U, **frame_params) if x.size(-2) > self.frame_window_length else U.unsqueeze(1)
+        U = frame_fold(U, **frame_params) if x.size(-2) > self.latent_window_length else U.unsqueeze(1)
         mu_x, log_sigma_sq_x = self.content_encoder(U.flatten(end_dim=1)).unflatten(dim=0, sizes=(U.size(0), U.size(1))).chunk(2, dim=-1)
         log_sigma_sq_x = soft_clip(log_sigma_sq_x, minimum=np.log(self.sigma_x_min ** 2))
         return torch.cat([mu_x, log_sigma_sq_x], dim=-1), U

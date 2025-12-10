@@ -143,7 +143,7 @@ class SmoothNiftiVAE(BaseVAE):
         frame_params = self.latent_frame_params
         if hop_length is not None:
             frame_params.update(dict(hop_length=hop_length // 2**(self.cnn_layers)))
-        x = frame(x, **frame_params) if x.size(-2) > self.frame_window_length else x.unsqueeze(1)
+        x = frame(x, **frame_params) if x.size(-2) > self.latent_window_length else x.unsqueeze(1)
         return x
 
     def mlp_encode(self, x: Tensor) -> Tuple[Tensor, Tensor]:
