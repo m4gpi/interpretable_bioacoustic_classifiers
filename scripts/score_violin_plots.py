@@ -14,10 +14,11 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 from src.core.utils import metrics
 
 plt.rcParams.update({
-    'axes.labelsize': 16,
-    'xtick.labelsize': 16,
-    'ytick.labelsize': 16,
-    'legend.fontsize': 13,
+    'axes.labelsize': 12,
+    'xtick.labelsize': 10,
+    'ytick.labelsize': 10,
+    'legend.fontsize': 12,
+    'legend.title_fontsize': 12,
 })
 
 def flatten_label(label):
@@ -126,7 +127,7 @@ def main(
 
     handles, labels = ax1.get_legend_handles_labels()
     ax1.legend_.remove()
-    ax1.legend(handles, list(map(flatten_label, labels)), loc="lower center", bbox_to_anchor=(.5, 1), ncols=4, title="")
+    ax1.legend(handles, list(map(flatten_label, labels)), loc="lower right", bbox_to_anchor=(1.0, 1.01), ncols=3, title="")
     plt.savefig(save_dir / "so_violin.pdf", format="pdf", bbox_inches="tight")
     print(f"Saved: {(save_dir / 'so_violin.pdf').expanduser()}")
 
@@ -139,7 +140,7 @@ def main(
     }
     rfcx_df = df[df["dataset_name"].isin(['RFCX bird', 'RFCX frog'])]
     palette = sns.color_palette("colorblind", 3)
-    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(12, 4), constrained_layout=True)
+    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(8.1, 4), constrained_layout=True)
 
     sns.violinplot(
         data=rfcx_df,
@@ -185,7 +186,7 @@ def main(
     ax2.set_ylabel("AP")
     handles, labels = ax1.get_legend_handles_labels()
     ax1.legend_.remove()
-    ax1.legend(handles, list(map(flatten_label, labels)), loc="lower center", bbox_to_anchor=(.5, 1), ncols=4, title="")
+    ax1.legend(handles, list(map(flatten_label, labels)), loc="lower center", bbox_to_anchor=(.5, 1), ncols=3, title="")
 
     plt.savefig(save_dir / "rfcx_violin.pdf", format="pdf", bbox_inches="tight")
     print(f"Saved: {(save_dir / 'rfcx_violin.pdf').expanduser()}")

@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 
 plt.rcParams.update({
     'axes.labelsize': 12,
-    'xtick.labelsize': 6,
+    'xtick.labelsize': 8,
     'ytick.labelsize': 12,
     'legend.fontsize': 12,
     'legend.title_fontsize': 12,
@@ -58,29 +58,21 @@ def main(
     results = []
     groups = {
         "SO_EC": {
-            "base_vae": [
-                "v4",
-                "v5",
-                "v6"
-            ],
-            "nifti_vae": [
-                "v12",
-                "v17",
-                "v18"
-            ],
+            "base_vae": ["v4","v5","v6"],
+            "nifti_vae": ["v12","v17","v18"],
         },
         "SO_UK": {
-            "base_vae": [
-                "v4",
-                "v5",
-                "v6"
-            ],
-            "nifti_vae": [
-                "v12",
-                "v17",
-                "v18"
-            ],
+            "base_vae": ["v4", "v5", "v6"],
+            "nifti_vae": ["v12","v17","v18"],
         },
+        "RFCX_bird": {
+            "base_vae": ["v7", "v8", "v9"],
+            "nifti_vae": ["v14", "v15", "v16"],
+        },
+        "RFCX_frog": {
+            "base_vae": ["v7", "v8", "v9"],
+            "nifti_vae": ["v14", "v15", "v16"],
+        }
     }
     for scope, scope_group in groups.items():
         for model, versions in scope_group.items():
@@ -124,10 +116,10 @@ def main(
                 features = dm.test_data.features
 
                 # find the average distance to apply as normalisation to account for differences in latent space diversity
-                # this is an approximation to normalising by the marginal distribution
-                z_all = torch.tensor(features.loc[:, [f"z_mean_{i}" for i in range(128)]].values, dtype=torch.float32)
-                norm = torch.sum(z_all**2, dim=1, keepdims=True)
-                D = torch.clamp((norm + norm.T - 2 * (z_all @ z_all.T)), min=0).sqrt()
+                # this is not as good as mutual information between distributions, but it'll do
+                z_means = torch.tensor(features.loc[:, [f"z_mean_{i}" for i in range(128)]].values, dtype=torch.float32)
+                norm = torch.sum(z_means**2, dim=1, keepdims=True)
+                D = torch.clamp((norm + norm.T - 2 * (z_means @ z_means.T)), min=0).sqrt()
                 D = D.masked_fill(torch.triu(torch.ones_like(D, dtype=torch.bool), diagonal=0), 0)
                 D = D[D != 0].flatten()
                 D_avg = D.mean()
@@ -136,8 +128,7 @@ def main(
                     y_true = labels.loc[labels[species] > 0, species]
                     y_prob = probs.loc[y_true.index, species]
                     z_mean = torch.tensor(features.loc[y_true.index, [f"z_mean_{i}" for i in range(128)]].values.reshape(len(y_true), -1, 128), dtype=torch.float32)
-                    # z_log_var = torch.tensor(features.loc[y_true.index, [f"z_log_var_{i}" for i in range(128)]].values.reshape(len(y_true), -1, 128), dtype=torch.float32)
-                    z = z_mean # + torch.randn_like(z_mean) * (z_log_var * 0.5).exp()
+                    z = z_mean
                     A = clf.attention_weights(z, species)
                     W = clf.classifier_weights(species).unsqueeze(0)
                     # apply the weights of the classifier to select features, will near zero out irrelevant features
@@ -165,93 +156,106 @@ def main(
                             "count": target_counts[i]
                         })
     df = pd.DataFrame(results)
-    # rfcx_df = df[(df["scope"] == "RFCX_bird") | (df["scope"] == "RFCX_frog")]
+    df["model_name"] = df.model.map(dict(base_vae="VAE", nifti_vae="SIVAE"))
 
-    fig, ax1 = plt.subplots(figsize=(8.1, 4))
-    palette = ["blue", "red"] #sns.color_palette("husl", 4)[1:3]
-    dark_palette = [color for color in palette]
-    light_palette = [lighten_color(color, 0.6) for color in palette]
-    ax2 = ax1.twinx()
-    ax2_top = ax1.twiny()
+    fig, ax = plt.subplots(figsize=(8.1, 4), constrained_layout=True)
+    palette = sns.color_palette("colorblind", 4)[1:3]
 
-    max_cats = df.groupby("scope")["species_name"].nunique().max()
+    so_uk_species = df.loc[df["scope"] == "SO_UK", "species_name"].unique()
+    so_ec_species = df.loc[df["scope"] == "SO_EC", "species_name"].unique()
+    rfcx_bird_species = df.loc[df["scope"] == "RFCX_bird", "species_name"].unique()
+    rfcx_frog_species = df.loc[df["scope"] == "RFCX_frog", "species_name"].unique()
+    num_per_ds = 10
+    order = [*so_uk_species[:num_per_ds], *so_ec_species[:num_per_ds]]
 
-    so_uk_df = df[(df["scope"] == "SO_UK")]
-    so_uk_df = so_uk_df.sort_values(by="count", ascending=False)
-    position, species = pd.factorize(so_uk_df["species_name"])
-    so_uk_df["position"] = position
-    so_uk_df["model_name"] = so_uk_df.model.map(dict(base_vae="VAE", nifti_vae="SIVAE"))
-    sns.stripplot(
-        so_uk_df,
-        x="position",
+    sns.boxenplot(
+        df,
+        x="species_name",
         y="distance",
         hue="model_name",
+        order=order,
         hue_order=["VAE", "SIVAE"],
-        ax=ax1,
-        palette=dark_palette,
-        size=2,
-        alpha=0.05,
-        dodge=True,
-        jitter=0.3,
-        legend=True,
+        palette=palette,
+        flier_kws={"s": 3},
+        ax=ax,
     )
-    xticklabels = []
-    for i in range(max_cats):
-        cat = "" if i >= len(species) else species[i]
-        xticklabels.append(cat)
-    ax1.set_xticks(range(max_cats), xticklabels)
-    ax1.set_ylabel("Normalised L2 Distance")
-    ax1.set_xlabel("Species (UK)")
-    ax1.tick_params(axis="x", rotation=90)
-    ax1.set_ylim([0.0, 1.25])
-
-    so_ec_df = df[(df["scope"] == "SO_EC")]
-    so_ec_df = so_ec_df.sort_values(by="count", ascending=True)
-    position, species = pd.factorize(so_ec_df["species_name"])
-    so_ec_df["position"] = position.astype(str)
-    so_ec_df["model_name"] = so_ec_df.model.map(dict(base_vae="VAE", nifti_vae="SIVAE"))
-    sns.stripplot(
-        so_ec_df,
-        x="position",
-        y="distance",
-        hue="model_name",
-        hue_order=["VAE", "SIVAE"],
-        ax=ax2,
-        palette=light_palette,
-        size=2,
-        alpha=0.25,
-        dodge=True,
-        jitter=0.3,
-        legend=False,
-    )
-    xticklabels = []
-    for i in range(max_cats):
-        cat = "" if i <= max_cats - len(species) else species[i]
-        xticklabels.append(cat)
-    ax2_top.set_xlim(-0.5, len(species) - 0.5)
-    ax2_top.set_xticks(range(max_cats), xticklabels)
-    ax2.set_ylabel("Normalised L2 Distance")
-    ax2_top.set_xlabel("Species (EC)")
-    ax2_top.tick_params(axis="x", rotation=90)
-    ax2.set_ylim([0.0, 1.0])
-
-    ax2.invert_yaxis()
-
-    handles, labels = ax1.get_legend_handles_labels()
-    for h in handles:
-        h.set_alpha(1.0)
-        h.set_markersize(6)
-    ax1.legend(
-        handles, labels,
-        loc="upper right",
-        bbox_to_anchor=(1.00, -0.02),
-        title="Model",
+    ax.set_ylabel("Normalised L2 Distance")
+    ax.set_xlabel("Species")
+    for label in ax.get_xticklabels():
+        label.set_rotation(60)
+        label.set_horizontalalignment('right')
+        label.set_rotation_mode('anchor')
+    for line in ax.lines:
+        line.set_markersize(3)
+    sns.move_legend(
+        ax,
+        loc="lower right", bbox_to_anchor=(1.0, 1.01),
         ncols=2,
+        title="",
     )
-    fig.tight_layout()
-    fig.subplots_adjust(bottom=0.3)
     save_path = save_dir / f"so_z_distances.{format}"
-    fig.savefig(save_path, format=format)
+    fig.savefig(save_path, format=format, bbox_inches="tight")
+    print(f"Saved: {save_path}")
+
+    # plot the remaining species distances
+    for scope, order in zip(["SO UK", "SO EC"], [so_uk_species[num_per_ds:], so_ec_species[num_per_ds:]]):
+        fig, ax = plt.subplots(figsize=(8.1, 4), constrained_layout=True)
+        sns.boxenplot(
+            df,
+            x="species_name",
+            y="distance",
+            hue="model_name",
+            order=order,
+            hue_order=["VAE", "SIVAE"],
+            palette=palette,
+            flier_kws={"s": 3},
+            ax=ax,
+        )
+        ax.set_ylabel("Normalised L2 Distance")
+        ax.set_xlabel("Species")
+        for label in ax.get_xticklabels():
+            label.set_rotation(60)
+            label.set_horizontalalignment('right')
+            label.set_rotation_mode('anchor')
+        ax.set_title(scope)
+        sns.move_legend(
+            ax,
+            loc="lower right", bbox_to_anchor=(1.0, 1.01),
+            ncols=2,
+            title="",
+        )
+        save_path = save_dir / f"{scope.lower().replace(' ', '_')}_z_distances_rem.{format}"
+        fig.savefig(save_path, format=format, bbox_inches="tight")
+        print(f"Saved: {save_path}")
+
+    order = [*rfcx_bird_species, *rfcx_frog_species]
+    fig, ax = plt.subplots(figsize=(8.1, 4), constrained_layout=True)
+    sns.boxenplot(
+        df,
+        x="species_name",
+        y="distance",
+        hue="model_name",
+        order=order,
+        hue_order=["VAE", "SIVAE"],
+        palette=palette,
+        flier_kws={"s": 3},
+        ax=ax,
+    )
+    ax.set_ylabel("Normalised L2 Distance")
+    ax.set_xlabel("Species")
+    ax.set_title("RFCX")
+    for label in ax.get_xticklabels():
+        label.set_rotation(60)
+        label.set_horizontalalignment('right')
+        label.set_rotation_mode('anchor')
+    sns.move_legend(
+        ax,
+        loc="lower right", bbox_to_anchor=(1.0, 1.01),
+        ncols=2,
+        title="",
+    )
+    save_path = save_dir / f"rfcx_z_distances.{format}"
+    fig.savefig(save_path, format=format, bbox_inches="tight")
     print(f"Saved: {save_path}")
 
 

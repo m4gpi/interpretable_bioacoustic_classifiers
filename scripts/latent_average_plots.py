@@ -54,8 +54,8 @@ def get_transforms():
 
 plt.rcParams.update({
     'axes.labelsize': 12,
-    'xtick.labelsize': 12,
-    'ytick.labelsize': 12,
+    'xtick.labelsize': 8,
+    'ytick.labelsize': 8,
     'legend.fontsize': 12,
     'legend.title_fontsize': 12,
 })

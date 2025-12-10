@@ -96,7 +96,7 @@ def main(
                 ax=ax1
             )
         ax1.set_ylim([0.0, 1.0])
-        ax1.set_title(rf"Train Label Count $<$ {label_threshold}")
+        # ax1.set_title(rf"Train Label Count $<$ {label_threshold}")
         ax1.set_xlabel("")
         ax1.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
@@ -111,7 +111,7 @@ def main(
                 ax=ax2
             )
         ax2.set_ylim([0.0, 1.0])
-        ax2.set_title(rf"Train Label Count $>$ {label_threshold}")
+        # ax2.set_title(rf"Train Label Count $>$ {label_threshold}")
         ax2.set_xlabel("")
         ax2.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
@@ -156,7 +156,7 @@ def main(
                 ax=ax,
             )
             ax.set_xlabel("Species")
-            ax.set_ylabel("Number of Labels")
+            ax.set_ylabel("Label Count")
             ax.tick_params(axis="x", rotation=90)
             save_path = save_dir / f"{scope}_label_frequency.pdf"
             plt.savefig(save_path, format="pdf", bbox_inches="tight")

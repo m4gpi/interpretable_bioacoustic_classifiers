@@ -31,6 +31,23 @@ from src.cli.utils.instantiators import instantiate_transforms
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+def wrap_sentence(sentence, max_length):
+    words = sentence.split()
+    lines = []
+    current_line = ""
+    for word in words:
+        if len(current_line) + len(word) + (1 if current_line else 0) <= max_length:
+            if current_line:
+                current_line += " "
+            current_line += word
+        else:
+            if current_line:
+                lines.append(current_line)
+            current_line = word
+    if current_line:
+        lines.append(current_line)
+    return "\n".join(lines)
+
 plt.rcParams.update({
     'axes.labelsize': 16,
     'xtick.labelsize': 16,
@@ -187,7 +204,7 @@ def main(
                 cmap="Greys"
             )
             ax.set_xticks([0, 191], [0.0, 1.536], rotation=90)
-            ax.set_title("\n".join(species_name.split("_")))
+            ax.set_title(wrap_sentence(species_name.replace("_", ", "), 18))
             ax.tick_params(labelbottom=False, bottom=False)
             ax.set_xlabel("")
             if i != 0:

@@ -13,8 +13,8 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 plt.rcParams.update({
     'axes.labelsize': 12,
-    'xtick.labelsize': 6,
-    'ytick.labelsize': 12,
+    'xtick.labelsize': 8,
+    'ytick.labelsize': 10,
     'legend.fontsize': 12,
     'legend.title_fontsize': 12,
 })
@@ -37,6 +37,56 @@ def main(
     palette = np.stack([color for color in sns.color_palette("colorblind", 4)]).reshape(4, 3).tolist()
     df = df.reset_index()
 
+    # show the top 6 from each dataset
+    vae_df = df[df["model"].isin(["base_vae", "nifti_vae"])]
+    order = vae_df.groupby("species_name")["AP"].max().sort_values(ascending=False).index[:24]
+    fig, (ax1, ax2) = plt.subplots(figsize=(8.1, 6), nrows=2)
+    sns.boxplot(
+        data=vae_df,
+        x="species_name",
+        y="auROC",
+        hue="model_class",
+        hue_order=list(name_map.values())[1:],
+        order=order,
+        ax=ax1,
+        palette=palette[1:-1],
+        legend=True,
+    )
+    ax1.set_ylim([0.75, 1.0])
+    ax1.set_ylabel("auROC")
+    ax1.set_xticklabels([])
+    ax1.set_xlabel("")
+    sns.move_legend(ax1, loc="lower right", bbox_to_anchor=(1.0, 1.01), ncols=2, title="")
+    sns.boxplot(
+        data=vae_df,
+        x="species_name",
+        y="AP",
+        hue="model_class",
+        hue_order=list(name_map.values())[1:],
+        order=order,
+        ax=ax2,
+        palette=palette[1:-1],
+        legend=False,
+    )
+    # ax2.tick_params("x", ha='right', rotation_mode='anchor', rotation=60)
+    for label in ax2.get_xticklabels():
+        label.set_rotation(60)
+        label.set_horizontalalignment('right')
+        label.set_rotation_mode('anchor')
+    ax2.set_ylim([0.2, 1.0])
+    ax2.set_ylabel("AP")
+    ax2.set_xlabel("Species")
+    fig.savefig(save_dir / f"species_box_plot.pdf", format="pdf", bbox_inches="tight")
+    print(f"Saved: {(save_dir / f'species_box_plot.pdf').expanduser()}")
+
+    plt.rcParams.update({
+        'axes.labelsize': 12,
+        'xtick.labelsize': 6,
+        'ytick.labelsize': 10,
+        'legend.fontsize': 12,
+        'legend.title_fontsize': 12,
+    })
+
     for scope in df["scope"].unique():
         vae_df = df[df["model"].isin(["base_vae", "nifti_vae"]) & (df["scope"] == scope)]
         order = vae_df.groupby("species_name")["train_label_counts"].first().sort_values(ascending=False).index
@@ -44,7 +94,7 @@ def main(
         sns.boxplot(
             data=vae_df,
             x="species_name",
-            y="AP",
+            y="auROC",
             hue="model_class",
             hue_order=list(name_map.values())[1:],
             order=order,
@@ -52,16 +102,15 @@ def main(
             palette=palette[1:-1],
             legend=True,
         )
-        ax1.set_ylim([0.0, 1.0])
-        ax1.set_ylabel("AP")
+        ax1.set_ylim([0.5, 1.0])
+        ax1.set_ylabel("auROC")
         ax1.set_xticklabels([])
         ax1.set_xlabel("")
-        sns.move_legend(ax1, loc='upper right', bbox_to_anchor=(1.0, 1.55), ncols=2, title="Model")
-
+        sns.move_legend(ax1, loc="lower right", bbox_to_anchor=(1.0, 1.01), ncols=2, title="")
         sns.boxplot(
             data=vae_df,
             x="species_name",
-            y="auROC",
+            y="AP",
             hue="model_class",
             hue_order=list(name_map.values())[1:],
             order=order,
@@ -69,9 +118,12 @@ def main(
             palette=palette[1:-1],
             legend=False,
         )
-        ax2.tick_params("x", rotation=90)
-        ax2.set_ylim([0.5, 1.0])
-        ax2.set_ylabel("auROC")
+        for label in ax2.get_xticklabels():
+            label.set_rotation(60)
+            label.set_horizontalalignment('right')
+            label.set_rotation_mode('anchor')
+        ax2.set_ylim([0.0, 1.0])
+        ax2.set_ylabel("AP")
         ax2.set_xlabel("Species")
         fig.savefig(save_dir / f"{scope}_box_plot.pdf", format="pdf", bbox_inches="tight")
         print(f"Saved: {(save_dir / f'{scope}_box_plot.pdf').expanduser()}")

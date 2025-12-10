@@ -26,6 +26,7 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 from src.core.data.sounding_out_chorus import SoundingOutChorus
 from src.core.utils.sketch import plot_mel_spectrogram
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
+from src.cli.utils.instantiators import instantiate_transforms
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -53,17 +54,21 @@ plt.rcParams.update({
     'ytick.labelsize': 10,
 })
 
-
+@torch.no_grad()
 def main(
     data_dir: pathlib.Path,
     audio_dir: pathlib.Path,
     save_dir: pathlib.Path,
+    device_id: int = 0,
 ) -> None:
-    data = SoundingOutChorus(audio_dir, test=True)
+    device = f"cuda:{device_id}" if device_id is not None else "cpu"
 
     df = pd.read_parquet(data_dir / "index.parquet")
     model_dict = df[(df.model_name == "nifti_vae") & (df.version == "v12") & (df.scope == "SO_UK")].iloc[0].to_dict()
     vae = get_vae(model_dict).to(device).eval()
+
+    data = SoundingOutChorus(audio_dir, test=True)
+    df = pd.read_parquet(audio_dir / "metadata.parquet").reset_index()
 
     transforms = get_transforms()
     spectrogram = transforms.transforms[0]
@@ -78,7 +83,7 @@ def main(
 
     file_names = [
         "PL-14_0_20150604_0630.wav",
-        "KN-13_0_20150509_0530.wav",
+        # "KN-13_0_20150509_0530.wav",
         "BA-01_0_20150619_0500.wav",
         "TE-03_0_20150713_1830.wav",
         "FS-08_0_20150806_0630.wav",
@@ -98,7 +103,7 @@ def main(
         height_ratios=[0.02, *[0.98 / 6 for i in range(len(file_names))]],
         hspace=0.2, wspace=0.05,
     )
-    frame_duration_seconds = vae_frame_length * spectrogram.stft_hop_length_seconds
+    frame_duration_seconds = vae.frame_window_length * spectrogram.stft_hop_length_seconds
     window_duration_seconds = 2 * frame_duration_seconds
     hops_per_second = int(1 / spectrogram.stft_hop_length_seconds)
     window_end_hops = window_duration_seconds * hops_per_second
@@ -118,10 +123,9 @@ def main(
     results = []
     for i, (file_name, frame_start_seconds) in enumerate(zip(file_names, start_times)):
         vmin, vmax = np.inf, -np.inf
-        idx = df[df.file_name == file_name].index[0]
         # fetch spectrogram
-        wav = data[idx].x
-        log_mel = spectrogram(wav).squeeze()
+        wav = data.load_sample(data.base_dir / "test" / "data" / file_name)
+        log_mel = spectrogram(wav).squeeze().to(device)
         # fetch relevant bounds
         frame_end_seconds = frame_start_seconds + (1.536)
         frame_start_hops = int(frame_start_seconds * hops_per_second)
@@ -132,20 +136,20 @@ def main(
         window_end_hops = int(window_end_seconds * hops_per_second)
         # original, show the center frame with half either side
         x = log_mel[window_start_hops:window_end_hops]
-        mel_original = 20 * np.log10(x.exp().numpy().T)
+        mel_original = 20 * np.log10(x.cpu().exp().numpy().T)
         vmin = min(mel_original.min(), vmin)
         vmax = max(mel_original.max(), vmax)
         # encode 3 full frames with center the one of interest
         t_start = frame_start_hops - int(frame_duration_seconds * hops_per_second)
         t_end = frame_end_hops + int(frame_duration_seconds * hops_per_second)
-        q_z_window, _, dt_hat = vae.encode(log_mel[t_start:t_end].unsqueeze(0).unsqueeze(0).detach())
-        x0 = vae.decode(q_z_window.chunk(2, dim=-1)[0], dt_hat).detach().squeeze()
+        q_z_window, dt_hat = vae.encode(log_mel[t_start:t_end].unsqueeze(0).unsqueeze(0).detach())
+        x0 = vae.decode(q_z_window.chunk(2, dim=-1)[0], dt_hat).detach().squeeze().cpu()
         mel_recon = 20 * np.log10(x0.exp().numpy().T)
         # reconstruction, show the center frame with half frame either side
         mel_recon = mel_recon[:, 92:480]
         # extract the prototype encoding (center frame)
         q_z_frame = q_z_window[:, 1, :].unsqueeze(1)
-        x1 = vae.decode(q_z_frame.chunk(2, dim=-1)[0]).detach().squeeze()
+        x1 = vae.decode(q_z_frame.chunk(2, dim=-1)[0]).detach().squeeze().cpu()
         # show the prototype, with reconstruction on neighbours frames (half either side)
         x = torch.cat([x0[96:192], x1, x0[384:480]], dim=0)
         mel_prototype = 20 * np.log10(x.exp().numpy().T)
@@ -154,7 +158,8 @@ def main(
         # instantiate different versions by parameterising a shift
         mel_instances = []
         for dt in time:
-            x2 = vae.decode(q_z_frame.chunk(2, dim=-1)[0], torch.ones(1, 1, 1) * dt).detach().squeeze()
+            log.info(f"reconstructing {file_name} at {dt}")
+            x2 = vae.decode(q_z_frame.chunk(2, dim=-1)[0], torch.ones(1, 1, 1, device=device) * dt).detach().squeeze().cpu()
             x = torch.cat([x0[0:96], x2, x0[384:480]], dim=0)
             mel_instance = 20 * np.log10(x.exp().numpy().T)
             vmin = min(mel_instance.min(), vmin)
@@ -198,8 +203,6 @@ def main(
         ax.set_xlabel("")
         ax.set_ylabel("")
         ax.tick_params(left=False, labelleft=False, bottom=False, labelbottom=False)
-        # if i == 0:
-        #     ax.set_title("Prototype\n")
         if i == len(results) - 1:
             ax.set_xticks([0, 96, 288, 384], labels=["", 0.0, 1.536, ""])
             ax.tick_params(bottom=True, labelbottom=True)
@@ -218,12 +221,11 @@ def main(
             if i == len(results) - 1:
                 ax.set_xticks([0, 96, 288, 384], labels=["", 0.0, 1.536, ""])
                 ax.tick_params(bottom=True, labelbottom=True)
-        print(i, len(results) - 1)
         cbar_ax = fig.add_subplot(grid_spec[1 + i, -1])
         cbar = fig.colorbar(img, cax=cbar_ax, orientation="vertical", format="%+3.1f dB")
 
     save_file = save_dir / f"shifted_calls.pdf"
-    print(save_file)
+    log.info(save_file)
     fig.savefig(save_file, format="pdf")
 
 if __name__ == "__main__":

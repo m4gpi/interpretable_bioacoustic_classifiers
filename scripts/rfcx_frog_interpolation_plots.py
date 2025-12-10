@@ -22,7 +22,7 @@ from src.core.data.soundscape_embeddings import SoundscapeEmbeddingsDataModule
 from src.core.models.species_detector import SpeciesDetector
 from src.core.models.base_vae import BaseVAE
 from src.core.models.smooth_nifti_vae import SmoothNiftiVAE
-from src.core.data.sounding_out_chorus import SoundingOutChorus
+from src.core.data.rainforest_connection import RainforestConnection
 from src.core.utils.sketch import plot_mel_spectrogram, make_ax_invisible
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.utils import tree
@@ -52,7 +52,7 @@ plt.rcParams.update({
     'axes.labelsize': 16,
     'xtick.labelsize': 16,
     'ytick.labelsize': 16,
-    'axes.titlesize': 12,
+    'axes.titlesize': 14,
     'figure.titlesize': 16,
     'legend.fontsize': 13,
 })
@@ -67,13 +67,11 @@ def main(
     device = f"cuda:{device_id}" if device_id is not None else "cpu"
     # load model info
     index = pd.read_parquet(data_dir / "index.parquet")
-    # filter to SO EC
-    df = index[index["scope"] == "SO_EC"].copy()
-    # FIXME: check temporal shift parameter...
-    df.loc[df["model_name"] == "nifti_vae", "delta_t"] = 0.0
-    df.loc[df["model_name"] == "smooth_nifti_vae", "delta_t"] = 1.0
+    df = index[index["scope"] == "RFCX_frog"].copy()
+    df.loc[df["model_name"] == "nifti_vae", "delta_t"] = 1.0
+    df.loc[df["model_name"] == "smooth_nifti_vae", "delta_t"] = 0.0
     # init audio dataset and audio params
-    log.info("loading SO EC dataset")
+    log.info("loading RFCX frog dataset")
     with open(rootutils.find_root() / "config" / "transforms" / "cropped_log_mel_spectrogram.yaml", "r") as f:
         transform_conf = yaml.safe_load(f.read())
         transforms = instantiate_transforms(transform_conf)
@@ -83,34 +81,27 @@ def main(
     hops_per_second = spectrogram.sample_rate / spectrogram.hop_length
     frame_length_seconds = 192 / hops_per_second
     frame_length_hops = 192
-    data = SoundingOutChorus("~/data/sounding_out", sample_rate=spectrogram.sample_rate)
+    data = RainforestConnection("~/data/rainforest_connection", sample_rate=spectrogram.sample_rate, test=False)
     # define the species we want to render examples and generate interpolations for
-    log.info("identify the habitat where selected species occur most frequently")
     species_params = [
-        { "species_name": "Coereba flaveola_Bananaquit", "file_name": "train/data/FS-11_0_20150806_0600.wav", "t_start_seconds": 32.4, "delta": 30 },
-        { "species_name": "Poliocrania exsul_Chestnut-backed Antbird", "file_name": "train/data/TE-03_0_20150716_0635.wav", "t_start_seconds": 25.2, "delta": 20 },
-        { "species_name": "Ramphocelus flammigerus_Flame-rumped Tanager", "file_name": "test/data/PO-11_0_20150815_1815.wav", "t_start_seconds": 0.0, "delta": 30 },
-        { "species_name": "Leptotila pallida_Pallid Dove", "file_name": "train/data/PO-11_0_20150818_0625.wav", "t_start_seconds": 6.5, "delta": 30 },
-        { "species_name": "Capsiempis flaveola_Yellow Tyrannulet", "file_name": "train/data/PO-03_0_20150815_0640.wav", "t_start_seconds": 16.0, "delta": 30 },
-        { "species_name": "Mionectes oleagineus_Ochre-bellied Flycatcher", "file_name": "train/data/FS-16_0_20150802_0645.wav", "t_start_seconds": 0.2, "delta": 30 },
-        { "species_name": "Microbates cinereiventris_Tawny-faced Gnatwren", "file_name": "train/data/TE-06_0_20150716_0645.wav", "t_start_seconds": 33.5, "delta": 30 },
-        { "species_name": "Manacus manacus_White-bearded Manakin", "file_name": "train/data/FS-04_0_20150802_0650.wav", "t_start_seconds": 41.2, "delta": 30 },
+        {'species_name': 'Eleutherodactylus antillensis_Red-eyed coquí', 'file_name': 'train/0313e82cf.flac', 't_start_seconds': 21.472, "delta": 10},
+        {'species_name': 'Eleutherodactylus brittoni_Grass coquí', 'file_name': 'train/13c678c1d.flac', 't_start_seconds': 0.864, "delta": 10},
+        {'species_name': 'Eleutherodactylus coqui_Common coquí', 'file_name': 'train/06c44d203.flac', 't_start_seconds': 1.28, "delta": 10},
+        {'species_name': 'Eleutherodactylus gryllus_Cricket coquí', 'file_name': 'train/157a50231.flac', 't_start_seconds': 35.7867, "delta": 10},
+        {'species_name': "Eleutherodactylus hedricki_Hedrick's coquí", 'file_name': 'train/251569711.flac', 't_start_seconds': 18.2133, "delta": 10},
+        {'species_name': 'Eleutherodactylus locustus_Locust coquí', 'file_name': 'train/2bf32cf03.flac', 't_start_seconds': 21.0347, "delta": 10},
+        {'species_name': 'Eleutherodactylus portoricensis_Forest Coqui', 'file_name': 'train/068f1b8e2.flac', 't_start_seconds': 22.864, "delta": 10},
+        # {'species_name': 'Eleutherodactylus richmondi_Bronze coquí', 'file_name': 'train/055088446.flac', 't_start_seconds': 58.992, "delta": 20},
+        # {'species_name': 'Eleutherodactylus unicolor_Dwarf coquí', 'file_name': 'train/10dae79ed.flac', 't_start_seconds': 30.192, "delta": 20},
+        # {'species_name': 'Eleutherodactylus wightmanae_Melodius coquí', 'file_name': 'train/0c2124550.flac', 't_start_seconds': 18.2293, "delta": 20},
+        # {'species_name': 'Leptodactylus albilabris_Caribbean White-lipped Frog', 'file_name': 'train/05b9c974c.flac', 't_start_seconds': 31.984, "delta": 20},
     ]
-    # identify the habitat where each species occurs most
-    # for each species, we use that habitat average embedding as our background template for interpolation
-    for params in species_params:
-        counts = data.metadata.merge(
-            data.labels.astype(bool).astype(int),
-            left_index=True,
-            right_index=True
-        ).groupby("habitat")[params["species_name"]].sum().reset_index()
-        params["habitat"] = counts.loc[counts[params["species_name"]].idxmax()].habitat
     # load final test scores
     log.info("loading scores")
     scores = pd.read_parquet(scores_path).reset_index()
     scores = scores[
         (scores["species_name"].isin([s["species_name"] for s in species_params])) &
-        (scores["scope"] == "SO_EC")
+        (scores["scope"] == "RFCX_frog")
     ]
     # sort by model class for figure order, load and cache all models
     log.info("loading and caching VAEs and CLFs")
@@ -121,13 +112,12 @@ def main(
     }
     df["model_class"] = df["model_name"].map(name_map)
     df["model_class"] = pd.Categorical(df["model_class"], categories=name_map.values(), ordered=True)
-    df = df[df["model_name"].isin(["base_vae", "nifti_vae"])]
     df = df.sort_values("model_class").groupby("model_class").nth(seed_num).reset_index()
-    habitat_map = {"TE": "EC1", "FS": "EC2", "PO": "EC3"}
+    df = df[df["model_name"].isin(["base_vae", "nifti_vae"])]
 
     vaes = []
     clfs = []
-    z_model_habitat_means = defaultdict(tree)
+    z_model_means = defaultdict(tree)
     for i, row in df.iterrows():
         # load the pretrained VAE
         with open(rootutils.find_root() / "config" / "model" / f"{row.model_name}.yaml", "r") as f:
@@ -139,36 +129,24 @@ def main(
         log.info(f"Loaded {row.model_name} from {row.vae_checkpoint_path}")
         # load species logistic regression model weights
         checkpoint = torch.load(row["clf_checkpoint_path"], map_location=device)
-        clf = {param.split(".")[1]: checkpoint["state_dict"][param] for param in checkpoint["state_dict"].keys() if param.startswith("classifiers") and param.endswith("weight")}
+        clf = {
+            param.split(".")[1]: checkpoint["state_dict"][param]
+            for param in checkpoint["state_dict"].keys()
+            if param.startswith("classifiers") and param.endswith("weight")
+        }
         clfs.append(clf)
-        # compute the habitat model average embedding
+        # compute the model average embedding
         dm = SoundscapeEmbeddingsDataModule(
             root=data_dir,
             model=row.model_name,
             version=row.version,
-            scope="SO_EC",
+            scope="RFCX_frog",
             transforms=None, # FIXME this shouldnt be required
         )
         dm.setup()
-        # FIXME hack in the habitat labels using the file name
-        embeddings = dm.train_data
-        embeddings.labels = embeddings.labels.reset_index()
-        embeddings.labels["habitat"] = embeddings.labels.file_name.str.split("-", expand=True)[0]
-        embeddings.labels["habitat"] = embeddings.labels.habitat.map(habitat_map)
-        embeddings.labels.set_index(["file_i", "file_name", "country", "habitat"])
-        # encode the habitat mean representation for this model
-        z_mean = (
-            embeddings
-            .features
-            .iloc[:, range(128)]
-            .merge(embeddings.labels[["file_i", "habitat"]], on="file_i", how="left")
-            .drop("file_i", axis=1)
-            .groupby("habitat")
-            .mean()
-        )
-        for habitat in z_mean.index:
-            z_model_habitat_mean = torch.tensor(z_mean.loc[habitat], dtype=torch.float32, device=device)
-            z_model_habitat_means[habitat][row.model_name] = z_model_habitat_mean.unsqueeze(0).unsqueeze(0)
+        # encode the mean representation for this model
+        z_mean = dm.train_data.features.iloc[:, range(128)].mean()
+        z_model_means[row.model_name] = torch.tensor(z_mean, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
 
     log.info("building plot, rendering spectrograms and interpolated reconstructions")
     # plot spectrograms and interpolated reconstructions
@@ -183,7 +161,7 @@ def main(
     )
     with torch.no_grad():
         for i, params in enumerate(species_params):
-            species_name, file_name, t_start_seconds, delta, habitat = params.values()
+            species_name, file_name, t_start_seconds, delta = params.values()
             if i == 0:
                 title_ax = axes[0, 0]
                 title_ax.set_ylabel("Real\nExample")
@@ -221,11 +199,11 @@ def main(
                     (scores["version"] == row["version"]) &
                     (scores["species_name"] == species_name)
                 ].iloc[0]
-                # fetch habitat silent embedding
-                z = z_model_habitat_means[habitat][row.model_name]
+                # fetch silent embedding
+                z = z_model_means[row.model_name].to(device)
                 # fetch weights of log reg model
                 log.info(f"generating {species_name} with {row.model_name}:{row.version}")
-                W = clf[species_name]
+                W = clf[species_name].to(device)
                 # linear interpolation across the hyperplane by delta
                 # delta needs to be tuned per species
                 norm = torch.linalg.norm(W)
@@ -258,9 +236,9 @@ def main(
                 AP = np.format_float_positional(model_species_scores['AP'], precision=2)
                 auROC = np.format_float_positional(model_species_scores['auROC'], precision=2)
                 ax.set_title(f"AP: {AP}\nauROC: {auROC}")
-    fig.suptitle("SO EC")
-    fig.savefig(save_dir / f"so_ec_{seed_num}_interpolation_w_scores.pdf", format="pdf", bbox_inches="tight")
-    log.info(f"figure saved to {(save_dir / f'so_ec_{seed_num}_interpolation_w_scores.pdf').expanduser()}")
+    fig.suptitle("RFCX frog")
+    fig.savefig(save_dir / f"rfcx_frog_{seed_num}_interpolation_w_scores.pdf", format="pdf", bbox_inches="tight")
+    log.info(f"figure saved to {(save_dir / f'rfcx_frog_{seed_num}_interpolation_w_scores.pdf').expanduser()}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
