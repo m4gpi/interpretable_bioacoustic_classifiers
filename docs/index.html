@@ -4,53 +4,122 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Interpretable Bioacoustic Classifiers</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      max-width: 800px;
-      margin: auto;
-      padding: 40px;
-      line-height: 1.6;
-    }
-    header {
-      text-align: center;
-      margin-bottom: 40px;
-    }
-    h1 {
-      margin-bottom: 10px;
-    }
-    footer {
-      margin-top: 40px;
-      text-align: center;
-      font-size: 0.9em;
-      color: #666;
-    }
+  <meta name="description" content="Interpretable bioacoustic classifiers">
+  <meta name="author" content="Kieran Gibb">
+  <link href="//fonts.googleapis.com/css?family=Raleway:400,300,600" rel="stylesheet" type="text/css">
+  <link rel="stylesheet" href="assets/css/normalize.css">
+  <link rel="stylesheet" href="assets/css/skeleton.css">
+  <link rel="icon" type="image/png" href="assets/images/favicon.png">
   </style>
 </head>
 <body>
-  <header>
-    <h1>Interpretable Bioacoustic Classifiers</h1>
-    <p>A simple starter template</p>
-  </header>
+  <div class="container">
+    <header style="text-align: center">
+      <h1>Modelling temporal shift-invariance in self-supervised generative models improves accuracy and interpretability of species detection in weakly labelled soundscape recordings</h1>
+      <p><a href="https://orcid.org/0000-0003-1468-547X">Kieran A. Gibb</a></p>
+      <p><a href="http://orcid.org/0000-0001-7093-2143">Alice Eldridge</a> | <a href="http://orcid.org/0000-0002-6061-2231">Aisha Lawal Shuaibu</a> | <a href="http://orcid.org/0000-0001-5605-6626">Ivor J. A. Simpson</a></p>
+      <p><a href="https://www.biorxiv.org/content/10.64898/2025.12.09.693207v1">[Paper]</a> | <a href="https://github.com/m4gpi/interpretable_bioacoustic_classifiers">[Code]</a></p>
+    </header>
 
-  <main>
-    <h2>About This Page</h2>
-    <p>
-      This is a basic template you can use to launch a website using GitHub Pages.
-      Edit the HTML, add CSS or JavaScript, and customize it however you like.
-    </p>
+    <main>
+      <section class="row">
+        <h2>Abstract</h2>
+        <p>
+          Realising the potential for acoustic monitoring to deliver biodiversity insight at scale requires new approaches to the automated analysis of PAM recordings that are trustworthy as well as cost-effective. Discriminative models trained on annotated species data are gaining popularity but are labour intensive, notoriously opaque and biased. Self-supervised generative models such as Variational Autoencoders (VAE) offer great potential for learning compact yet expressive representations of data and can provide a strong prior for use in downstream discriminative tasks such as species detection while being intrinsically interpretable.
+        </p>
+        <p>
+          We propose and evaluate a novel modification to the VAE learning algorithm that models <em>intra-frame shift-invariance</em>. We demonstrate that this modification (SIVAE) provides representations that are more interpretable, consistent and yield good performance on few-shot learning task with very weakly labels. Species-specific <em>Linear classifiers</em> were trained to predict the presence or absence of over 150 avian and anuran species using shift-invariant VAE representations of 60s long audio samples. A simple attention mechanism guides the selection of relevant frames to identify the most relevant timestep(s), while L1 regularisation sparsifies the linear model weights to perform species-specific feature selection.
+        </p>
+        <p>
+         Whilst demonstrated in terrestrial recordings, the approach is transferable to marine, freshwater, and soil habitats. These innovations set the path for trustworthy, data and time-efficient tools to support solid ecological inference from large-scale passive acoustic monitoring surveys.
+        </p>
+      </section>
 
-    <h2>How to Use</h2>
-    <ol>
-      <li>Create a new GitHub repository.</li>
-      <li>Add this <code>index.html</code> file to the root of the repo.</li>
-      <li>Go to Settings → Pages → select the main branch.</li>
-      <li>Your site will be live within seconds!</li>
-    </ol>
-  </main>
+      <section>
+        <div class="row">
+          <div class="twelve columns">
+            <h2>Generative Species Representations</h2>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <p>
+              An intra-frame shift-invariant VAE is pre-trained to embed and reconstruct log mel spectrograms. Downstream linear classifiers were then fit to samples from the learned posterior to predict weak presence / absence labels.
+            </p>
+            <p>
+              Using the generate model, we can inspect the basis of classification, using the classifier to generate novel samples of species and reconstruct them as spectrograms. Specifically, we apply a species presence transformation of a generic sample from the VAE latent space:
+            </p>
+            <img src="assets/images/species_transform.png" alt="species_transform" style="width: 100%">
+          </div>
+        </div>
+        </br>
+        <div class="row">
+          <div class="six columns">
+            <p>Select a species:</p>
+            <select name="species" id="species-select" style="width: 100%">
+              <optgroup label="Sounding Out (UK)">
+                <option value="Eurasian Blackbird">Eurasian Blackbird</option>
+                <option value="European Robin">European Robin</option>
+                <option value="Ring-necked Pheasant">Ring-necked Pheasant</option>
+                <option value="Winter Wren">Winter Wren</option>
+                <option value="Common Wood-Pigeon">Common Wood-Pigeon</option>
+                <option value="Carrion Crow">Carrion Crow</option>
+              </optgroup>
+              <optgroup label="Sounding Out (Ecuador)">
+                <option value="Chestnut-backed Antbird">Chestnut-backed Antbird</option>
+                <option value="Pallid Dove">Pallid Dove</option>
+                <option value="Yellow Tyrannulet">Yellow Tyrannulet</option>
+                <option value="White-bearded Manakin">White-bearded Manakin</option>
+              </optgroup>
+              <optgroup label="RFCX (Puerto Rico)">
+                <option value="Bananaquit">Bananaquit</option>
+                <option value="Red-legged Thrush">Red-legged Thrush</option>
+                <option value="Elfin Woods Warbler">Elfin Woods Warbler</option>
+                <option value="Black-whiskered Vireo">Black-whiskered Vireo</option>
+                <option value="Puerto Rican Woodpecker">Puerto Rican Woodpecker</option>
+                <option value="Carrion Crow">Carrion Crow</option>
+              </optgroup>
+            </select>
+          </div>
+          <div class="six columns">
+            <p>Move across the hyperplane:</p>
+            <input type="range" min="0" max="30" step="1" value="0"  style="width: 100%"/>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <img src="assets/images/frames/Eurasian Blackbird_0.png" alt="">
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="row">
+          <div class="twelve columns">
+            <h2>Species Detection</h2>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            Quantitative experiments show our approach was both effective in terms of discriminative performance, achieving the highest area under the ROC (0.92) and Top-1 accuracy (0.67), outperforming BirdNET V2.4 (0.89, 0.52) while achieving good average precision despite using very weak presence annotations for each minute of audio.
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <img src="assets/images/so_violin.png" alt="" style="width: 100%">
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <img src="assets/score_table.png" alt="" style="width: 100%">
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
 
   <footer>
-    <p>© 2025 My GitHub Pages Site</p>
+    <p></p>
   </footer>
 </body>
 </html>
