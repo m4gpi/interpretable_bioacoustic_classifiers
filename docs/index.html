@@ -15,7 +15,7 @@
 <body>
   <div class="container">
     <header style="text-align: center">
-      <h1>Modelling temporal shift-invariance in self-supervised generative models improves accuracy and interpretability of species detection in weakly labelled soundscape recordings</h1>
+      <h1 style="font-size: 4.5rem">Modelling temporal shift-invariance in self-supervised generative models improves accuracy and interpretability of species detection in weakly labelled soundscape recordings</h1>
       <p><a href="https://orcid.org/0000-0003-1468-547X">Kieran A. Gibb</a></p>
       <p><a href="http://orcid.org/0000-0001-7093-2143">Alice Eldridge</a> | <a href="http://orcid.org/0000-0002-6061-2231">Aisha Lawal Shuaibu</a> | <a href="http://orcid.org/0000-0001-5605-6626">Ivor J. A. Simpson</a></p>
       <p><a href="https://www.biorxiv.org/content/10.64898/2025.12.09.693207v1">[Paper]</a> | <a href="https://github.com/m4gpi/interpretable_bioacoustic_classifiers">[Code]</a></p>
@@ -38,6 +38,38 @@
       <section>
         <div class="row">
           <div class="twelve columns">
+            <h2>Disentangling Intra-frame Shift</h2>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <p>
+              The absolute temporal position of events that lie within that frame (e.g. the onset of a particular bird vocalisation) are arbitrary when frames are segmented automatically (as is the norm). However, during training the classic VAE algorithm finds the most parsimonious compressed latent representation that minimises the difference between input and generated spectrograms. The results is spurious information (such as distance from frame start to signal onset) carries as much weight as more ecologically meaningful information (such as the distance between peaks or nuances of spectral morphology which represent acoustic traits of a given species).
+            </p>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <img src="assets/images/disentangling_intra_frame_shift.png" alt="intra_frame_shift" style="width: 100%">
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <p>
+              We explicitly disentangle absolute position within a frame by training a <em>shift prediction network</em> which predicts the intra-frame shift (δ ∈ [−1, 1]) of the frame contents, with respect to a learned canonical timeline. Consistency is enforced by a 2-way cross-decoding across paired instances, where each instance is a translation of an input frame. A periodic boundary condition is applied and we regularise by learning to specify a zero-centered prior distribution.
+            </p>
+          </div>
+        <div class="row">
+          <div class="twelve columns">
+            <img src="assets/images/alignment_loss.png" alt="alignment_loss" style="width: 100%">
+          </div>
+        </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="row">
+          <div class="twelve columns">
             <h2>Generative Species Representations</h2>
           </div>
         </div>
@@ -47,7 +79,7 @@
               An intra-frame shift-invariant VAE is pre-trained to embed and reconstruct log mel spectrograms. Downstream linear classifiers were then fit to samples from the learned posterior to predict weak presence / absence labels.
             </p>
             <p>
-              Using the generate model, we can inspect the basis of classification, using the classifier to generate novel samples of species and reconstruct them as spectrograms. Specifically, we apply a species presence transformation of a generic sample from the VAE latent space:
+              Using the generative model, we can inspect the basis of a detection. By appling classifier weights as an affine transformation of the latent space, we can realise novel samples of species by interpolation, sampling as decoding spectrograms at each point. Specifically, we apply a species presence transformation of a 'generic' (habitat average) sample from the VAE latent space:
             </p>
             <img src="assets/images/species_transform.png" alt="species_transform" style="width: 100%">
           </div>
@@ -55,7 +87,7 @@
         </br>
         <div class="row">
           <div class="four columns">
-            <p>Select a species:</p>
+            <p><b>(1)</b> Select a species:</p>
             <select id="species-select" name="species" id="species-select" style="width: 100%">
               <optgroup label="Sounding Out (UK)">
                 <option value="Eurasian Blackbird">Eurasian Blackbird</option>
@@ -77,14 +109,14 @@
                 <option value="Elfin Woods Warbler">Elfin Woods Warbler</option>
                 <option value="Black-whiskered Vireo">Black-whiskered Vireo</option>
                 <option value="Puerto Rican Woodpecker">Puerto Rican Woodpecker</option>
-                <option value="Carrion Crow">Carrion Crow</option>
               </optgroup>
             </select>
             <br/>
-            <p>Move across the hyperplane:</p>
+            <p><b>(2)</b> Move across the hyperplane:</p>
             <input id="delta-slider" type="range" min="1" max="30" step="1" value="1"  style="width: 100%"/>
           </div>
           <div class="eight columns">
+            <p><b>(3)</b> Compare generated spectrogram with a typical example:</p>
             <img id="reconstruction" src="assets/images/frames/Eurasian Blackbird_0.png" alt="">
           </div>
         </div>
@@ -99,9 +131,10 @@
             img.src = "assets/images/frames/" + species + "_" + delta + ".png"
           }
 
-          select.addEventListener("load", render, false)
           select.addEventListener("change", render, false)
           slider.addEventListener("change", render, false)
+
+          render()
         </script>
       </section>
 
@@ -128,10 +161,21 @@
         </div>
       </section>
     </main>
-  </div>
 
-  <footer>
-    <p></p>
-  </footer>
+    <br/>
+
+    <footer>
+      <div class="row">
+        <h4>Acknowledgements</h4>
+        <p>
+          Many thanks to my supervisors Ivor Simpson, Alice Eldridge and Chris Sandom, and my colleagues in the LILI lab at the University of Sussex. My funders, the Leverhulme Trust and the be.AI scholarship programme.
+        </p>
+        <div>
+          <img src="assets/images/sussex-logo.png" alt="" width="150" style="float: left">
+          <img src="assets/images/acknowledgements.png" alt="acknowledgements" style="float: right">
+        </div>
+      </div>
+    </footer>
+  </div>
 </body>
 </html>
