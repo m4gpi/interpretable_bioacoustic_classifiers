@@ -127,12 +127,12 @@ def main():
                 log.info(f"{common_name}_{delta}")
                 fig, (ax1, ax2) = plt.subplots(ncols=2, figsize=(7, 4), constrained_layout=True)
                 plot_mel_spectrogram((20 * np.log10(spectrogram.exp())).squeeze().t(), **spectrogram_params, cmap="Greys", ax=ax1)
-                ax1.set_title("Real")
+                ax1.set_title("Real Typical Call")
                 z_tilde = z0 + ((z0 @ W.T / norm) + delta) * (W / norm)
                 dt = torch.ones(1, 1, 1, device=z0.device) * dt
                 x_tilde = vae.decode(z_tilde, dt).cpu()
                 plot_mel_spectrogram((20 * np.log10(x_tilde.exp())).squeeze().t(), **spectrogram_params, cmap="Greys", ax=ax2)
-                ax1.set_title("Basis of\nPrediction")
+                ax2.set_title("Basis of Detection")
                 fig.savefig(save_dir / f"{common_name}_{delta}")
 
 if __name__ == "__main__":
