@@ -84,7 +84,9 @@ def main():
                 log.info(f"{common_name}_{delta}")
                 fig, ax = plt.subplots(figsize=(3, 3))
                 z_tilde = z0 + ((z0 @ W.T / norm) + delta) * (W / norm)
-                x_tilde = vae.decode(z_tilde, torch.ones(1, 1, 1, device=z0.device) * delta).cpu()
+                dt = 0.0
+                dt = torch.ones(1, 1, 1, device=z0.device) * dt
+                x_tilde = vae.decode(z_tilde, dt).cpu()
                 x_tilde_db = (20 * np.log10(x_tilde.exp())).squeeze().t()
                 plot_mel_spectrogram(
                     x_tilde_db,
