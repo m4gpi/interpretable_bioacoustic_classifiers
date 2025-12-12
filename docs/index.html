@@ -56,8 +56,9 @@
         <div class="row">
           <div class="six columns">
             <p>Select a species:</p>
-            <select name="species" id="species-select" style="width: 100%">
+            <select id="species-select" name="species" id="species-select" style="width: 100%">
               <optgroup label="Sounding Out (UK)">
+    uk_species = ["Turdus merula_Eurasian Blackbird", "Erithacus rubecula_European Robin", "Phasianus colchicus_Ring-necked Pheasant",  "Troglodytes hiemalis_Winter Wren",  "Cyanistes caeruleus_Eurasian Blue Tit",  "Columba palumbus_Common Wood-Pigeon",  "Corvus corone_Carrion Crow"]
                 <option value="Eurasian Blackbird">Eurasian Blackbird</option>
                 <option value="European Robin">European Robin</option>
                 <option value="Ring-necked Pheasant">Ring-necked Pheasant</option>
@@ -66,6 +67,7 @@
                 <option value="Carrion Crow">Carrion Crow</option>
               </optgroup>
               <optgroup label="Sounding Out (Ecuador)">
+    ec_species = ["Coereba flaveola_Bananaquit","Poliocrania exsul_Chestnut-backed Antbird","Ramphocelus flammigerus_Flame-rumped Tanager","Leptotila pallida_Pallid Dove","Capsiempis flaveola_Yellow Tyrannulet","Mionectes oleagineus_Ochre-bellied Flycatcher","Microbates cinereiventris_Tawny-faced Gnatwren","Manacus manacus_White-bearded Manakin"]
                 <option value="Chestnut-backed Antbird">Chestnut-backed Antbird</option>
                 <option value="Pallid Dove">Pallid Dove</option>
                 <option value="Yellow Tyrannulet">Yellow Tyrannulet</option>
@@ -83,14 +85,28 @@
           </div>
           <div class="six columns">
             <p>Move across the hyperplane:</p>
-            <input type="range" min="0" max="30" step="1" value="0"  style="width: 100%"/>
+            <input id="delta-slider" type="range" min="0" max="30" step="1" value="0"  style="width: 100%"/>
           </div>
         </div>
         <div class="row">
           <div class="twelve columns">
-            <img src="assets/images/frames/Eurasian Blackbird_0.png" alt="">
+            <img id="reconstruction" src="assets/images/frames/Eurasian Blackbird_0.png" alt="">
           </div>
         </div>
+        <script>
+          let select = document.getElementById("species-select")
+          let slider = document.getElementById("delta-slider")
+          let img = document.getElementById("reconstruction")
+
+          function render () {
+            let species = select.options[select.selectedIndex].value
+            let delta = slider.value
+            img.src = "assets/images/frames/" + species + "_" + delta + ".png"
+          }
+
+          select.addEventListener("change", render, false)
+          slider.addEventListener("change", render, false)
+        </script>
       </section>
 
       <section>

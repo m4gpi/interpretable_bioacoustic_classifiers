@@ -42,7 +42,9 @@ def get_vae(model_dict):
 
 def spectrogram_params():
     with open(rootutils.find_root() / "config" / "transforms" / "log_mel_spectrogram.yaml", "r") as f:
-        return yaml.safe_load(f.read())["log_mel_spectrogram"]
+        conf = yaml.safe_load(f.read())["log_mel_spectrogram"]
+        del conf["_target_"]
+        return conf
 
 @torch.no_grad()
 def main():
@@ -76,9 +78,10 @@ def main():
         z0 = torch.tensor(dm.train_data.features.iloc[:, range(128)].mean().to_numpy(), device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
         for species in species_list:
             common_name = species.split("_")[1]
-            W = clf[species_name].to(device)
+            W = clf[species].to(device)
             norm = torch.linalg.norm(W)
             for delta in torch.arange(1, 31):
+                log.info(f"{common_name}_{delta}")
                 fig, ax = plt.subplots(figsize=(3, 3))
                 z_tilde = z0 + ((z0 @ W.T / norm) + delta) * (W / norm)
                 x_tilde = vae.decode(z_tilde, torch.ones(1, 1, 1, device=z0.device) * delta).cpu()
