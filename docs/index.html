@@ -78,11 +78,14 @@
           <div class="twelve columns">
             <h2>Model Architecture</h2>
           </div>
+          <p>
+            SIVAE is pre-trained to embed and reconstruct log mel spectrograms. Downstream linear classifiers are fit to samples from the learned posterior to predict weak presence / absence labels with a learned per-species gated attention mechanism to identify the most relevant frames \(t \in T\) in each sample.
+          </p>
           <div class="twelve columns">
             <figure>
               <img src="./assets/images/siv-architecture.png" alt="", style="width: 100%">
               <figcaption>
-                <b>Figure 2</b>: <b>(Top)</b> Encoding architecture overview. Spectrograms \(\mathbf{x}_{0, \ldots, T}\) are encoded into intra-frame shift-invariant latent representations, \(\mathbf{z}_{0, \ldots, T}\), with a corresponding shift \(\hat{\boldsymbol{\delta}}_{0, \ldots, T}\) for each frame. These representations are learned in a fully self-supervised manner; subsequently, classifiers can be trained using \(\mathbf{z}\) as a feature. <b>(Bottom)</b> Decoding architecture overview. Samples \(\bar{\mathbf{z}}\) are drawn from the average Gaussian distribution using the parametrisation trick. The decoder maps the sample \(\bar{\mathbf{z}}_t\) to approximate each input spectrogram, both a full contiguous clip and independently translated frames. During decoding each frame the decoded representation is duplicated for each target and is independently shifted in time by applying a translation \(\mathcal{T}(..., \hat{\boldsymbol{\delta}})\).
+                <b>Figure 2</b>: <b>(Top)</b> Encoding architecture overview. Spectrograms \(\mathbf{x}_{0, \ldots, T}\) are encoded into intra-frame shift-invariant latent representations, \(\mathbf{z}_{0, \ldots, T}\), with a corresponding shift \(\hat{\boldsymbol{\delta}}_{0, \ldots, T}\) for each frame. These representations are learned in a fully self-supervised manner; subsequently, classifiers can be trained using \(\mathbf{z}\) as a feature. <b>(Bottom)</b> Decoding architecture overview. Samples \(\bar{\mathbf{z}}\) are drawn from the average Gaussian distribution using the parametrisation trick. The decoder maps the sample \(\bar{\mathbf{z}}_t\) to approximate each input spectrogram, both a full contiguous clip and independently translated frames. During decoding each frame representation is duplicated for each target and is independently shifted in time by applying a translation \(\mathcal{T}(..., \hat{\boldsymbol{\delta}})\).
               </figcaption>
             </figure>
           </div>
@@ -97,9 +100,6 @@
         </div>
         <div class="row">
           <div class="twelve columns">
-            <p>
-              SIVAE is pre-trained to embed and reconstruct log mel spectrograms. Downstream linear classifiers were then fit to samples from the learned posterior to predict weak presence / absence labels with a learned per-species gated attention mechanism to identify the most relevant frames \(t \in T\) in each sample.
-            </p>
             <p>
               Using the generative model, we can inspect the basis of a detection by appling classifier weights as an affine transformation in the latent space, generating novel samples from regions predictive of each species. Specifically, we define a species presence transformation \(\mathcal{S}_j(\mathbf{z}_k)\):
             </p>
