@@ -54,7 +54,7 @@
             <figure>
               <img src="assets/images/disentangling_intra_frame_shift.png" alt="intra_frame_shift" style="width: 100%">
               <figcaption>
-                <b>Figure 1:</b> <b>(B)</b> A bird call interpolated into a generic soundscape background and shifted in time δ by linear interpolation in time <b>(A)</b>. Taking the 1st derivative of the frame representation \(\mathbf{z}\) with respect to a temporal shift \(\delta\) across the latent space highlights its inconsistency for a classic VAE <b>(C)</b>. The shift-invariant soundscape VAE is robust to such a perturbation <b>(D)</b>.
+                <b>Figure 1:</b> <b>(B)</b> A bird call interpolated into a generic soundscape background and shifted in time \(\delta\) by linear interpolation in time <b>(A)</b>. Taking the 1st derivative of the frame representation \(\mathbf{z}\) with respect to the shift across the latent space highlights its inconsistency for a classic VAE <b>(C)</b>. The shift-invariant soundscape VAE is robust to such a perturbation <b>(D)</b>.
               </figcaption>
             </figure>
           </div>
@@ -62,13 +62,29 @@
         <div class="row">
           <div class="twelve columns">
             <p>
-              We explicitly disentangle absolute position within a frame by training a <em>shift prediction network</em> which predicts the intra-frame shift (δ ∈ [−1, 1]) of the frame contents, with respect to a learned canonical timeline. Consistency is enforced by a 2-way cross-decoding across paired instances, where each instance is a translation of an input frame. A periodic boundary condition is applied and we regularise by learning to specify a zero-centered prior distribution.
+              We explicitly disentangle absolute position within a frame by training a <em>shift prediction network</em> which predicts the intra-frame shift \(\delta \in [-1, 1]\) of the frame contents, with respect to a learned canonical timeline. Consistency is enforced by a 2-way cross-decoding across paired instances, where each instance is a translation of an input frame. A periodic boundary condition is applied and we regularise by learning to specify a zero-centered prior distribution.
             </p>
           </div>
         </div>
         <div class="row">
           <div class="twelve columns" style="text-align: center">
             <p>$$\mathcal{L}_{\text{align}} = -\mathcal{N}(\hat{\boldsymbol{\delta}}; \mathbf{0}, \sigma_{\mathcal{T}}) = \sum_{t=0}^T \frac{1}{2}\bigg(\log(\sigma^2_{\mathcal{T}}) + \frac{\hat{\delta}_t^2}{\sigma^2_{\mathcal{T}}} \bigg)$$</p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="row">
+          <div class="twelve columns">
+            <h2>Model Architecture</h2>
+          </div>
+          <div class="twelve columns">
+            <figure>
+              <img src="./assets/images/siv-architecture.png" alt="", style="width: 100%">
+              <figcaption>
+                <b>Figure 2</b>: <b>(Top)</b> Encoding architecture overview. Spectrograms \(\mathbf{x}_{0, \ldots, T}\) are encoded into intra-frame shift-invariant latent representations, \(\mathbf{z}_{0, \ldots, T}\), with a corresponding shift \(\hat{\boldsymbol{\delta}}_{0, \ldots, T}\) for each frame. These representations are learned in a fully self-supervised manner; subsequently, classifiers can be trained using \(\mathbf{z}\) as a feature. <b>(Bottom)</b> Decoding architecture overview. Samples \(\bar{\mathbf{z}}\) are drawn from the average Gaussian distribution using the parametrisation trick. The decoder maps the sample \(\mathbf{z}_t\) to approximate each input spectrogram, both a full contiguous clip and independently translated frames. During decoding each frame the decoded representation is duplicated for each target and is independently shifted in time by applying a translation \(\mathcal{T}(..., \hat{\boldsymbol{\delta}})\).
+              </figcaption>
+            </figure>
           </div>
         </div>
       </section>
@@ -154,7 +170,7 @@
             <figure>
               <img id="reconstruction" src="assets/images/frames/Eurasian Blackbird_0.png" alt="" style="width: 100%">
               <figcaption>
-                <b>Figure 2:</b> <b>(Left)</b> a real example call typical of each species. <b>(Right)</b> a decoded generative species representation highlights what sounds were used for detecting a species.
+                <b>Figure 3:</b> <b>(Left)</b> a real example call typical of each species. <b>(Right)</b> a decoded generative species representation highlights what sounds were used for detecting a species.
 <b></b>
               </figcaption>
             </figure>
@@ -194,7 +210,7 @@
             <figure>
               <img src="assets/images/so_violin.png" alt="" style="width: 100%">
               <figcaption>
-                <b>Figure 3:</b> Area under the ROC curve (auROC) and average precision (AP) score distributions across out-of-the-box BirdNet V2.4 and both VAE variants. Full distributions show across species the auROC is approximately equivalent with BirdNET and across the VAE and SIVAE for the full dataset, while our models typically perform slightly better on examples with high occlusions. Both VAE variant representations provide less precision than BirdNET in the SO dataset. Introducing shift-invariance results in a small improvement in the UK and a drastic improvement in RFCX bird dataset, while we see a slight drop in precision in Ecuadorian soundscapes.
+                <b>Figure 4:</b> Area under the ROC curve (auROC) and average precision (AP) score distributions across out-of-the-box BirdNet V2.4 and both VAE variants. Full distributions show across species the auROC is approximately equivalent with BirdNET and across the VAE and SIVAE for the full dataset, while our models typically perform slightly better on examples with high occlusions. Both VAE variant representations provide less precision than BirdNET in the SO dataset. Introducing shift-invariance results in a small improvement in the UK and a drastic improvement in RFCX bird dataset, while we see a slight drop in precision in Ecuadorian soundscapes.
               </figcaption>
             </figure>
           </div>
