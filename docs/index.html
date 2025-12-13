@@ -15,7 +15,8 @@
 <body>
   <div class="container">
     <header style="text-align: center">
-      <h1 style="font-size: 4.5rem">Modelling temporal shift-invariance in self-supervised generative models improves accuracy and interpretability of species detection in weakly labelled soundscape recordings</h1>
+      <h1 style="font-size: 4.5rem">Interpretable Bioacoustic Classifiers</h1>
+      <h3 style="font-size: 3.5rem">Modelling temporal shift-invariance in self-supervised generative models improves accuracy and interpretability of species detection in weakly labelled soundscape recordings</h3>
       <p><a href="https://orcid.org/0000-0003-1468-547X">Kieran A. Gibb</a></p>
       <p><a href="http://orcid.org/0000-0001-7093-2143">Alice Eldridge</a> | <a href="http://orcid.org/0000-0002-6061-2231">Aisha Lawal Shuaibu</a> | <a href="http://orcid.org/0000-0001-5605-6626">Ivor J. A. Simpson</a></p>
       <p><a href="https://www.biorxiv.org/content/10.64898/2025.12.09.693207v1">[Paper]</a> | <a href="https://github.com/m4gpi/interpretable_bioacoustic_classifiers">[Code]</a></p>
@@ -28,7 +29,7 @@
           Realising the potential for acoustic monitoring to deliver biodiversity insight at scale requires new approaches to the automated analysis of PAM recordings that are trustworthy as well as cost-effective. Discriminative models trained on annotated species data are gaining popularity but are labour intensive, notoriously opaque and biased. Self-supervised generative models such as Variational Autoencoders (VAE) offer great potential for learning compact yet expressive representations of data and can provide a strong prior for use in downstream discriminative tasks such as species detection while being intrinsically interpretable.
         </p>
         <p>
-          We propose and evaluate a novel modification to the VAE learning algorithm that models <em>intra-frame shift-invariance</em>. We demonstrate that this modification (SIVAE) provides representations that are more interpretable, consistent and yield good performance on few-shot learning task with very weakly labels. Species-specific <em>Linear classifiers</em> were trained to predict the presence or absence of over 150 avian and anuran species using shift-invariant VAE representations of 60s long audio samples. A simple attention mechanism guides the selection of relevant frames to identify the most relevant timestep(s), while L1 regularisation sparsifies the linear model weights to perform species-specific feature selection.
+          We propose and evaluate a novel modification to the VAE learning algorithm that models <em>intra-frame shift-invariance</em>. We demonstrate that this modification (SIVAE) provides representations that are more interpretable, consistent and yield good performance on few-shot learning task with very weakly labels. Species-specific <em>Linear classifiers</em> were trained to predict the presence or absence of over 150 avian and anuran species using SIVAE representations of 60s long audio samples. A simple attention mechanism guides the selection of relevant frames to identify the most relevant timestep(s), while L1 regularisation sparsifies the linear model weights to perform species-specific feature selection.
         </p>
         <p>
          Whilst demonstrated in terrestrial recordings, the approach is transferable to marine, freshwater, and soil habitats. These innovations set the path for trustworthy, data and time-efficient tools to support solid ecological inference from large-scale passive acoustic monitoring surveys.
@@ -50,7 +51,12 @@
         </div>
         <div class="row">
           <div class="twelve columns">
-            <img src="assets/images/disentangling_intra_frame_shift.png" alt="intra_frame_shift" style="width: 100%">
+            <figure>
+              <img src="assets/images/disentangling_intra_frame_shift.png" alt="intra_frame_shift" style="width: 100%">
+              <figcaption>
+                <b>Figure 1:</b> <b>(B)</b> A bird call interpolated into a generic soundscape background and shifted in time δ by linear interpolation in time <b>(A)</b>. Taking the 1st derivative of the frame representation \(\mathbf{z}\) with respect to a temporal shift \(\delta\) across the latent space highlights its inconsistency for a classic VAE <b>(C)</b>. The shift-invariant soundscape VAE is robust to such a perturbation <b>(D)</b>.
+              </figcaption>
+            </figure>
           </div>
         </div>
         <div class="row">
@@ -59,11 +65,11 @@
               We explicitly disentangle absolute position within a frame by training a <em>shift prediction network</em> which predicts the intra-frame shift (δ ∈ [−1, 1]) of the frame contents, with respect to a learned canonical timeline. Consistency is enforced by a 2-way cross-decoding across paired instances, where each instance is a translation of an input frame. A periodic boundary condition is applied and we regularise by learning to specify a zero-centered prior distribution.
             </p>
           </div>
-        <div class="row">
-          <div class="twelve columns">
-            <img src="assets/images/alignment_loss.png" alt="alignment_loss" style="width: 100%">
-          </div>
         </div>
+        <div class="row">
+          <div class="twelve columns" style="text-align: center">
+            <p>$$\mathcal{L}_{\text{align}} = -\mathcal{N}(\hat{\boldsymbol{\delta}}; \mathbf{0}, \sigma_{\mathcal{T}}) = \sum_{t=0}^T \frac{1}{2}\bigg(\log(\sigma^2_{\mathcal{T}}) + \frac{\hat{\delta}_t^2}{\sigma^2_{\mathcal{T}}} \bigg)$$</p>
+          </div>
         </div>
       </section>
 
@@ -76,15 +82,43 @@
         <div class="row">
           <div class="twelve columns">
             <p>
-              An intra-frame shift-invariant VAE is pre-trained to embed and reconstruct log mel spectrograms. Downstream linear classifiers were then fit to samples from the learned posterior to predict weak presence / absence labels.
+              SIVAE is pre-trained to embed and reconstruct log mel spectrograms. Downstream linear classifiers were then fit to samples from the learned posterior to predict weak presence / absence labels.
             </p>
             <p>
-              Using the generative model, we can inspect the basis of a detection. By appling classifier weights as an affine transformation of the latent space, we can realise novel samples of species by interpolation, sampling as decoding spectrograms at each point. Specifically, we apply a species presence transformation of a 'generic' (habitat average) sample from the VAE latent space:
+              Using the generative model, we can inspect the basis of a detection by appling classifier weights as an affine transformation in the latent space, generating novel samples from regions predictive of each species. Specifically, we define a species presence transformation \(\mathcal{S}_j(\mathbf{z}_k)\):
             </p>
-            <img src="assets/images/species_transform.png" alt="species_transform" style="width: 100%">
           </div>
         </div>
-        </br>
+        <div class="row">
+          <div class="four columns" style="text-align: center">
+            <p>
+              $$
+              d_{j,k} = \frac{W_j^T\mathbf{z}_k + b}{||W_j||},
+              $$
+            </p>
+          </div>
+          <div class="four columns" style="text-align: center">
+            <p>
+              $$
+              \bar{W}_j = \frac{W_j}{||W_j||},
+              $$
+            </p>
+          </div>
+          <div class="four columns" style="text-align: center">
+            <p>
+              $$
+              \mathcal{S}_j(\mathbf{z}_k) = \mathbf{z}_k + (d_{j,k} + \delta)\bar{W}_j
+              $$
+            </p>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <p>
+              where \(\mathbf{z}_k\) is a sample from an appropriate starting region of the latent space, \(d_{j,k}\) is the signed distance to the hyperplane for species \(j\), \(\bar{W}\) is the direction normal to the hyperplane and \(\delta\) is a tunable distance parameter beyond the decision boundary controlling the amplitude of the signal in the generated spectrogram. We set \(\mathbf{z}_k\) by taking the average for each habitat resulting in a habitat-specific silent background. The final result is decoded \(\mathcal{D}(\mathcal{S}_j(\mathbf{z}_k))\) providing a spectogram illustrating the predictive factors for each species.
+            </p>
+          </div>
+        </div>
         <div class="row">
           <div class="four columns">
             <p><b>(1)</b> Select a species:</p>
@@ -117,7 +151,13 @@
           </div>
           <div class="eight columns">
             <p><b>(3)</b> Compare generated spectrogram with a typical example:</p>
-            <img id="reconstruction" src="assets/images/frames/Eurasian Blackbird_0.png" alt="">
+            <figure>
+              <img id="reconstruction" src="assets/images/frames/Eurasian Blackbird_0.png" alt="" style="width: 100%">
+              <figcaption>
+                <b>Figure 2:</b> <b>(Left)</b> a real example call typical of each species. <b>(Right)</b> a decoded generative species representation highlights what sounds were used for detecting a species.
+<b></b>
+              </figcaption>
+            </figure>
           </div>
         </div>
         <script>
@@ -146,17 +186,28 @@
         </div>
         <div class="row">
           <div class="twelve columns">
-            Quantitative experiments show our approach was both effective in terms of discriminative performance, achieving the highest area under the ROC (0.92) and Top-1 accuracy (0.67), outperforming BirdNET V2.4 (0.89, 0.52) while achieving good average precision despite using very weak presence annotations for each minute of audio.
+            Quantitative experiments show our approach was both effective in terms of discriminative performance, achieving the highest area under the ROC (0.92) and Top-1 accuracy (0.67), outperforming BirdNET V2.4 (0.89, 0.52) while achieving good average precision (AP) despite using very weak presence annotations for each minute of audio.
           </div>
         </div>
         <div class="row">
           <div class="twelve columns">
-            <img src="assets/images/so_violin.png" alt="" style="width: 100%">
+            <figure>
+              <img src="assets/images/so_violin.png" alt="" style="width: 100%">
+              <figcaption>
+                <b>Figure 3:</b> Area under the ROC curve (auROC) and average precision (AP) score distributions across out-of-the-box BirdNet V2.4 and both VAE variants. Full distributions show across species the auROC is approximately equivalent with BirdNET and across the VAE and SIVAE for the full dataset, while our models typically perform slightly better on examples with high occlusions. Both VAE variant representations provide less precision than BirdNET in the SO dataset. Introducing shift-invariance results in a small improvement in the UK and a drastic improvement in RFCX bird dataset, while we see a slight drop in precision in Ecuadorian soundscapes.
+              </figcaption>
+            </figure>
           </div>
         </div>
         <div class="row">
           <div class="twelve columns">
-            <img src="assets/score_table.png" alt="" style="width: 100%">
+            <figure>
+              <img src="assets/score_table.png" alt="" style="width: 100%">
+              <figcaption>
+                <b>Table 1:</b> Area under the ROC (auROC), mean average precision (mAP) and top-1 accuracy scores for species detection models trained on latent space representations for each model variant alongside BirdNET and Perch. Scores are averaged across the entire species community over 3 different training runs for each dataset. Comparisons are made with both out-of-the-box BirdNET V2.4 and the best results from <a href="https://www.nature.com/articles/s41598-023-49989-z">Ghani et al. (2023)</a> where BirdNet and Perch were fine-tuned on a few-shot learning task. * indicates ``strong labels" where bounding boxes were used to delineate the call in the training data. Size denotes the dimensionality of the embedding for the corresponding temporal resolution in seconds."
+              </figcaption>
+            </figure>
+            <p></p>
           </div>
         </div>
       </section>
@@ -178,4 +229,5 @@
     </footer>
   </div>
 </body>
+<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"></script>
 </html>
