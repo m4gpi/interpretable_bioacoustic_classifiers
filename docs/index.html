@@ -98,7 +98,7 @@
         <div class="row">
           <div class="twelve columns">
             <p>
-              SIVAE is pre-trained to embed and reconstruct log mel spectrograms. Downstream linear classifiers were then fit to samples from the learned posterior to predict weak presence / absence labels.
+              SIVAE is pre-trained to embed and reconstruct log mel spectrograms. Downstream linear classifiers were then fit to samples from the learned posterior to predict weak presence / absence labels with a learned per-species gated attention mechanism to identify the most relevant frames \(t \in T\) in each sample.
             </p>
             <p>
               Using the generative model, we can inspect the basis of a detection by appling classifier weights as an affine transformation in the latent space, generating novel samples from regions predictive of each species. Specifically, we define a species presence transformation \(\mathcal{S}_j(\mathbf{z}_k)\):
