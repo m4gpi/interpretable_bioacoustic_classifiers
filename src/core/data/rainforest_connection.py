@@ -151,6 +151,11 @@ class RainforestConnection(torch.utils.data.Dataset):
         for dataset in ["train", "test"]:
             (self.base_dir / f"{dataset}_metadata.parquet").unlink(missing_ok=True)
 
+    def _download_files(self):
+        import kagglehub
+        kagglehub.login()
+        kagglehub.competition_download("rfcx-species-audio-detection", path=self.base_dir)
+
     def _extract_metadata(self):
         if (self.base_dir / f"train_metadata.parquet").exists(): return
         file_list = data_dir.glob("*.flac")
