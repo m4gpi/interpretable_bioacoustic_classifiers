@@ -8,6 +8,7 @@ import ranzen
 import ranzen.torch
 import re
 import shutil
+import sklearn
 import torch
 import torchaudio
 import zipfile
@@ -60,16 +61,18 @@ class RainforestConnection(torch.utils.data.Dataset):
         self.segment_len = min(segment_len, self._MAX_AUDIO_LEN)
         self.num_frames_in_segment = int(self.segment_len * self.sample_rate)
         self.transforms = transforms
-        # TODO: download through kaggle API
+        # download through kaggle API
         if download:
             self._download_files()
-        # check files are present and accounted for
-        self._check_files()
-        # rebuild the metadata file and data split
+            self._extract_metadata()
+            self._extract_labels()
+            self._split_testset()
+        # rebuild the data split if specified
         if reset_index:
             self._reset_index()
-        self._extract_metadata()
-        self._extract_labels()
+        # check files are present and accounted for
+        self._check_files()
+        # load metadata and labels
         self.metadata = pd.read_parquet(self.base_dir / f"metadata.parquet")
         self.labels = pd.read_parquet(self.base_dir / f"labels.parquet")
         # scope the dataset by train / test
@@ -77,12 +80,10 @@ class RainforestConnection(torch.utils.data.Dataset):
         self.test_metadata.index.name = "file_i"
         self.test_labels = pd.read_parquet(self.base_dir / f"test_labels.parquet")
         self.test_labels.drop("species_id", axis=1, inplace=True)
-
         self.train_metadata = pd.read_parquet(self.base_dir / f"train_metadata.parquet")
         self.train_metadata.index.name = "file_i"
         self.train_labels = pd.read_parquet(self.base_dir / f"train_labels.parquet")
         self.train_labels.drop("species_id", axis=1, inplace=True)
-
         # scope by taxa
         if scope is not None:
             self.train_labels = self.train_labels[self.train_labels.taxa == scope.split("_")[-1]]
@@ -107,6 +108,14 @@ class RainforestConnection(torch.utils.data.Dataset):
             self.s = self.metadata.index
             self.x = self.metadata.file_path.to_numpy()
             self.y = self.labels.to_numpy()
+
+    @property
+    def target_names(self):
+        return self.labels.columns.tolist()
+
+    @property
+    def model_params(self) -> Dict:
+        return {}
 
     def format_labels(self, metadata, labels):
         # count occurrences and drop duplicates
@@ -134,35 +143,40 @@ class RainforestConnection(torch.utils.data.Dataset):
         waveform, _ = torchaudio.load(str(file_path), num_frames=num_frames_segment)
         return torchaudio.functional.resample(waveform, orig_freq=metadata.sample_rate, new_freq=self.sample_rate).squeeze()
 
-    @property
-    def target_names(self):
-        return self.labels.columns.tolist()
-
-    @property
-    def model_params(self) -> Dict:
-        return {}
-
     def _check_files(self) -> None:
         """assert files exist and zip unpacked"""
-        if not self.data_dir.exists():
-            raise RuntimeError(f"data not found at location {path.resolve()}. have you downloaded it?")
+        assert self.data_dir.exists(), \
+            f"data not found at location {path.resolve()}. have you downloaded it?"
+        assert (self.data_dir / "metadata.parquet").exists(), \
+            f"metadata.parquet not found at location {path.resolve()}. have you downloaded it?"
+        assert (self.data_dir / "labels.parquet").exists(), \
+            f"labels.parquet not found at location {path.resolve()}. have you downloaded it?"
+        assert (self.data_dir / "train_labels.parquet").exists() and (self.data_dir / "test_labels.parquet").exists() \
+            f"'train_labels.parquet' or 'test_labels.parquet' not found at location {path.resolve()}. Pass 'reset_index=True seed=42' to rebuild the data split"
 
     def _reset_index(self):
         for dataset in ["train", "test"]:
             (self.base_dir / f"{dataset}_metadata.parquet").unlink(missing_ok=True)
+        self._split_testset()
 
     def _download_files(self):
         import kagglehub
-        kagglehub.login()
-        kagglehub.competition_download("rfcx-species-audio-detection", path=self.base_dir)
+        kagglehub.competition_download("rfcx-species-audio-detection", path="train")
+        kagglehub.competition_download("rfcx-species-audio-detection", path="train_tp.csv")
+        cached_dir = pathlib.Path.home() / ".cache" / "kagglehub" / "competitions" / "rfcx-species-audio-detection"
+        shutil.move(cached_dir, self.base_dir)
 
     def _extract_metadata(self):
-        if (self.base_dir / f"train_metadata.parquet").exists(): return
+        if (self.base_dir / f"metadata.parquet").exists(): return
         file_list = data_dir.glob("*.flac")
         file_ids = np.arange(file_list)
-        train_idx, test_idx = train_test_split(file_ids, test_size=0.2, random_state=self.seed)
         metadata = pd.DataFrame(data=zip(file_ids, file_list), columns=["file_i", "file_name"]).set_index("file_i")
         metadata.to_parquet(data_dir / "metadata.parquet", index=True)
+
+    def _split_testset(self):
+        if (self.base_dir / f"train_metadata.parquet").exists(): return
+        metadata = pd.read_parquet(self.base_dir / "metadata.parquet", index=True)
+        train_idx, test_idx = sklearn.model_selection.train_test_split(metadata.index, test_size=0.2, random_state=self.seed)
         train_metadata, test_metadata = metadata.loc[train_idx], metadata.loc[test_idx]
         train_metadata.to_parquet(data_dir / "train_metadata.parquet", index=True)
         test_metadata.to_parquet(data_dir / "test_metadata.parquet", index=True)

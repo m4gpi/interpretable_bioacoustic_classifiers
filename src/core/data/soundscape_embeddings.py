@@ -22,6 +22,7 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
     labels: pd.DataFrame = attrs.field()
     index: List[int] = attrs.field()
     seed: int = attrs.field(default=None)
+    download: bool = attrs.field(default=False)
 
     x: torch.Tensor = attrs.field(init=False)
     y: torch.Tensor = attrs.field(init=False)
@@ -33,6 +34,8 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
         return (self.x[idx], self.y[idx], self.index[idx])
 
     def __attrs_post_init__(self):
+        if download:
+            self._download_files()
         self.x = torch.tensor(self.features.values.reshape(self.labels.values.shape[0], -1, self.features.values.shape[-1]), dtype=torch.float32)
         self.y = torch.tensor(self.labels.values, dtype=torch.int64)
 
@@ -51,6 +54,22 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
             target_counts=self.target_counts,
             seed=self.seed,
         )
+
+    def _download_files(self):
+        import requests
+        import zipfile
+        url = "https://sussex.box.com/s/1ob205h3t6wce8igt60vl360gycqv37o"
+        try:
+            response = requests.get(url, stream=True)
+        except requests.exceptions.RequestException as e:
+            raise SystemExit(e)
+        zip_path = self.base_dir.parent / "soundscape_embeddings.zip"
+        with open(zip_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=512):
+                f.write(chunk)
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(path=self.base_dir)
+        zip_path.unlink()
 
 @attrs.define(kw_only=True)
 class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
