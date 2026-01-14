@@ -40,7 +40,7 @@ class RainforestConnection(torch.utils.data.Dataset):
         return self.transforms(self.load_sample(self.x[idx])), self.y[idx], self.s[idx]
 
     def __len__(self):
-        return len(self.metadata)
+        return len(self.x)
 
     def __init__(
         self,
