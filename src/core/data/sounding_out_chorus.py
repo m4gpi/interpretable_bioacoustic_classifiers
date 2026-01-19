@@ -205,13 +205,21 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
             return dict(batch_size=batch_size, shuffle=True, generator=self.generator, drop_last=False)
 
     def train_dataloader(self, batch_size: int | None = None, batch_sampler: torch.utils.data.Sampler | None = None) -> torch.utils.data.DataLoader:
-        return self._build_dataloader(self._train_data, **self.train_dataloader_params(batch_size))
+        return self._build_dataloader(self.train_data, **self.train_dataloader_params(batch_size))
 
     def val_dataloader(self) -> torch.utils.data.DataLoader:
-        return self._build_dataloader(self._val_data, batch_size=self.eval_batch_size)
+        return self._build_dataloader(self.val_data, batch_size=self.eval_batch_size)
 
     def test_dataloader(self) -> torch.utils.data.DataLoader:
-        return self._build_dataloader(self._test_data, batch_size=self.eval_batch_size)
+        return self._build_dataloader(self.test_data, batch_size=self.eval_batch_size)
+
+    @property
+    def dataloader_params(self) -> Dict[str, Any]:
+        return dict(
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.persist_workers,
+        )
 
     def _build_dataloader(
         self,
@@ -229,7 +237,7 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
         )
 
     def _default_train_sampler(self, batch_size: int | None = None) -> torch.utils.data.Sampler:
-        return ranzen.torch.ranzen.torch.SequentialBatchSampler(
+        return ranzen.torch.SequentialBatchSampler(
             data_source=self.train_data,
             batch_size=batch_size or self.train_batch_size,
             shuffle=False,

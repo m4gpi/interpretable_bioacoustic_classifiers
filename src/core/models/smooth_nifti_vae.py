@@ -25,6 +25,8 @@ from src.core.utils import soft_clip, linear_decay, bounded_sigmoid, nth_percent
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+plt.switch_backend('agg')
+
 __all__ = ["SmoothNiftiVAE"]
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)

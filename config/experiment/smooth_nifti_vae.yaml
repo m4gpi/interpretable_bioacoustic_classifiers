@@ -17,6 +17,19 @@ data:
   seed: ${seed}
   root: ${oc.env:HOME}/data/sounding_out
 
+transforms:
+  log_mel_spectrogram:
+      sample_rate: ${model.sample_rate}
+      window_length: ${model.fft_window_length}
+      hop_length: ${model.fft_hop_length}
+      num_mel_bins: ${model.num_mel_bins}
+      mel_min_hertz: ${model.mel_min_hertz}
+      mel_max_hertz: ${model.mel_max_hertz}
+      mel_scaling_factor: ${model.mel_scaling_factor}
+      mel_break_frequency: ${model.mel_break_frequency}
+  center_crop:
+      size: [7488, 64]
+
 model:
   sigma_z_max: 0.2
   sigma_z_mode: FIXED
@@ -40,12 +53,13 @@ trainer:
 
 callbacks:
   model_checkpoint:
-    dirpath: ${paths.model_dir}/checkpoints/smooth_nifti
+    dirpath: ${paths.model_dir}/checkpoints/intra_frame_shift_invariant_temporally_smooth
     filename: 'ds=chorus_{step}'
     every_n_train_steps: 60_000
     save_top_k: -1
 
 logger:
-  id: ${run_id}
-  project: species_detector_pretraining
-  group: smooth_nifti_vae
+  wandb:
+    id: ${run_id}
+    project: species_detector_pretraining
+    group: intra_frame_shift_invariant_temporally_smooth_vae
