@@ -20,6 +20,10 @@ def gaussian_kl_divergence(p: torch.Tensor, q: torch.Tensor = torch.zeros(2)) ->
     (mu_p, log_sigma_sq_p), (mu_q, log_sigma_sq_q) = p.chunk(2, dim=-1), q.chunk(2, dim=-1)
     return -1/2 * (1 + log_sigma_sq_p - log_sigma_sq_q - (log_sigma_sq_p.exp() + (mu_p - mu_q).pow(2)) / log_sigma_sq_q.exp())
 
+def mahalanobis_distance(x: torch.Tensor, q_z: torch.Tensor) -> torch.Tensor:
+    mu, log_sigma_sq = q_z.chunk(2, dim=-1)
+    return ((x - mu).pow(2) / log_sigma_sq.exp()).sum(dim=-1).sqrt()
+
 def autoregressive_prior(q_z: torch.Tensor, alpha: torch.Tensor, p_z_init: torch.Tensor | None = None):
     p_z = torch.zeros(1).expand(*q_z.size()).to(q_z.device) if p_z_init is None else p_z_init
     mu_p, log_sigma_sq_p = p_z.chunk(2, dim=-1)

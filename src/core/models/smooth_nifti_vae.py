@@ -15,7 +15,7 @@ from typing import Any, Dict, Tuple, List
 
 from src.core.constants import Stage
 from src.core.models.components import Activation, NormType, ResidualConv2d, init_alignment_encoder
-from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, autoregressive_prior
+from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, autoregressive_prior, mahalanobis_distance
 from src.core.models.base_vae import BaseVAE
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
@@ -53,6 +53,17 @@ class SmoothNiftiVAE(BaseVAE):
             activation_fn=Activation[self.mlp_activation],
             out_features=1,
         )
+        self.sequence_encoder = torch.nn.LSTM(
+            input_size=self.latent_dim,
+            hidden_size=self.latent_dim,
+            num_layers=3,
+            batch_first=True,
+        )
+        self.init_token = torch.nn.Parameter(torch.randn(1, self.latent_dim, requires_grad=True))
+        self.sequence_decoder = torch.nn.ModuleList([
+            torch.nn.LSTMCell(input_size=self.latent_dim, hidden_size=self.latent_dim)
+            for i in range(3)
+        ])
 
     @property
     def p_dt_sigma_params(self):
@@ -108,13 +119,20 @@ class SmoothNiftiVAE(BaseVAE):
         mu_x_j, log_sigma_sq_x_j = q_z_j.chunk(2, dim=-1)
         # soft cross-decoding averages the distributions
         # mu_k = (mu_i + mu_j) / 2, sigma^2_k = (sigma^2_i + sigma^2_j) / 2^2
-        mu_x = torch.stack([mu_x_i.flatten(end_dim=1), mu_x_j.flatten(end_dim=1)], dim=1).mean(dim=1)
-        log_sigma_sq_x = (torch.stack([log_sigma_sq_x_i.flatten(end_dim=1).exp(), log_sigma_sq_x_j.flatten(end_dim=1).exp()], dim=1).sum(dim=1) / 4).log()
-        z = Normal(mu_x, (0.5 * log_sigma_sq_x).exp()).rsample()  # (bs, seq, ld)
-        # stack q_z back together
-        q_z = torch.cat([mu_x, log_sigma_sq_x], dim=-1).view(q_z_i.size())
+        mu_x = torch.stack([mu_x_i.flatten(end_dim=1), mu_x_j.flatten(end_dim=1)], dim=1).mean(dim=1).view(mu_x_i.shape)
+        sigma_sq_x = torch.stack([log_sigma_sq_x_i.flatten(end_dim=1).exp(), log_sigma_sq_x_j.flatten(end_dim=1).exp()], dim=1)
+        log_sigma_sq_x = (sigma_sq_x.sum(dim=1) / 4).log().view(log_sigma_sq_x_i.shape)
+        q_z = torch.cat([mu_x, log_sigma_sq_x], dim=-1) # (bs, seq, ld)
+        # sample z
+        z = Normal(mu_x, (0.5 * log_sigma_sq_x).exp()).rsample() # (bs, seq, ld)
+        # encode sequence summary representation
+        _, (h_n, c_n) = self.sequence_encode(z)
+        C = c_n[-1]
+        # auto-regressively unpack sequence summary representation
+        # temporal prior over latent features is forward-time auto-regressive
+        z_hat = self.sequence_decode(C, q_z.size(1), z=z)
         # decode to feature maps
-        U_hat = self.mlp_decode(z) # (bs * seq, ch, fr, fq)
+        U_hat = self.mlp_decode(z_hat.view(mu_x_j.shape).flatten(end_dim=1)) # (bs * seq, ch, fr, fq)
         # reconstruct a contiguous sequence
         x_hat_i = self.cnn_decode(U_hat, dt_i) # (bs, 1, fr * seq, fq)
         # and reconstruct independent translations
@@ -128,7 +146,8 @@ class SmoothNiftiVAE(BaseVAE):
             x_hat_i_framed=x_hat_i_framed,
             q_z=q_z,
             q_z_i=q_z_i, q_z_j=q_z_j,
-            dt_i=dt_i, dt_j=dt_j
+            dt_i=dt_i, dt_j=dt_j,
+            z_hat=z_hat,
         )
 
     def encode(self, x: Tensor) -> Tensor:
@@ -155,6 +174,39 @@ class SmoothNiftiVAE(BaseVAE):
         q_z = torch.cat([mu_x, log_sigma_sq_x], dim=-1)
         dt = self.offset_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         return q_z, dt
+
+    def sequence_encode(self, z: Tensor):
+        return self.sequence_encoder(z)
+
+    def sequence_decode(self, C: Tensor, T_max: int, z: Tensor | None, p_teach: float = 1.0) -> Tensor:
+        assert T_max > 0, "'T_max' must be non-zero"
+        # initialize state inputs to zero vectors
+        states_dims = (len(self.sequence_decoder), C.size(0), self.latent_dim)
+        h = torch.zeros(*states_dims, device=C.device) # (depth, bs, ld)
+        c = torch.zeros(*states_dims, device=C.device) # (depth, bs, ld)
+        # long-term memory at deepest layer carried over from encoder
+        c[0] = C # (bs, ld)
+        # initialize predictions, z0 is the init token
+        z_hat = []
+        z_t = self.init_token.expand(C.size(0), -1)
+        # autoregressively unroll the LSTM for T_max steps
+        for t in range(1, T_max + 1):
+            # collect outputs for each layer to init t + 1
+            h_t, c_t = [], []
+            for i, rnn in enumerate(self.sequence_decoder):
+                h_i, c_i = rnn(z_t, (h[i], c[i]))
+                z_t = h_i
+                h_t.append(h_i)
+                c_t.append(c_i)
+            # step forward rnn state by one timestep
+            h, c = h_t, c_t
+            # store predicted output
+            z_hat.append(z_t)
+            # stochastically set next input state to actual latents (teacher forcing)
+            if z is not None and np.random.choice([0, 1], p=[1 - p_teach, p_teach]) == 1:
+                z_t = z[:, t - 1] # (bs, ld)
+        # return predicted sequence w/o init token
+        return torch.stack(z_hat, dim=1)
 
     def decode(self, z: Tensor, dt: Tensor | None = None) -> Tensor:
         U = self.content_decoder(z.flatten(end_dim=1))
@@ -201,6 +253,7 @@ class SmoothNiftiVAE(BaseVAE):
         dt_i: Tensor,
         dt_j: Tensor,
         q_z: Tensor,
+        z_hat: Tensor,
         **kwargs: Any,
     ) -> Dict[str, Tensor]:
         outputs = dict()
@@ -216,7 +269,7 @@ class SmoothNiftiVAE(BaseVAE):
         # MAP estimate of the alignment factor p(x|dt)p(dt)
         dt = torch.cat([dt_i.flatten(end_dim=1).unsqueeze(1), dt_j], dim=0)
         mu_dt_wrt_x = torch.zeros(1).to(dt.device)
-        log_sigma_sq_dt_wrt_x= self.p_dt_sigma_current(self.trainer.global_step).pow(2).log()
+        log_sigma_sq_dt_wrt_x = self.p_dt_sigma_current(self.trainer.global_step).pow(2).log()
         intra_frame_nll = negative_log_likelihood(dt, mu_dt_wrt_x, log_sigma_sq_dt_wrt_x)
         losses.append(intra_frame_nll.mean())
         outputs |= dict(log_likelihood_dt=-intra_frame_nll.detach().mean())
@@ -240,6 +293,10 @@ class SmoothNiftiVAE(BaseVAE):
             prior_dkl = gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
             losses.append(prior_dkl.mean())
             outputs |= dict(prior_dkl=prior_dkl.detach().mean())
+        # constrain autoregressive model to adhere to learned posterior
+        mahanalobis = mahalanobis_distance(z_hat, q_z)
+        losses.append(mahanalobis.mean())
+        outputs |= dict(rnn_loss=mahanalobis.detach().mean())
         # sum the loss components
         outputs |= dict(loss=sum(losses))
         return outputs
