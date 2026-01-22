@@ -15,7 +15,7 @@ seed: 42
 
 data:
   seed: ${seed}
-  root: /srv/thetis2/kag25/data/birdclef2024
+  root: /its/home/kag25/data/birdclef2024
   train_batch_size: 18
   eval_batch_size: 18
   segment_len: 19.968
