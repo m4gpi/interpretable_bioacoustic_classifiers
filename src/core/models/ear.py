@@ -268,28 +268,28 @@ class EAR(L.LightningModule):
         z_q_i = z_q_i_chunk.reshape(*z_e_i_chunk.shape[:-2], -1) # (bs, seq, ld)
         z_q_i = z_e_i + (z_q_i - z_e_i).detach()
         z_e_j_chunk = torch.stack(z_e_j.chunk(self.latent_dim // self.quantise.num_features, dim=-1), dim=-2) # (bs, seq, ld/ck, ck)
-        z_q_j_chunk, encoding_jdx_j, encodings_j = self.quantise(z_e_j_chunk) # (bs * seq * ld/ck, ck)
-        z_q_j = z_q_j_chunk.reshape(*z_e_j_chunk.shape[:-2], -1) # (bs, seq, ld)
+        z_q_j_chunk, encoding_idx_j, encodings_j = self.quantise(z_e_j_chunk) # (bs * seq * ld/ck, ck)
+        z_q_j = z_q_j_chunk.reshape(*z_e_j_chunk.shape[:-2], -1) # (bs * seq, ld)
         z_q_j = z_e_j + (z_q_j - z_e_j).detach()
         # cross-decoded reconstructions, reconstruct x_i from delta_j and x_j from delta_i
         U_i = self.mlp_decode(z_q_i)
         U_j = self.mlp_decode(z_q_j)
-        x_hat_i = self.cnn_decode(U_j, delta_hat_i) # (bs, 1, fr * seq, fq)
+        x_hat_i = self.cnn_decode(U_j.flatten(end_dim=1), delta_hat_i) # (bs, 1, fr * seq, fq)
         x_hat_i_framed = frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1) # (bs * seq, 1, fr, fq)
-        x_hat_j = self.cnn_decode(U_i, delta_hat_j) # (bs * seq, 1, fr, fq)
+        x_hat_j = self.cnn_decode(U_i.flatten(end_dim=1), delta_hat_j) # (bs * seq, 1, fr, fq)
         # update codebook EMA
-        self.quantise.update(z_e_i_chunk, encodings_i)
-        self.quantise.update(z_e_j_chunk, encodings_j)
-        # quantify diversity of codebook usage
-        perplexity_i = self.quantise.perplexity(encodings_i)
-        perplexity_j = self.quantise.perplexity(encodings_j)
+        self.quantise.update(
+            torch.cat([z_e_i_chunk.flatten(end_dim=-2), z_e_j_chunk.flatten(end_dim=-2)], dim=0),
+            torch.cat([encodings_i, encodings_j], dim=0)
+        )
         return dict(
             x_i=x_i, x_j=x_j, x_i_framed=x_i_framed,
             x_hat_i=x_hat_i, x_hat_j=x_hat_j, x_hat_i_framed=x_hat_i_framed,
             z_q_i=z_q_i, z_e_i=z_e_i, z_e_i_chunk=z_e_i_chunk,
             z_q_j=z_q_j, z_e_j=z_e_j, z_e_j_chunk=z_e_j_chunk,
-            perplexity_i=perplexity_i,
-            perplexity_j=perplexity_j,
+            delta_i=delta_hat_i, delta_j=delta_hat_j,
+            encoding_idx_i=encoding_idx_i, encoding_idx_j=encoding_idx_i,
+            encodings_i=encodings_i, encodings_j=encodings_j,
         )
 
     def step(self, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
@@ -315,8 +315,8 @@ class EAR(L.LightningModule):
     def mlp_encode(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         bs, seq, *_ = x.size()
         x = x.flatten(end_dim=1)
-        x = self.content_encoder(x)
         delta_hat = self.offset_encoder(x)
+        x = self.content_encoder(x)
         x = x.unflatten(dim=0, sizes=(bs, seq))
         delta_hat = delta_hat.unflatten(dim=0, sizes=(bs, seq))
         return x, delta_hat
@@ -344,7 +344,7 @@ class EAR(L.LightningModule):
         return x
 
     def delta_sigma_current(self, t: int) -> Tensor:
-        if self.delta_sigma_min is None: return self.delta_sigma_max
+        if self.delta_sigma_min is None: return torch.tensor(self.delta_sigma_max)
         return torch.tensor(bounded_sigmoid(t, **self.delta_sigma_params))
 
     def loss(
@@ -365,8 +365,8 @@ class EAR(L.LightningModule):
         delta_j: Tensor,
         encoding_idx_i: Tensor,
         encoding_idx_j: Tensor,
-        perplexity_i: Tensor,
-        perplexity_j: Tensor,
+        encodings_i: Tensor,
+        encodings_j: Tensor,
         **kwargs: Any
     ) -> Dict[str, Tensor]:
         outputs = dict()
@@ -380,27 +380,29 @@ class EAR(L.LightningModule):
         mae_frame = (x_hat - x).flatten(start_dim=-3).abs().sum(dim=-1)
         outputs |= dict(log_likelihood_x=-nll.detach().mean(), sigma_z=(0.5 * log_sigma_sq_z).exp().detach(), mae_frame=mae_frame.detach().mean())
         # MAP estimate of the alignment factor p(x|δ)p(δ) with a gaussian prior on a circular co-ordinate space
-        dt = torch.cat([delta_i.flatten(end_dim=1).unsqueeze(1), delta_j], dim=0)
-        mu_delta_wrt_x = torch.zeros(1).to(dt.device)
+        delta = torch.cat([delta_i.flatten(end_dim=1).unsqueeze(1), delta_j], dim=0)
+        mu_delta_wrt_x = torch.zeros(1).to(delta.device)
         log_sigma_sq_delta_wrt_x= self.delta_sigma_current(self.trainer.global_step).pow(2).log()
-        intra_frame_nll = negative_log_likelihood(dt, mu_delta_wrt_x, log_sigma_sq_delta_wrt_x)
+        intra_frame_nll = negative_log_likelihood(delta, mu_delta_wrt_x, log_sigma_sq_delta_wrt_x)
         losses.append(intra_frame_nll.mean())
-        outputs |= dict(log_likelihood_dt=-intra_frame_nll.detach().mean())
+        outputs |= dict(log_likelihood_delta=-intra_frame_nll.detach().mean())
         # regularise to encourage the encoder to commit to an embedding
-        z_e = torch.cat([z_e_i, z_e_j], dim=0)
-        z_q = torch.cat([z_q_i, z_q_j], dim=0)
-        cml = (z_e - z_q.detach()).pow(2).sum(dim=-1)
-        cml = self.beta * cml.mean()
+        z_e = torch.cat([z_e_i.flatten(end_dim=1), z_e_j.flatten(end_dim=1)], dim=0)
+        z_q = torch.cat([z_q_i.flatten(end_dim=1), z_q_j.flatten(end_dim=1)], dim=0)
+        cml = (z_e - z_q.detach()).pow(2).sum(dim=-1).mean()
         losses.append(cml)
         outputs |= dict(commitment_loss=cml.detach())
-        # noise constrative estimation encourages codebook diversity
+        # # noise constrative estimation encourages codebook diversity
         # ince = info_noise_constrastive_estimation(z_e_chunk, self.quantise.embedding.weight, encoding_idx).sum(dim=-1)
         # ince = self.lamdba * ince.mean()
         # losses.append(ince)
         # outputs |= dict(info_nce=ince.detach())
+        # quantify diversity of codebook usage
+        perplexity_i = self.quantise.perplexity(encodings_i)
+        perplexity_j = self.quantise.perplexity(encodings_j)
+        outputs |= dict(perplexity=torch.stack([perplexity_i, perplexity_j]).mean(), perplexity_i=perplexity_i, perplexity_j=perplexity_j)
         # sum the loss components
         outputs |= dict(loss=sum(losses))
-        outputs |= dict(perplexity=torch.cat([perplexity_i, perplexity_j]).mean())
         return outputs
 
     def training_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
@@ -426,19 +428,33 @@ class EAR(L.LightningModule):
         return loss_outputs
 
     def on_validation_batch_end(self, outputs: Dict[str, Tensor], batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> None:
+        x, *_ = batch
         if batch_idx < 4 and len(self.validation_step_outputs):
             step_outputs = self.validation_step_outputs[0]
-            specs = step_outputs["x"].squeeze().cpu().numpy()
-            recons = step_outputs["x_hat"].squeeze().cpu().numpy()
-            nrows = step_outputs["x"].size(0)
-            fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(15, nrows * 3))
+            specs = step_outputs["x_i"].squeeze().cpu().numpy()
+            recons = step_outputs["x_hat_i"].squeeze().cpu().numpy()
+            nrows = max(6, step_outputs["x_i"].size(0))
+            fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(15, nrows * 2))
             for i in range(nrows):
-                vmin, vmax = min(recons[i].min(), specs[i].min()), max(recons[i].max(), specs[i].max())
-                mesh = plot_mel_spectrogram(specs[i].T, **self.spectrogram_params, vmin=vmin, vmax=vmax, ax=axes[i, 0])
-                plt.colorbar(mesh, ax=axes[i, 0], orientation="vertical")
-                mesh = plot_mel_spectrogram(recons[i].T, **self.spectrogram_params, vmin=vmin, vmax=vmax, ax=axes[i, 1])
-                plt.colorbar(mesh, ax=axes[i, 1], orientation="vertical")
-            self.logger.experiment.log({ f"val/spectrogram": wandb.Image(fig) })
+                mesh = plot_mel_spectrogram(specs[i].T, **self.spectrogram_params, vmin=specs.min(), vmax=specs.max(), ax=axes[i, 0])
+                mesh = plot_mel_spectrogram(recons[i].T, **self.spectrogram_params, vmin=recons.min(), vmax=recons.max(), ax=axes[i, 1])
+            self.logger.experiment.log({ f"val/spectrogram_i": wandb.Image(fig) })
+            plt.close(fig)
+            specs = step_outputs["x_j"].squeeze()
+            specs = specs.view(x.size(0), -1, *specs.size()[1:]).cpu().numpy()[:, :5]
+            recons = step_outputs["x_hat_j"].squeeze()
+            recons = recons.view(x.size(0), -1, *recons.size()[1:]).cpu().numpy()[:, :5]
+            nrows, ncols = max(6, specs.shape[0]), specs.shape[1]
+            fig, axes = plt.subplots(nrows=nrows, ncols=ncols * 2, figsize=(15, nrows * 2), sharey=True, sharex=True)
+            for i in range(nrows):
+                for j in range(ncols):
+                    ax1, ax2 = axes[i, j], axes[i, j + ncols]
+                    plot_mel_spectrogram(specs[i, j].T, **self.spectrogram_params, vmin=specs.min(), vmax=specs.max(), ax=ax1)
+                    plot_mel_spectrogram(recons[i, j].T, **self.spectrogram_params, vmin=recons.min(), vmax=recons.max(), ax=ax2)
+                    for ax in [ax1, ax2]:
+                        ax.tick_params(axis="both", bottom=False, left=False, labelbottom=False, labelleft=False)
+                        ax.set_ylabel("")
+            self.logger.experiment.log({ f"val/spectrogram_j": wandb.Image(fig) })
             plt.close(fig)
         self.validation_step_outputs.clear()
 
