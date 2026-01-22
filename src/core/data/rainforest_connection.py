@@ -250,6 +250,10 @@ class RainforestConnectionDataModule(L.LightningDataModule):
     test_data: torch.utils.data.Dataset | None = attrs.field(default=None, init=False)
     sampler: Callable = attrs.field(default=None, init=False)
 
+    def _batch_converter(self, batch: Tuple):
+        xs, ys, ss = zip(*batch)
+        return Batch(x=torch.stack(xs, dim=0), y=torch.stack(ys, dim=0), s=torch.tensor(ss))
+
     def __attrs_post_init__(self):
         L.LightningDataModule.__init__(self)
         self.training_mode = ranzen.torch.TrainingMode[self.training_mode]
@@ -311,6 +315,7 @@ class RainforestConnectionDataModule(L.LightningDataModule):
             dataset,
             batch_size=batch_size if batch_sampler is None else 1,
             batch_sampler=batch_sampler,
+            collate_fn=self._batch_converter,
             **self.dataloader_params,
             **kwargs,
         )

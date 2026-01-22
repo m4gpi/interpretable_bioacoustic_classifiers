@@ -4,7 +4,12 @@ import numpy as np
 import re
 
 from torch.functional import F
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple, NamedTuple
+
+class Batch(NamedTuple):
+    x: torch.Tensor
+    y: torch.Tensor | None = None
+    s: torch.Tensor | None = None
 
 def tree():
     return collections.defaultdict(tree)

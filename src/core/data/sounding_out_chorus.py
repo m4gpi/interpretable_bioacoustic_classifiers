@@ -143,8 +143,8 @@ class SoundingOutChorus(torch.utils.data.Dataset):
         if (self.base_dir / f"train_indices.parquet").exists(): return
         metadata = pd.read_parquet(self.base_dir / "metadata.parquet", index=True)
         train_idx, test_idx = sklearn.model_selection.train_test_split(metadata.file_i.to_numpy(), test_size=0.2, random_state=self.seed)
-        metadata[train_idx, ["file_i", "file_name"]].to_parquet(self.base_dir / "train_indices.parquet")
-        metadata[test_idx, ["file_i", "file_name"]].to_parquet(self.base_dir / "test_indices.parquet")
+        metadata.loc[train_idx, ["file_i", "file_name"]].to_parquet(self.base_dir / "train_indices.parquet")
+        metadata.loc[test_idx, ["file_i", "file_name"]].to_parquet(self.base_dir / "test_indices.parquet")
 
 
 @attrs.define(kw_only=True)
@@ -170,6 +170,10 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
     val_data: torch.utils.data.Dataset | None = attrs.field(default=None, init=False)
     test_data: torch.utils.data.Dataset | None = attrs.field(default=None, init=False)
     sampler: Callable = attrs.field(default=None, init=False)
+
+    def _batch_converter(self, batch: Tuple):
+        xs, ys, ss = zip(*batch)
+        return Batch(x=torch.stack(xs, dim=0), y=torch.stack(ys, dim=0), s=torch.tensor(ss))
 
     def __attrs_post_init__(self):
         L.LightningDataModule.__init__(self)
@@ -232,6 +236,7 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
             dataset,
             batch_size=batch_size if batch_sampler is None else 1,
             batch_sampler=batch_sampler,
+            collate_fn=self._batch_converter,
             **self.dataloader_params,
             **kwargs,
         )

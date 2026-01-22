@@ -1,0 +1,69 @@
+# @package _global_
+
+# python main.py +experiment=nifti_vae
+
+defaults:
+  - override /model: smooth_nifti_vae
+  - override /data: birdclef_2024
+  - override /transforms: log_mel_spectrogram
+  - override /trainer: gpu
+  - override /logger: wandb
+
+train: true
+test: true
+seed: 42
+
+data:
+  seed: ${seed}
+  root: /srv/thetis2/kag25/data/birdclef2024
+  train_batch_size: 18
+  eval_batch_size: 18
+  segment_len: 19.968
+
+transforms:
+  log_mel_spectrogram:
+      sample_rate: ${model.sample_rate}
+      window_length: ${model.fft_window_length}
+      hop_length: ${model.fft_hop_length}
+      num_mel_bins: ${model.num_mel_bins}
+      mel_min_hertz: ${model.mel_min_hertz}
+      mel_max_hertz: ${model.mel_max_hertz}
+      mel_scaling_factor: ${model.mel_scaling_factor}
+      mel_break_frequency: ${model.mel_break_frequency}
+  center_crop:
+      size: [2496, 64]
+
+model:
+  fft_hop_length: 256
+  fft_window_length: 341
+  sigma_z_max: 0.2
+  sigma_z_mode: FIXED
+  smooth_prop: null
+  p_dt_step_start: 0
+  p_dt_step_end: 20_000
+  p_dt_sigma_min: 0.1
+  p_dt_sigma_max: 2.0
+  learning_rate: 4.e-5
+  optimiser_cls: torch.optim.AdamW
+  scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+  scheduler_config:
+    T_max: 40_000
+    eta_min: 4.e-7
+
+trainer:
+  max_steps: 180_000
+  max_epochs: -1
+  log_every_n_steps: 100
+  val_check_interval: 2500
+
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.model_dir}/checkpoints/intra_frame_shift_invariant_vae
+    every_n_train_steps: 60_000
+    save_top_k: -1
+
+logger:
+  wandb:
+    id: ${run_id}
+    project: siv_birdclef2024
+    group: intra_frame_shift_invariant_vae

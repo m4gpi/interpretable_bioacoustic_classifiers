@@ -1,0 +1,12 @@
+_target_: src.core.data.birdclef_2024.BirdClef2024DataModule
+root:
+training_mode: step
+train_batch_size: 18
+eval_batch_size: 18
+segment_len: 19.968
+val_prop: 0.2
+test_prop: 0.2
+num_workers: 8
+seed: 42
+persist_workers: false
+pin_memory: true
