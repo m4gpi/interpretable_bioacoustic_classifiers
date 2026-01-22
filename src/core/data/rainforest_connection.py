@@ -16,6 +16,8 @@ import zipfile
 from torchvision import transforms as T
 from typing import Any, Callable, ClassVar, Dict, Final, List, Tuple
 
+from src.core.utils import Batch
+
 __all__ = [
     "RainforestConnection",
     "RainforestConnectionDataModule",
@@ -97,17 +99,17 @@ class RainforestConnection(torch.utils.data.Dataset):
         self.test_metadata["file_path"] = self.data_dir / self.test_metadata["file_name"]
 
         if test == True:
-            self.s = self.test_metadata.index
             self.x = self.test_metadata.file_path.to_numpy()
-            self.y = self.test_labels.to_numpy()
+            self.y = torch.tensor(self.test_labels.to_numpy())
+            self.s = self.test_metadata.index
         elif test == False:
-            self.s = self.train_metadata.index
             self.x = self.train_metadata.file_path.to_numpy()
-            self.y = self.train_labels.to_numpy()
+            self.y = torch.tensor(self.train_labels.to_numpy())
+            self.s = self.train_metadata.index
         else:
-            self.s = self.metadata.index
             self.x = self.metadata.file_path.to_numpy()
-            self.y = self.labels.to_numpy()
+            self.y = torch.tensor(self.labels.to_numpy())
+            self.s = self.metadata.index
 
     @property
     def target_names(self):
