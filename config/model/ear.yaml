@@ -1,0 +1,28 @@
+_target_: src.core.models.ear.EAR
+sigma_z: 0.2
+sample_rate: 48000
+fft_window_length: 512
+fft_hop_length: 384
+num_mel_bins: 64
+mel_min_hertz: 150
+mel_max_hertz: 15_000
+mel_scaling_factor: 4581.0
+mel_break_frequency: 1_750.0
+frame_window_length: 192
+latent_dim: 128
+weight_init_std: 1.e-2
+cnn_block_width: 4
+cnn_block_depth: 3
+cnn_dropout_prob: 0.2
+cnn_padding_mode: circular
+cnn_activation: LEAK
+mlp_activation: LEAK
+mlp_dropout_prob: 0.1
+frame_padding_mode: circular
+learning_rate: 4.e-5
+optimiser_cls: torch.optim.AdamW
+scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+scheduler_config:
+  T_max: 40_000
+  eta_min: 4.e-7
+

@@ -1,0 +1,60 @@
+# @package _global_
+
+# python main.py +experiment=nifti_vae
+
+defaults:
+  - override /model: ear
+  - override /data: sounding_out_chorus
+  - override /transforms: cropped_log_mel_spectrogram
+  - override /trainer: gpu
+  - override /logger: wandb
+
+train: true
+test: true
+seed: 42
+
+data:
+  seed: ${seed}
+  root: ${oc.env:HOME}/data/sounding_out
+
+transforms:
+  log_mel_spectrogram:
+      sample_rate: ${model.sample_rate}
+      window_length: ${model.fft_window_length}
+      hop_length: ${model.fft_hop_length}
+      num_mel_bins: ${model.num_mel_bins}
+      mel_min_hertz: ${model.mel_min_hertz}
+      mel_max_hertz: ${model.mel_max_hertz}
+      mel_scaling_factor: ${model.mel_scaling_factor}
+      mel_break_frequency: ${model.mel_break_frequency}
+  center_crop:
+      size: [7488, 64]
+
+model:
+  sigma_z: 0.2
+  learning_rate: 4.e-5
+  optimiser_cls: torch.optim.AdamW
+  scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+  scheduler_config:
+    T_max: 40_000
+    eta_min: 4.e-7
+
+trainer:
+  max_steps: 180_000
+  max_epochs: -1
+  log_every_n_steps: 100
+  val_check_interval: 2500
+
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.model_dir}/checkpoints/ear
+    filename: 'ds=chorus_{step}'
+    every_n_train_steps: 60_000
+    save_top_k: -1
+
+logger:
+  wandb:
+    id: ${run_id}
+    project: ear
+    group: quantised
+

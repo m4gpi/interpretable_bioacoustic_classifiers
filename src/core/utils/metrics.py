@@ -32,6 +32,11 @@ def autoregressive_prior(q_z: torch.Tensor, alpha: torch.Tensor, p_z_init: torch
         yield t, torch.cat([mu_p_current, log_sigma_sq_p_current], dim=-1)
         mu_q_prev, log_sigma_sq_q_prev = mu_q[:, t, :], log_sigma_sq_q[:, t, :]
 
+def info_noise_constrastive_estimation(x1: torch.Tensor, x2: torch.Tensor, encoding_idx: torch.Tensor, tau: float = 0.1):
+    y_logits = (F.normalize(x1, dim=-1) @ F.normalize(x2, dim=-1).T) / tau
+    y = encoding_idx
+    return torch.nn.functional.cross_entropy(y_logits, y)
+
 def class_balanced_binary_cross_entropy(
     y: torch.Tensor,
     y_probs: torch.Tensor,
