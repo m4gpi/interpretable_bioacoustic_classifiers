@@ -298,6 +298,13 @@ class RainforestConnectionDataModule(L.LightningDataModule):
     def test_dataloader(self) -> torch.utils.data.DataLoader:
         return self._build_dataloader(self.test_data, batch_size=self.eval_batch_size, shuffle=False)
 
+    def predict_dataloader(self) -> List[torch.utils.data.DataLoader]:
+        return [
+            self._build_dataloader(self.train_data, batch_size=self.eval_batch_size),
+            self.val_dataloader(),
+            self.test_dataloader(),
+        ]
+
     @property
     def dataloader_params(self) -> Dict[str, Any]:
         return dict(

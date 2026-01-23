@@ -63,7 +63,7 @@ def plot_mel_spectrogram(
     max_mel = hz_to_mel(mel_max_hertz, scaling_factor=mel_scaling_factor, break_frequency=mel_break_frequency)
     mels = np.linspace(min_mel, max_mel, z.shape[0])
     frequencies = mel_to_hz(mels, scaling_factor=mel_scaling_factor, break_frequency=mel_break_frequency)
-    y_tick_positions = [2**i for i in range(max(9, int(np.ceil(np.log2(mel_min_hertz)))), int(np.floor(np.log2(mel_max_hertz))) + 1)]
+    y_tick_positions = [2**i for i in range(max(9, int(np.ceil(np.log2(mel_min_hertz + 1e-8)))), int(np.floor(np.log2(mel_max_hertz))) + 1)]
     y_tick_labels = [f"{int(f)}" for f in y_tick_positions]
     y_tick_indices = [np.argmin(np.abs(frequencies - f)) for f in y_tick_positions]
     ax.set_yticks(y_tick_indices, labels=y_tick_labels)

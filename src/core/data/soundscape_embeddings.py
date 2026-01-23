@@ -34,7 +34,7 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
         return (self.x[idx], self.y[idx], self.index[idx])
 
     def __attrs_post_init__(self):
-        if download:
+        if self.download:
             self._download_files()
         self.x = torch.tensor(self.features.values.reshape(self.labels.values.shape[0], -1, self.features.values.shape[-1]), dtype=torch.float32)
         self.y = torch.tensor(self.labels.values, dtype=torch.int64)

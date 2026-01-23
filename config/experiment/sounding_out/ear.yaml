@@ -1,6 +1,6 @@
 # @package _global_
 
-# python main.py +experiment=nifti_vae
+# python main.py +experiment=sounding_out/ear
 
 defaults:
   - override /model: ear

@@ -1,4 +1,5 @@
 import enum
+import itertools
 import logging
 import lightning as L
 import numpy as np
@@ -60,16 +61,19 @@ class VectorQuantiserEMA(torch.nn.Module):
         self.ema_embedding.weight.data = self.embedding.weight.data.clone()
         self.ema_cluster_size = torch.nn.Parameter(torch.zeros(self.num_clusters), requires_grad=False)
 
-    def k_means(self, z_e: torch.Tensor, embedding: torch.Tensor):
+    def k_means(self, z_e: torch.Tensor, embedding: torch.Tensor) -> torch.Tensor:
         return z_e.pow(2).sum(1, keepdim=True) - (2 * z_e @ embedding) + embedding.pow(2).sum(0, keepdim=True)
 
-    def forward(self, z_e: torch.Tensor):
+    def forward(self, z_e: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         distances = self.k_means(z_e.flatten(end_dim=-2), self.embedding.weight)
         encoding_idx = distances.argmin(dim=-1, keepdim=True)
-        encodings = torch.zeros(encoding_idx.size(0), self.num_clusters).to(z_e.device)
-        encodings.scatter_(1, encoding_idx, 1)
-        z_q = (encodings @ self.embedding.weight.t()).view(z_e.shape)
+        z_q, encodings = self.quantise(encoding_idx)
         return z_q, encoding_idx, encodings
+
+    def quantise(self, encoding_idx: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        encodings = torch.zeros(encoding_idx.size(0), self.num_clusters).to(encoding_idx.device)
+        encodings.scatter_(1, encoding_idx, 1)
+        return (encodings @ self.embedding.weight.t()), encodings
 
     @torch.no_grad()
     def update(self, z_e: torch.Tensor, encodings: torch.Tensor) -> None:
@@ -102,9 +106,9 @@ class EAR(L.LightningModule):
     mel_max_hertz: float | None = None
     mel_scaling_factor: float | None = 4581.0
     mel_break_frequency: float | None = 1750.0
+    num_mel_bins: int = 64
     frame_window_length: int = 192
     frame_hop_length: int | None = 192
-    num_mel_bins: int = 64
     latent_dim: int = 128
     sigma_x_min: float = 0.0498
     weight_init_std: float = 1e-3
@@ -132,7 +136,26 @@ class EAR(L.LightningModule):
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.fit(self, train_dataloaders=data_module.train_dataloader(), val_dataloaders=data_module.val_dataloader())
+        trainer.fit(
+            self,
+            train_dataloaders=data_module.train_dataloader(),
+            val_dataloaders=data_module.val_dataloader(),
+            ckpt_path=config.get("ckpt_path")
+        )
+
+    def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+        log.info(f"Encoding <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        ckpt_path = pathlib.Path(config.get("ckpt_path"))
+        pred_batch_dfs = trainer.predict(
+            self,
+            dataloaders=data_module.predict_dataloader(),
+            ckpt_path=ckpt_path,
+            return_predictions=True,
+        )
+        pred_df = pd.concat(list(itertools.chain(*pred_batch_dfs)), axis=0)
+        save_path = ckpt_path.parent / f"{ckpt_path.name}_codes.parquet"
+        pred_df.to_parquet(save_path)
+        log.info(f"Saved to {save_path}")
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
@@ -180,16 +203,6 @@ class EAR(L.LightningModule):
             activation_fn=Activation[self.mlp_activation],
             dropout_prob=self.mlp_dropout_prob,
         )
-        # self.offset_encoder = init_alignment_encoder(
-        #     in_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
-        #     out_channels=self.cnn_block_sizes[-1] * self.cnn_block_width // 4,
-        #     in_features=self.cnn_block_sizes[-1] * self.cnn_block_width // 4 * self.latent_window_length,
-        #     cnn_kernel_size=(1, self.latent_frequency_dim),
-        #     mlp_reduction_factor=2,
-        #     flatten_start_dim=1,
-        #     activation_fn=Activation[self.mlp_activation],
-        #     out_features=1,
-        # )
         self.quantise = VectorQuantiserEMA(num_clusters=512, num_features=8, gamma=self.gamma)
         self._reset_cache()
 
@@ -251,6 +264,7 @@ class EAR(L.LightningModule):
         # quantise using the codebook
         z_q_chunk, encoding_idx, encodings = self.quantise(z_e_chunk) # (bs * seq * ld/ck, ck)
         z_q = z_q_chunk.reshape(*z_e_chunk.shape[:-2], -1) # (bs, seq, ld)
+        encoding_idx = encoding_idx.view(z_e_chunk.shape[:-1])
         # copy gradients
         z_q = z_e + (z_q - z_e).detach()
         # reconstruct
@@ -259,7 +273,11 @@ class EAR(L.LightningModule):
         self.quantise.update(z_e_chunk, encodings)
         # quantify diversity of codebook usage
         perplexity = self.quantise.perplexity(encodings)
-        return dict(x=x, x_hat=x_hat, z_q=z_q, z_e=z_e, z_e_chunk=z_e_chunk, perplexity=perplexity)
+        return dict(
+            x=x, x_hat=x_hat,
+            z_q=z_q, z_e=z_e, z_e_chunk=z_e_chunk, z_q_chunk=z_q_chunk,
+            perplexity=perplexity, encodings=encodings, encoding_idx=encoding_idx
+        )
 
     def step(self, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
         return self.forward(*args, **kwargs)
@@ -390,19 +408,15 @@ class EAR(L.LightningModule):
 
     @torch.no_grad()
     def predict_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> None:
-        x, *_ = batch
-        _, x_hat, q_z, *_ = self.predict(x, **kwargs).values()
-        bs, seq, *_ = q_z.size()
+        _, _, _, _, z_e_chunk, z_q_chunk, _, encodings, encoding_idx = self.forward(batch.x, **kwargs).values()
+        bs, seq, c_i = encoding_idx.shape
         sample_idx = batch.s.unsqueeze(0).repeat(seq, 1).t().flatten().unsqueeze(1).cpu()
         seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq, 1).cpu()
         dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().unsqueeze(1).cpu()
-        mae = (x_hat - x).abs().flatten(start_dim=-3).mean(dim=-1).flatten(end_dim=1).unsqueeze(-1)
-        q_z = q_z.flatten(end_dim=1)
-        data = torch.cat([sample_idx.cpu(), seq_idx.cpu(), dl_idx.cpu(), q_z.cpu(), mae.cpu()], dim=-1)
+        data = torch.cat([sample_idx.cpu(), seq_idx.cpu(), dl_idx.cpu(), encoding_idx.flatten(end_dim=-2).cpu()], dim=-1)
         index_columns  = ["file_i", "timestep", "dataloader_idx"]
-        z_mean_cols, z_log_var_cols = [f"z_mean_{d}" for d in range(q_z.size(-1)//2)], [f"z_log_var_{d}" for d in range(q_z.size(-1)//2)]
-        data_columns = [z_mean_cols, z_log_var_cols, ["mae"]]
-        dtypes = dict(**dict([(col, int) for col in index_columns]), **dict([(col, float) for columns in data_columns for col in columns]))
+        data_columns = [[f"{i}" for i in range(c_i)]]
+        dtypes = dict(**dict([(col, int) for col in index_columns]), **dict([(col, int) for columns in data_columns for col in columns]))
         df = pd.DataFrame(data=data, columns=[*index_columns, *sum(data_columns, [])]).astype(dtype=dtypes).set_index(index_columns)
         self.predict_step_outputs.append(df)
         return df

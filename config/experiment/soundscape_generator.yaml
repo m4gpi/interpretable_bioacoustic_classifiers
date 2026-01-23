@@ -1,0 +1,46 @@
+# @package _global_
+
+# python main.py +experiment=soundscape_generator
+
+defaults:
+  - override /model: soundscape_generator
+  - override /data: soundscape_codes
+  - override /trainer: gpu
+  - override /logger: wandb
+
+train: true
+test: true
+seed: 42
+
+data:
+  seed: ${seed}
+  num_classes: ${model.num_classes}
+  train_batch_size: 128
+  eval_batch_size: 128
+  root: ${paths.data_dir}/soundscape_codes/
+
+model:
+  embedding_dim: 64
+  num_classes: 512
+  learning_rate: 1.e-3
+  optimiser_cls: torch.optim.AdamW
+
+trainer:
+  max_epochs: 1000
+  log_every_n_steps: 10
+  check_val_every_n_epoch: 50
+
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.model_dir}/checkpoints/soundscape_generator
+    filename: '{step}'
+    save_top_k: -1
+  sequence_decoder:
+    _target_: src.core.callbacks.sequence_decoder.SequenceDecoder
+    ckpt_path: ${paths.root_dir}/ssvqvae1.ckpt
+
+logger:
+  wandb:
+    id: ${run_id}
+    project: soundscape_generator
+    group: vq_vae

@@ -6,6 +6,7 @@ defaults:
   - callbacks: null
   - logger: null
   - trainer: null
+  - transforms: default
   - paths: default
   - hydra: default
   - _self_
@@ -14,4 +15,3 @@ task_name: test
 tags: ["dev"]
 ckpt_path: null
 seed: null
-

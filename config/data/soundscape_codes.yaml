@@ -1,0 +1,7 @@
+_target_: src.core.data.soundscape_codes.SoundscapeCodesDataModule
+root:
+train_batch_size:
+eval_batch_size:
+val_prop: 0.2
+num_workers: 0
+pin_memory: False
