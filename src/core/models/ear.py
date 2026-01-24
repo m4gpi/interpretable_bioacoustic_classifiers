@@ -65,10 +65,12 @@ class VectorQuantiserEMA(torch.nn.Module):
         return z_e.pow(2).sum(1, keepdim=True) - (2 * z_e @ embedding) + embedding.pow(2).sum(0, keepdim=True)
 
     def forward(self, z_e: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        distances = self.k_means(z_e.flatten(end_dim=-2), self.embedding.weight)
+        distances = self.k_means(z_e, self.embedding.weight)
         encoding_idx = distances.argmin(dim=-1, keepdim=True)
         z_q, encodings = self.quantise(encoding_idx)
-        return z_q, encoding_idx, encodings
+        diff = (z_q.detach() - z_e).pow(2)
+        z_q = z_e + (z_q - z_e).detach()
+        return z_q, encoding_idx, encodings, diff
 
     def quantise(self, encoding_idx: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         encodings = torch.zeros(encoding_idx.size(0), self.num_clusters).to(encoding_idx.device)
@@ -84,7 +86,7 @@ class VectorQuantiserEMA(torch.nn.Module):
         n = self.ema_cluster_size.sum()
         self.ema_cluster_size.data = (self.ema_cluster_size + self.epsilon) / n * (n + self.num_clusters * self.epsilon)
         # update the EMA
-        self.ema_embedding.weight.data = self.ema_embedding.weight * self.gamma + (1 - self.gamma) * (encodings.t() @ z_e.flatten(end_dim=-2)).t()
+        self.ema_embedding.weight.data = self.ema_embedding.weight * self.gamma + (1 - self.gamma) * (encodings.t() @ z_e).t()
         # update the codebook
         self.embedding.weight.data = self.ema_embedding.weight / self.ema_cluster_size.unsqueeze(0)
 
@@ -203,7 +205,8 @@ class EAR(L.LightningModule):
             activation_fn=Activation[self.mlp_activation],
             dropout_prob=self.mlp_dropout_prob,
         )
-        self.quantise = VectorQuantiserEMA(num_clusters=512, num_features=8, gamma=self.gamma)
+        self.quantise_top = VectorQuantiserEMA(num_clusters=512, num_features=128, gamma=self.gamma)
+        self.quantise_bottom = VectorQuantiserEMA(num_clusters=512, num_features=512, gamma=self.gamma)
         self._reset_cache()
 
     @property
@@ -258,25 +261,39 @@ class EAR(L.LightningModule):
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins]).float()
         # embed features
-        z_e = self.encode(x) # (bs, seq, ld)
-        # break up latent feature vector into quantisable chunks
-        z_e_chunk = torch.stack(z_e.chunk(self.latent_dim // self.quantise.num_features, dim=-1), dim=-2) # (bs, seq, ld/ck, ck)
-        # quantise using the codebook
-        z_q_chunk, encoding_idx, encodings = self.quantise(z_e_chunk) # (bs * seq * ld/ck, ck)
-        z_q = z_q_chunk.reshape(*z_e_chunk.shape[:-2], -1) # (bs, seq, ld)
-        encoding_idx = encoding_idx.view(z_e_chunk.shape[:-1])
-        # copy gradients
-        z_q = z_e + (z_q - z_e).detach()
+        h_e = self.cnn_encode(x) # (bs, ch, ts, fq)
+        h_e = self.frame_encode(h_e) # (bs, seq, ch, ts, fq)
+        z_e_top = self.mlp_encode(h_e) # (bs, seq, ld)
+        # average pool for a sequence level summary vector
+        c_e = z_e_top.mean(dim=1, keepdims=True)
+        # z_e describes time-step specific information (residual)
+        z_e_res = (z_e_top + c_e).view(z_e_top.size(0) * z_e_top.size(1), -1)
+        z_q_top, encoding_idx_top, encodings_top, diff_top = self.quantise_top(z_e_res)
+        z_q_top = z_q_top.view(z_e_top.shape)
         # reconstruct
-        x_hat = self.decode(z_q)
+        h_q_top = self.mlp_decode(z_q_top)
+        # h_e describes pixel-level information (residual)
+        h_e_res = (h_q_top + h_e).permute(0, 1, 3, 4, 2).flatten(end_dim=-2)
+        h_q_bottom, encoding_idx_bottom, encodings_bottom, diff_bottom = self.quantise_bottom(h_e_res)
+        h_q_bottom = h_q_bottom.unflatten(0, (h_q_top.size(0), h_q_top.size(1), h_q_top.size(3), h_q_top.size(4))).permute(0, 1, 4, 2, 3)
+        # decode spectrograms
+        x_hat = self.cnn_decode(h_q_bottom)
         # update codebook EMA
-        self.quantise.update(z_e_chunk, encodings)
+        self.quantise_top.update(z_e_res, encodings_top)
+        self.quantise_bottom.update(h_e_res, encodings_bottom)
         # quantify diversity of codebook usage
-        perplexity = self.quantise.perplexity(encodings)
+        perplexity_top = self.quantise_top.perplexity(encodings_top)
+        perplexity_bottom = self.quantise_bottom.perplexity(encodings_bottom)
         return dict(
             x=x, x_hat=x_hat,
-            z_q=z_q, z_e=z_e, z_e_chunk=z_e_chunk, z_q_chunk=z_q_chunk,
-            perplexity=perplexity, encodings=encodings, encoding_idx=encoding_idx
+            perplexity_top=perplexity_top,
+            encodings_top=encodings_top,
+            encoding_idx_top=encoding_idx_top,
+            perplexity_bottom=perplexity_bottom,
+            encodings_bottom=encodings_bottom,
+            encoding_idx_bottom=encoding_idx_bottom,
+            diff_top=diff_top,
+            diff_bottom=diff_bottom,
         )
 
     def step(self, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
@@ -333,18 +350,18 @@ class EAR(L.LightningModule):
         self,
         x: Tensor,
         x_hat: Tensor,
-        z_q: Tensor,
-        z_e: Tensor,
-        z_e_chunk: Tensor,
-        encoding_idx: Tensor,
-        perplexity: Tensor,
-        **kwargs: Any
+        diff_top: Tensor,
+        diff_bottom: Tensor,
+        perplexity_top: Tensor,
+        perplexity_bottom: Tensor,
+        **kwargs: Any,
     ) -> Dict[str, Tensor]:
         outputs = dict()
         losses = []
         # if passed a sequence, ensure invariance to sequence length by treating frames independently
         if x.size(-2) > self.frame_window_length:
             x = frame(x, **self.frame_params)
+        if x_hat.size(-2) > self.frame_window_length:
             x_hat = frame(x_hat, **self.frame_params)
         # frame-wise reconstruction loss, sum over pixels, average over frames & samples
         log_sigma_sq_z = torch.tensor(self.sigma_z).pow(2).log()
@@ -353,10 +370,11 @@ class EAR(L.LightningModule):
         mae_frame = (x_hat - x).flatten(start_dim=-3).abs().sum(dim=-1)
         outputs |= dict(log_likelihood_x=-nll.detach().mean(), sigma_z=(0.5 * log_sigma_sq_z).exp().detach(), mae_frame=mae_frame.detach().mean())
         # regularise to encourage the encoder to commit to an embedding
-        cml = (z_e - z_q.detach()).pow(2).sum(dim=-1)
-        cml = self.beta * cml.mean()
+        commitment_bottom = self.quantise_top.num_features / self.quantise_bottom.num_features * diff_bottom.sum(dim=-1).mean()
+        commitment_top = diff_top.sum(dim=-1).mean()
+        cml = commitment_top + commitment_bottom
         losses.append(cml)
-        outputs |= dict(commitment_loss=cml.detach())
+        outputs |= dict(commitment=cml.detach(), commitment_top=commitment_top.detach(), commitment_bottom=commitment_bottom.detach())
         # noise constrative estimation encourages codebook diversity
         # ince = info_noise_constrastive_estimation(z_e_chunk, self.quantise.embedding.weight, encoding_idx).sum(dim=-1)
         # ince = self.lamdba * ince.mean()
@@ -364,7 +382,8 @@ class EAR(L.LightningModule):
         # outputs |= dict(info_nce=ince.detach())
         # sum the loss components
         outputs |= dict(loss=sum(losses))
-        outputs |= dict(perplexity=perplexity)
+        outputs |= dict(perplexity_top=perplexity_top)
+        outputs |= dict(perplexity_bottom=perplexity_bottom)
         return outputs
 
     def training_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
