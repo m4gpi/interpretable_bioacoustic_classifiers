@@ -35,9 +35,9 @@ callbacks:
     dirpath: ${paths.model_dir}/checkpoints/soundscape_generator
     filename: '{step}'
     save_top_k: -1
-  sequence_decoder:
-    _target_: src.core.callbacks.sequence_decoder.SequenceDecoder
-    ckpt_path: ${paths.root_dir}/ssvqvae1.ckpt
+  # sequence_decoder:
+  #   _target_: src.core.callbacks.sequence_decoder.SequenceDecoder
+  #   ckpt_path: ${paths.root_dir}/ssvqvae1.ckpt
 
 logger:
   wandb:
