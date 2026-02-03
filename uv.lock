@@ -1235,7 +1235,7 @@ requires-dist = [
     { name = "jupyterlab-widgets", specifier = ">=3.0.13" },
     { name = "kagglehub", specifier = "==0.3.13" },
     { name = "librosa", specifier = ">=0.10.1" },
-    { name = "lightning", specifier = "==2.2.1" },
+    { name = "lightning", specifier = "==2.5.2" },
     { name = "matplotlib", specifier = ">=3.4.3" },
     { name = "pyarrow", specifier = ">=15.0.2" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
@@ -1882,12 +1882,11 @@ wheels = [
 
 [[package]]
 name = "lightning"
-version = "2.2.1"
+version = "2.5.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fsspec", extra = ["http"] },
     { name = "lightning-utilities" },
-    { name = "numpy" },
     { name = "packaging" },
     { name = "pytorch-lightning" },
     { name = "pyyaml" },
@@ -1896,9 +1895,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/42/d9/01249106d73a273cee8017cf28fce9d25b625c2193f929bf43d33433664b/lightning-2.2.1.tar.gz", hash = "sha256:b3e46d596b32cafd1fb9b21fdba1b1767df97b1af5cc702693d1c51df60b19aa", size = 1719673, upload-time = "2024-03-04T18:59:42.268Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/42/3c/6a930ac7c64fb896adbe560a9141570732d9ca890a11e6d158edd5aece76/lightning-2.5.2.tar.gz", hash = "sha256:9550df613cfb22358ebf77b4a8ad45f3767cd7d26ba2d52b7f036bd3cdd701c4", size = 633391, upload-time = "2025-06-20T15:58:22.065Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/4a/b7d4f62449d940ce43d4657322a14f5718815b648f9d2b0b23a195acb646/lightning-2.2.1-py3-none-any.whl", hash = "sha256:fec9b49d29a6019e8fe49e825082bab8d5ea3fde8e4b36dcf5c8896c2bdb86c3", size = 2054156, upload-time = "2024-03-04T18:59:38.295Z" },
+    { url = "https://files.pythonhosted.org/packages/71/a9/5d39280e55dc5df9e98be074029f6b48f86fe3db4929cb9ada6401234b47/lightning-2.5.2-py3-none-any.whl", hash = "sha256:7e7f23245e214c8ec14d5d8119d3856c25cfe96f9856296fd5df4e29c2ff88a7", size = 821145, upload-time = "2025-06-20T15:58:18.609Z" },
 ]
 
 [[package]]

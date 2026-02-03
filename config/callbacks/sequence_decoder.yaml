@@ -1,3 +1,0 @@
-sequence_decoder:
-  _target_: src.core.callbacks.sequence_decoder.SequenceDecoder
-  ckpt_path:

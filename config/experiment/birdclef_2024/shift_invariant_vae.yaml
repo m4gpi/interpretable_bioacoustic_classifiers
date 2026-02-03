@@ -1,6 +1,6 @@
 # @package _global_
 
-# python main.py +experiment=nifti_vae
+# python main.py +experiment=birdclef_2024/shift_invariant_vae
 
 defaults:
   - override /model: smooth_nifti_vae
@@ -58,12 +58,12 @@ trainer:
 
 callbacks:
   model_checkpoint:
-    dirpath: ${paths.model_dir}/checkpoints/intra_frame_shift_invariant_vae
+    dirpath: ${paths.model_dir}/checkpoints/birdclef_2024/intra_frame_shift_invariant_vae
     every_n_train_steps: 60_000
     save_top_k: -1
 
 logger:
   wandb:
     id: ${run_id}
-    project: siv_birdclef2024
+    project: species_detector_pretraining
     group: intra_frame_shift_invariant_vae

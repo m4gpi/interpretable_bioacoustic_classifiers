@@ -13,7 +13,9 @@ class DecoderBlock(torch.nn.Module):
         mlp_ratio: int,
         num_heads: int = 1,
         dropout_prob: float = 0.1,
+        batch_first: bool = False,
     ) -> None:
+        super().__init__()
         self.num_features = num_features
         self.mlp_ratio = mlp_ratio
         self.num_heads = num_heads
@@ -23,14 +25,14 @@ class DecoderBlock(torch.nn.Module):
             num_heads=self.num_heads,
             embed_dim=self.num_features,
             dropout=self.dropout_prob,
-            batch_first=True,
+            batch_first=batch_first,
         )
         self.norm_1 = torch.nn.LayerNorm(self.num_features)
         self.source_target_attention = torch.nn.MultiheadAttention(
             num_heads=self.num_heads,
             embed_dim=self.num_features,
             dropout=self.dropout_prob,
-            batch_first=True,
+            batch_first=batch_first,
         )
         self.norm_2 = torch.nn.LayerNorm(self.num_features)
         self.mlp = torch.nn.Sequential(
@@ -41,9 +43,9 @@ class DecoderBlock(torch.nn.Module):
         self.dropout = torch.nn.Dropout(self.dropout_prob)
         self.norm_3 = torch.nn.LayerNorm(self.num_features)
 
-    def forward(self, x: torch.Tensor, z: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, z: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
         # apply self-attention with causal masking
-        x_attn, self_attn_w = self.self_attention(x, x, x, attn_mask=attn_mask, is_causal=True)
+        x_attn, self_attn_w = self.self_attention(x, x, x, attn_mask=attn_mask)
         # apply the residual & norm
         x = self.norm_1(x_attn + x)
         # source-target attention between encoder & decoder
@@ -67,6 +69,7 @@ class TransformerDecoder(torch.nn.Module):
     mlp_ratio: int = 4
     depth: int = 1
     num_heads: int = 4
+    batch_first: bool = False
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
@@ -79,14 +82,15 @@ class TransformerDecoder(torch.nn.Module):
                 num_features=self.input_size,
                 mlp_ratio=self.mlp_ratio,
                 num_heads=self.num_heads,
+                batch_first=self.batch_first,
             )
             for _ in range(self.depth)
         ])
 
-    def forward(self, x: torch.Tensor, encoder_outputs: List[torch.Tensor], attn_mask: torch.Tensor) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    def forward(self, x: torch.Tensor, h: List[torch.Tensor], attn_mask: torch.Tensor | None = None) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         self_attentions = []
         source_target_attentions = []
-        for block, z in zip(self.blocks, encoder_outputs):
+        for block, z in zip(self.blocks, h):
             x, dec_attn_w, enc_attn_w = block(x, z, attn_mask=attn_mask)
             self_attentions.append(dec_attn_w)
             source_target_attentions.append(enc_attn_w)

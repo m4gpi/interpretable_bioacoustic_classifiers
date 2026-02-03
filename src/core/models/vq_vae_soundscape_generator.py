@@ -12,16 +12,17 @@ from torch.nn import functional as F
 from typing import Any, Dict, Callable, List, Tuple
 
 from src.core.models.backbones.transformer_encoder import TransformerEncoder
+from src.core.models.ear import EAR
 from src.core.utils import detach_values, prefix_keys
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-__all__ = ["SoundscapeGenerator"]
+__all__ = ["VQVAESoundscapeGenerator"]
 
 @dataclass(unsafe_hash=True, kw_only=True)
-class SoundscapeGenerator(L.LightningModule):
-    num_classes: 512
+class VQVAESoundscapeGenerator(L.LightningModule):
+    num_classes: int = 512
     embedding_dim: int = 64
     attn_num_enc_heads: int = 2
     attn_num_dec_heads: int = 2
@@ -61,19 +62,38 @@ class SoundscapeGenerator(L.LightningModule):
             mlp_ratio=self.attn_mlp_ratio,
             depth=self.attn_dec_depth,
             num_heads=self.attn_num_dec_heads,
+            batch_first=True,
         )
         self.projection = torch.nn.Linear(in_features=self.embedding_dim, out_features=self.num_classes)
         self._reset_cache()
 
     def forward(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
-        x = x.flatten(start_dim=1)
-        x_e = self.embedding(x)
+        bs, seq, ck = x.size()
+        x_e = self.embedding(x.flatten(start_dim=1))
         x_e = x_e + self.positional_encoding(x_e.size(1), x_e.size(2)).to(x_e.device)
         attn_mask = self.causal_mask(x_e.size(1)).to(x_e.device)
         x_in = torch.cat([self.init_token.expand(x_e.size(0), 1, -1), x_e[:, :-1]], dim=1)
         x_out, _, attn_w = self.sequence_decoder(x_in, attn_mask=attn_mask)
         logits = self.projection(x_out)
-        return dict(x=x, logits=logits, attn_w=attn_w)
+        logits = logits.view(bs, seq, ck, self.num_classes)
+        x_probs = torch.softmax(logits, dim=-1)
+        return dict(x=x, logits=logits, attn_w=attn_w, x_probs=x_probs)
+
+    def generate(self, N: int = 1, T: int = 39) -> torch.Tensor:
+        xs = [self.init_token.expand(N, 1, -1)]
+        ys = []
+        for t in range(T):
+            x_e = torch.cat(xs, dim=1)
+            e_pos = self.positional_encoding(T, self.embedding_dim).to(x_e.device)
+            x_e = x_e + e_pos[:t + 1]
+            logits = self.projection(self.sequence_decoder(x_e)[0])
+            # some means to explore uncertainty here at each timestep based on the probabilities
+            # so a population level analysis of the distribution of the prediction at each timestep
+            y_probs = torch.softmax(logits[:, t, :], dim=-1)
+            y_idx = torch.multinomial(y_probs, num_samples=1)
+            xs.append(self.embedding(y_idx))
+            ys.append(y_idx)
+        return torch.cat(ys, dim=1)
 
     @staticmethod
     def positional_encoding(sequence_len: int, embedding_dim: int) -> torch.Tensor:
@@ -90,8 +110,7 @@ class SoundscapeGenerator(L.LightningModule):
         return torch.triu(neg_inf, diagonal=1).float()
 
     def loss(self, x: torch.Tensor, logits: torch.Tensor, **kwargs: Any) -> Dict[str, torch.Tensor]:
-        cel = F.cross_entropy(logits.flatten(end_dim=1), x.flatten(end_dim=1), reduction="none").unflatten(0, (x.size(0), x.size(1)))
-        # loss scale???
+        cel = F.cross_entropy(logits.flatten(start_dim=1, end_dim=2), x.flatten(start_dim=1, end_dim=2), reduction="none").unflatten(0, (x.size(0), x.size(1)))
         cel = cel.sum(dim=1).mean()
         return dict(loss=cel, cel=cel.detach())
 

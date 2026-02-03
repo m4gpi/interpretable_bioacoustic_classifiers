@@ -13,6 +13,7 @@ class EncoderBlock(torch.nn.Module):
         mlp_ratio: int,
         num_heads: int = 1,
         dropout_prob: float = 0.1,
+        batch_first: bool = False,
     ) -> None:
         super().__init__()
         self.num_features = num_features
@@ -24,7 +25,7 @@ class EncoderBlock(torch.nn.Module):
             num_heads=self.num_heads,
             embed_dim=self.num_features,
             dropout=self.dropout_prob,
-            batch_first=True,
+            batch_first=batch_first,
         )
         self.norm_1 = torch.nn.LayerNorm(self.num_features)
         self.mlp = torch.nn.Sequential(
@@ -52,6 +53,7 @@ class TransformerEncoder(torch.nn.Module):
     mlp_ratio: int = 4
     depth: int = 1
     num_heads: int = 4
+    batch_first: bool = False
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
@@ -64,6 +66,7 @@ class TransformerEncoder(torch.nn.Module):
                 num_features=self.input_size,
                 mlp_ratio=self.mlp_ratio,
                 num_heads=self.num_heads,
+                batch_first=self.batch_first,
             )
             for _ in range(self.depth)
         ])

@@ -1,5 +1,10 @@
-_target_: src.core.models.ear.EAR
-sigma_z: 0.2
+_target_: src.core.models.sivae.SIVAE
+sigma_z_max: 0.2
+smooth_prop: 0.5
+p_dt_step_start: 0
+p_dt_step_end: 20_000
+p_dt_sigma_min: 0.1
+p_dt_sigma_max: 2.0
 sample_rate: 48000
 fft_window_length: 512
 fft_hop_length: 384

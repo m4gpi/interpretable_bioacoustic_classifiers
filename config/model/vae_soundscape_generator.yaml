@@ -1,5 +1,8 @@
-_target_: src.core.models.soundscape_generator.SoundscapeGenerator
-embedding_dim: 64
+_target_: src.core.models.vae_soundscape_generator.VAESoundscapeGenerator
+num_features: 128
+num_points: 10
+num_samples: 10
+num_rnn_layers: 2
 learning_rate: 4.e-5
 optimiser_cls: torch.optim.AdamW
 scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR

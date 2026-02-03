@@ -1,9 +1,9 @@
 # @package _global_
 
-# python main.py +experiment=soundscape_generator
+# python main.py +experiment=vq_vae_soundscape_generator
 
 defaults:
-  - override /model: soundscape_generator
+  - override /model: vq_vae_soundscape_generator
   - override /data: soundscape_codes
   - override /trainer: gpu
   - override /logger: wandb
@@ -32,15 +32,15 @@ trainer:
 
 callbacks:
   model_checkpoint:
-    dirpath: ${paths.model_dir}/checkpoints/soundscape_generator
+    dirpath: ${paths.model_dir}/checkpoints/vq_vae_soundscape_generator
     filename: '{step}'
     save_top_k: -1
-  sequence_decoder:
-    _target_: src.core.callbacks.sequence_decoder.SequenceDecoder
+  vq_vae_sequence_decoder:
+    _target_: src.core.callbacks.vq_vae_sequence_decoder.VQVAESequenceDecoder
     ckpt_path: ${paths.root_dir}/ssvqvae1.ckpt
 
 logger:
   wandb:
     id: ${run_id}
-    project: soundscape_generator
+    project: vq_vae_soundscape_generator
     group: vq_vae

@@ -1,0 +1,59 @@
+# @package _global_
+
+# python main.py +experiment=vae_soundscape_generator_transformer
+
+defaults:
+  - override /model: vae_soundscape_generator_transformer
+  - override /data: vae_embeddings
+  - override /trainer: gpu
+  - override /logger: wandb
+
+train: true
+test: true
+seed: 42
+
+data:
+  root: ./
+  seed: ${seed}
+  train_batch_size: 32
+  eval_batch_size: 32
+
+model:
+  num_features: 128
+  num_attn_layers: 1
+  num_attn_heads: 8
+  num_points: 10
+  num_samples: 1
+  teach_prob_start: 1.0
+  teach_prob_end: 0.1
+  teach_prob_step_start: 0
+  teach_prob_step_end: 10000
+  teach_prob_slope: 1.0
+  learning_rate: 4.e-5
+  optimiser_cls: torch.optim.AdamW
+  # scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+  # scheduler_config:
+    # T_max: 40_000
+    # eta_min: 4.e-7
+
+trainer:
+  max_steps: 10_000
+  max_epochs: -1
+  log_every_n_steps: 100
+  val_check_interval: 1000
+
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.model_dir}/checkpoints/vae_soundscape_generator
+    filename: '{step}'
+    save_top_k: -1
+  vae_sequence_decoder:
+    _target_: src.core.callbacks.vae_sequence_decoder.VAESequenceDecoder
+    ckpt_path: ${paths.root_dir}/sivae.ckpt
+    log_every_n_train_steps: ${trainer.val_check_interval}
+
+logger:
+  wandb:
+    id: ${run_id}
+    project: vae_soundscape_generator
+    group: vae

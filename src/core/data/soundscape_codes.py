@@ -17,7 +17,6 @@ __all__ = [
 
 @attrs.define(kw_only=True)
 class SoundscapeCodes(torch.utils.data.Dataset):
-    num_classes: int = 512
     features: pd.DataFrame = attrs.field()
     download: bool = attrs.field(default=False)
 
@@ -67,7 +66,6 @@ class SoundscapeCodes(torch.utils.data.Dataset):
 @attrs.define(kw_only=True)
 class SoundscapeCodesDataModule(L.LightningDataModule):
     root: str | pathlib.Path = attrs.field(converter=pathlib.Path)
-    num_classes: int = 512
     transforms: Callable | None = None
 
     train_batch_size: int | None = attrs.field(default=None)
@@ -99,10 +97,10 @@ class SoundscapeCodesDataModule(L.LightningDataModule):
 
     def setup(self, stage: str | None = None) -> None:
         self.features = pd.read_parquet(self.root / "features.parquet").reset_index()
-        self.data = SoundscapeCodes(features=self.features, num_classes=self.num_classes)
-        self.train_data = SoundscapeCodes(features=self.features[self.features["dataloader_idx"] == 0], num_classes=self.num_classes)
-        self.val_data = SoundscapeCodes(features=self.features[self.features["dataloader_idx"] == 1], num_classes=self.num_classes)
-        self.test_data = SoundscapeCodes(features=self.features[self.features["dataloader_idx"] == 2], num_classes=self.num_classes)
+        self.data = SoundscapeCodes(features=self.features)
+        self.train_data = SoundscapeCodes(features=self.features[self.features["dataloader_idx"] == 0])
+        self.val_data = SoundscapeCodes(features=self.features[self.features["dataloader_idx"] == 1])
+        self.test_data = SoundscapeCodes(features=self.features[self.features["dataloader_idx"] == 2])
         return self
 
     def train_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:

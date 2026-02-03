@@ -1,0 +1,15 @@
+_target_: src.core.models.vae_soundscape_generator.VAESoundscapeGeneratorTransformer
+num_features: 128
+num_points: 10
+num_samples: 10
+num_attn_layers: 2
+num_attn_heads: 2
+mlp_ratio: 4
+gamma: 1.0
+learning_rate: 4.e-5
+optimiser_cls: torch.optim.AdamW
+scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+scheduler_config:
+  T_max: 40_000
+  eta_min: 4.e-7
+

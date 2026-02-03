@@ -29,7 +29,7 @@ from src.core.models.components import (
     init_mlp_content_decoder,
     init_alignment_encoder,
 )
-from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, autoregressive_prior, info_noise_constrastive_estimation
+from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, autoregressive_prior, info_noise_contrastive_estimation
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
 from src.core.utils.sketch import plot_mel_spectrogram
@@ -40,7 +40,7 @@ log = logging.getLogger(__name__)
 
 plt.switch_backend('agg')
 
-__all__ = ["EAR"]
+__all__ = ["VQVAE"]
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
 class VectorQuantiserEMA(torch.nn.Module):
@@ -98,7 +98,7 @@ class VectorQuantiserEMA(torch.nn.Module):
 
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
-class EAR(L.LightningModule):
+class VQVAE(L.LightningModule):
     sample_rate: int = 48_000
     fft_window_length: int = 512
     fft_hop_length: int = 384
@@ -126,6 +126,11 @@ class EAR(L.LightningModule):
     sigma_z: float = 1.0
     beta: float = 0.25
     gamma: float = 0.999
+    tau_start: float | None = None
+    tau_end: float = 0.1
+    tau_step_start: int | None = None
+    tau_step_end: int | None = None
+    tau_step_slope: float = 1.0
     learning_rate: float = 4e-5
     optimiser_cls: str = "torch.optim.AdamW"
     optimiser_config: DictConfig | None = None
@@ -255,6 +260,16 @@ class EAR(L.LightningModule):
             mel_break_frequency=self.mel_break_frequency,
         )
 
+    @property
+    def tau_params(self):
+        return dict(
+            x_min=self.tau_step_start,
+            x_max=self.tau_step_end,
+            y_min=self.tau_start,
+            y_max=self.tau_end,
+            k=1.0,
+        )
+
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins]).float()
         # embed features
@@ -329,6 +344,10 @@ class EAR(L.LightningModule):
             x = block(x)
         return x
 
+    def tau_current(self, t: int) -> Tensor:
+        if self.tau_start is None: return torch.tensor(self.tau_end)
+        return torch.tensor(bounded_sigmoid(t, **self.tau_params))
+
     def loss(
         self,
         x: Tensor,
@@ -358,7 +377,11 @@ class EAR(L.LightningModule):
         losses.append(cml)
         outputs |= dict(commitment_loss=cml.detach())
         # noise constrative estimation encourages codebook diversity
-        # ince = info_noise_constrastive_estimation(z_e_chunk, self.quantise.embedding.weight, encoding_idx).sum(dim=-1)
+        tau = self.tau_current(self.trainer.global_step)
+        ince = info_noise_contrastive_estimation(z_e_chunk.flatten(end_dim=-2), self.quantise.embedding.weight.t(), encoding_idx.flatten(), tau=tau)
+        ince = ince.unflatten(0, encoding_idx.shape).sum(dim=-1).mean()
+        losses.append(ince)
+        outputs |= dict(info_nce_loss=ince.detach())
         # ince = self.lamdba * ince.mean()
         # losses.append(ince)
         # outputs |= dict(info_nce=ince.detach())

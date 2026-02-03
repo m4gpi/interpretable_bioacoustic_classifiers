@@ -1,0 +1,3 @@
+vq_vae_sequence_decoder:
+  _target_: src.core.callbacks.vq_vae_sequence_decoder.VQVAESequenceDecoder
+  ckpt_path:

@@ -1,10 +1,10 @@
 # @package _global_
 
-# python main.py +experiment=nifti_vae
+# python main.py +experiment=rainforest_connection/shift_invariant_vae
 
 defaults:
-  - override /model: shift_invariant_vae
-  - override /data: sounding_out_chorus
+  - override /model: smooth_nifti_vae
+  - override /data: rainforest_connection
   - override /transforms: cropped_log_mel_spectrogram
   - override /trainer: gpu
   - override /logger: wandb
@@ -15,7 +15,7 @@ seed: 42
 
 data:
   seed: ${seed}
-  root: ${oc.env:HOME}/data/sounding_out
+  root: ${oc.env:HOME}/data/rainforest_connection
 
 transforms:
   log_mel_spectrogram:
@@ -53,8 +53,8 @@ trainer:
 
 callbacks:
   model_checkpoint:
-    dirpath: ${paths.model_dir}/checkpoints/intra_frame_shift_invariant_vae
-    filename: 'ds=chorus_{step}'
+    dirpath: ${paths.model_dir}/checkpoints/rainforest_connection/intra_frame_shift_invariant_vae
+    filename: '{step}'
     every_n_train_steps: 60_000
     save_top_k: -1
 

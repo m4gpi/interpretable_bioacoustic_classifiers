@@ -4,6 +4,7 @@ import functools
 import itertools
 import lightning as L
 import logging
+import pathlib
 import numpy as np
 import pandas as pd
 import torch
@@ -13,7 +14,6 @@ from dataclasses import dataclass, field
 from hydra.utils import instantiate
 from numpy.typing import NDArray
 from matplotlib import pyplot as plt
-from pathlib import Path
 from omegaconf import DictConfig
 from torch import Tensor, nn
 from torch.functional import F
@@ -40,16 +40,10 @@ from src.core.utils import to_snake_case, detach_values, prefix_keys, try_or
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-__all__ = ["BaseVAE"]
-
-class DecoderVarianceMode(enum.Enum):
-    FIXED: str = "FIXED"
-    LINEAR_DECAY: str = "LINEAR_DECAY"
-    EXPONENTIAL_DECAY: str = "EXPONENTIAL_DECAY"
-    LEARNED: str = "LEARNED"
+__all__ = ["VAE"]
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
-class BaseVAE(L.LightningModule):
+class VAE(L.LightningModule):
     sample_rate: int = 48_000
     fft_window_length: int = 512
     fft_hop_length: int = 384
@@ -60,31 +54,25 @@ class BaseVAE(L.LightningModule):
     frame_window_length: int = 192
     frame_hop_length: int | None = 192
     num_mel_bins: int = 64
-    # latent parameters
     latent_dim: int = 128
     sigma_x_min: float = 0.0498
-    # CNN parameters
     weight_init_std: float = 1e-3
     cnn_block_width: int = 4
     cnn_block_depth: int = 3
     cnn_dropout_prob: float = 0.2
-    # TODO: should be mixed padding, circular in time, reflective in frequency
     cnn_padding_mode: str = "circular"
     cnn_activation: str = "LEAK"
     cnn_feature_reduction_factor: int = 4
     norm_type: str = "LN"
-    # MLP parameters
     mlp_activation: str = "LEAK"
     mlp_dropout_prob: float = 0.1
     mlp_reduction_factor: int = 4
     frame_padding_mode: str = "circular"
-    # decoder parameters
     sigma_z_max: float = 1.0
     sigma_z_min: float | None = None
     sigma_z_step_start: int | None = 0
     sigma_z_step_end: int | None = 1
-    sigma_z_mode: str = DecoderVarianceMode.FIXED.value
-    # lightning parameters
+    sigma_z_mode: str = "FIXED"
     learning_rate: float = 4e-5
     optimiser_cls: str = "torch.optim.AdamW"
     optimiser_config: DictConfig | None = None
@@ -96,6 +84,18 @@ class BaseVAE(L.LightningModule):
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.fit(self, train_dataloaders=data_module.train_dataloader(), val_dataloaders=data_module.val_dataloader())
+        log.info(f"Beginning testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        trainer.test(self, dataloaders=data_module.test_dataloader())
+
+    def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any]):
+        log.info(f"Encoding <{config.data.get('_target_')}> with <{config.model.get('_target_')}>")
+        ckpt_path = config.get("ckpt_path")
+        assert ckpt_path is not None, f"No checkpoint found at {ckpt_path}"
+        predictions = trainer.predict(self, data_module.predict_dataloader(), ckpt_path=config.get("ckpt_path"), return_predictions=True)
+        df = pd.concat(list(itertools.chain(*predictions)), axis=0)
+        save_path = pathlib.Path(ckpt_path).parent / "features.parquet"
+        log.info(f"Saving predictions to {save_path}")
+        df.to_parquet(save_path)
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
@@ -103,9 +103,6 @@ class BaseVAE(L.LightningModule):
         return obj
 
     def __post_init__(self):
-        self.decoder_variance = DecoderVarianceMode(self.sigma_z_mode)
-        if self.decoder_variance == DecoderVarianceMode.LEARNED:
-            self.log_sigma_sq_z = nn.Parameter(torch.tensor(self.sigma_z_max).pow(2).log().requires_grad_(True))
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.sigma_z_min = self.sigma_z_min or self.sigma_z_max
         self.feature_encoder = init_cnn_feature_encoder(
@@ -207,7 +204,7 @@ class BaseVAE(L.LightningModule):
 
     def forward(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins]).float()
-        q_z, *_ = self.encode(x)
+        q_z = self.encode(x)
         mu_x, log_sigma_sq_x = q_z.chunk(2, dim=-1)
         z = Normal(mu_x, (0.5 * log_sigma_sq_x).exp()).rsample()
         x_hat = self.decode(z).view(*x.size())
@@ -222,7 +219,7 @@ class BaseVAE(L.LightningModule):
         U = frame_fold(U, **frame_params) if x.size(-2) > self.latent_window_length else U.unsqueeze(1)
         mu_x, log_sigma_sq_x = self.content_encoder(U.flatten(end_dim=1)).unflatten(dim=0, sizes=(U.size(0), U.size(1))).chunk(2, dim=-1)
         log_sigma_sq_x = soft_clip(log_sigma_sq_x, minimum=np.log(self.sigma_x_min ** 2))
-        return torch.cat([mu_x, log_sigma_sq_x], dim=-1), U
+        return torch.cat([mu_x, log_sigma_sq_x], dim=-1)
 
     def decode(self, z: Tensor) -> Tensor:
         bs, seq, *other_dims = z.size()
@@ -233,26 +230,6 @@ class BaseVAE(L.LightningModule):
                 U = unframe_fold(U.view(bs, seq, *U.size()[1:]), hop_length=U.size(-2), num_timesteps=num_timesteps)
             U = block(U)
         return U
-
-    def predict(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
-        # remove extraneous added dimension by transform frame operation, flatten sequence and batch
-        if len(x.size()) > 4:
-            x = x.squeeze(1)
-            step_outputs = self(x.flatten(end_dim=1), *args, **kwargs)
-            step_outputs["x"] = step_outputs["x"].unflatten(0, (x.size(0), x.size(1)))
-            step_outputs["x_hat"] = step_outputs["x_hat"].unflatten(0, (x.size(0), x.size(1)))
-            step_outputs["q_z"] = step_outputs["q_z"].squeeze(1).unflatten(0, (x.size(0), x.size(1)))
-        else:
-            step_outputs = self(x, *args, **kwargs)
-            # when a full sequence is provided, frame after pass through network for frame-wise MAE
-            if step_outputs["q_z"].size(1) > 1:
-                step_outputs["x"] = frame(step_outputs["x"], **self.frame_params)
-                step_outputs["x_hat"] = frame(step_outputs["x_hat"], **self.frame_params)
-            # when independent frames are provided, treat them as independent
-            else:
-                step_outputs["x"] = step_outputs["x"].unsqueeze(1)
-                step_outputs["x_hat"] = step_outputs["x_hat"].unsqueeze(1)
-        return step_outputs
 
     def loss(
         self,
@@ -282,33 +259,28 @@ class BaseVAE(L.LightningModule):
         return outputs
 
     def log_sigma_sq_z_current(self, t: int) -> Tensor:
-        if self.decoder_variance == DecoderVarianceMode.FIXED:
-            return torch.tensor(self.sigma_z_max).pow(2).log()
-        elif self.decoder_variance == DecoderVarianceMode.LINEAR_DECAY:
-            bound_params = dict(t_start=self.sigma_z_step_start, t_end=self.sigma_z_step_end, maximum=self.sigma_z_max, minimum=self.sigma_z_min)
-            return torch.tensor(linear_decay(t_current=t, **bound_params)).pow(2).log()
-        elif self.decoder_variance == DecoderVarianceMode.EXPONENTIAL_DECAY:
-            bound_params = dict(t_start=self.sigma_z_step_start, t_end=self.sigma_z_step_end, maximum=self.sigma_z_max, minimum=self.sigma_z_min)
-            return torch.tensor(exponential_decay(t_current=t, **bound_params)).pow(2).log()
-        elif self.decoder_variance == DecoderVarianceMode.LEARNED:
-            return self.log_sigma_sq_z
+        return torch.tensor(self.sigma_z_max).pow(2).log()
 
     @torch.no_grad()
     def metrics(
         self,
+        x: Tensor,
+        x_hat: Tensor,
         q_z: Tensor,
         **kwargs: Any,
      ) -> Dict[str, Any]:
         mu_x, log_sigma_sq_x = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z.chunk(2, dim=-1))
         sigma_x = np.exp(0.5 * log_sigma_sq_x)
+        mae = (x_hat - x).abs().flatten(start_dim=-3).mean(dim=-1)
         return dict(
+            mae=wandb.Histogram(np_histogram=np.histogram(mae, range=[0, 10], bins=100)),
             mu_x=wandb.Histogram(np_histogram=np.histogram(mu_x, range=nth_percentile(mu_x, 1.28))),
             sigma_x=wandb.Histogram(np_histogram=np.histogram(sigma_x, range=nth_percentile(sigma_x, 1.28))),
         )
 
     def training_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
         x, *_ = batch
-        step_outputs = self.step(x, **kwargs)
+        step_outputs = self(x, **kwargs)
         loss_outputs = self.loss(**step_outputs)
         step_outputs = detach_values(step_outputs)
         self.training_step_outputs.append(step_outputs)
@@ -323,7 +295,7 @@ class BaseVAE(L.LightningModule):
     @torch.no_grad()
     def validation_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
         x, *_ = batch
-        step_outputs = self.step(x, **kwargs)
+        step_outputs = self(x, **kwargs)
         loss_outputs = self.loss(**step_outputs)
         step_outputs = detach_values(step_outputs)
         self.validation_step_outputs.append(step_outputs)
@@ -351,22 +323,49 @@ class BaseVAE(L.LightningModule):
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
-        return detach_values(self(*batch, **kwargs))
+        x, *_ = batch
+        step_outputs = self(x, **kwargs)
+        self.test_step_outputs.append(detach_values(step_outputs))
+        metrics = self.metrics(**step_outputs)
+        self.logger.experiment.log(prefix_keys(metrics | loss_outputs, "val"))
 
     @torch.no_grad()
-    def predict_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> None:
+    def on_test_batch_end(self, outputs: Dict[str, Tensor], batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> None:
+        if batch_idx < 4 and len(self.test_step_outputs):
+            step_outputs = self.test_step_outputs[0]
+            specs = step_outputs["x"].squeeze().cpu().numpy()
+            recons = step_outputs["x_hat"].squeeze().cpu().numpy()
+            nrows = step_outputs["x"].size(0)
+            fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(15, nrows * 3))
+            for i in range(nrows):
+                vmin, vmax = min(recons[i].min(), specs[i].min()), max(recons[i].max(), specs[i].max())
+                mesh = plot_mel_spectrogram(specs[i].T, **self.spectrogram_params, vmin=vmin, vmax=vmax, ax=axes[i, 0])
+                plt.colorbar(mesh, ax=axes[i, 0], orientation="vertical")
+                mesh = plot_mel_spectrogram(recons[i].T, **self.spectrogram_params, vmin=vmin, vmax=vmax, ax=axes[i, 1])
+                plt.colorbar(mesh, ax=axes[i, 1], orientation="vertical")
+            self.logger.experiment.log({ f"test/spectrogram": wandb.Image(fig) })
+            plt.close(fig)
+        self.test_step_outputs.clear()
+
+    @torch.no_grad()
+    def predict_step(
+        self,
+        batch: Tuple[Tensor, Tensor, Tensor],
+        batch_idx: int,
+        dataloader_idx: int = 0,
+        **kwargs: Any
+    ) -> None:
         x, *_ = batch
-        _, x_hat, q_z, *_ = self.predict(x, **kwargs).values()
+        q_z = self.encode(x, hop_length=frame_hop_length)
         bs, seq, *_ = q_z.size()
         sample_idx = batch.s.unsqueeze(0).repeat(seq, 1).t().flatten().unsqueeze(1).cpu()
         seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq, 1).cpu()
         dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().unsqueeze(1).cpu()
-        mae = (x_hat - x).abs().flatten(start_dim=-3).mean(dim=-1).flatten(end_dim=1).unsqueeze(-1)
         q_z = q_z.flatten(end_dim=1)
-        data = torch.cat([sample_idx.cpu(), seq_idx.cpu(), dl_idx.cpu(), q_z.cpu(), mae.cpu()], dim=-1)
+        data = torch.cat([sample_idx.cpu(), seq_idx.cpu(), dl_idx.cpu(), q_z.cpu()], dim=-1)
         index_columns  = ["file_i", "timestep", "dataloader_idx"]
         z_mean_cols, z_log_var_cols = [f"z_mean_{d}" for d in range(q_z.size(-1)//2)], [f"z_log_var_{d}" for d in range(q_z.size(-1)//2)]
-        data_columns = [z_mean_cols, z_log_var_cols, ["mae"]]
+        data_columns = [z_mean_cols, z_log_var_cols]
         dtypes = dict(**dict([(col, int) for col in index_columns]), **dict([(col, float) for columns in data_columns for col in columns]))
         df = pd.DataFrame(data=data, columns=[*index_columns, *sum(data_columns, [])]).astype(dtype=dtypes).set_index(index_columns)
         self.predict_step_outputs.append(df)
