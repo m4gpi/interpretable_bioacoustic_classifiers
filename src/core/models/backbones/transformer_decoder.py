@@ -21,6 +21,7 @@ class DecoderBlock(torch.nn.Module):
         self.num_heads = num_heads
         self.dropout_prob = dropout_prob
 
+        self.qkv = torch.nn.Linear(in_features=self.num_features, out_features=self.num_features * 3)
         self.self_attention = torch.nn.MultiheadAttention(
             num_heads=self.num_heads,
             embed_dim=self.num_features,
@@ -44,8 +45,9 @@ class DecoderBlock(torch.nn.Module):
         self.norm_3 = torch.nn.LayerNorm(self.num_features)
 
     def forward(self, x: torch.Tensor, z: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
+        q, k, v = self.qkv(x).chunk(3, dim=-1)
         # apply self-attention with causal masking
-        x_attn, self_attn_w = self.self_attention(x, x, x, attn_mask=attn_mask)
+        x_attn, self_attn_w = self.self_attention(q, k, v, attn_mask=attn_mask)
         # apply the residual & norm
         x = self.norm_1(x_attn + x)
         # source-target attention between encoder & decoder

@@ -21,6 +21,7 @@ class EncoderBlock(torch.nn.Module):
         self.num_heads = num_heads
         self.dropout_prob = dropout_prob
 
+        self.qkv = torch.nn.Linear(in_features=self.num_features, out_features=self.num_features * 3)
         self.attention = torch.nn.MultiheadAttention(
             num_heads=self.num_heads,
             embed_dim=self.num_features,
@@ -37,8 +38,9 @@ class EncoderBlock(torch.nn.Module):
         self.norm_2 = torch.nn.LayerNorm(self.num_features)
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
+        q, k, v = self.qkv(x).chunk(3, dim=-1)
         # compute attention using query & key and apply softmax'ed attention weight to value
-        x_attn, attn_w = self.attention(x, x, x, attn_mask=attn_mask)
+        x_attn, attn_w = self.attention(q, k, v, attn_mask=attn_mask)
         # apply residual & norm
         x = self.norm_1(x_attn + x)
         # feed forward of attented representations

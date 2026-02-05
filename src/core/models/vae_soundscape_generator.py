@@ -64,18 +64,12 @@ class VAESoundscapeGenerator(L.LightningModule):
         return obj
 
     def __post_init__(self) -> None:
-        self.sequence_encoder = torch.nn.LSTM(
-            input_size=self.num_features,
-            hidden_size=self.num_features,
-            num_layers=self.num_rnn_layers,
-            batch_first=False,
-        )
-        self.sequence_decoder = torch.nn.LSTM(
-            input_size=self.num_features,
-            hidden_size=self.num_features,
-            num_layers=self.num_rnn_layers,
-            batch_first=False,
-        )
+        # self.sequence_encoder = torch.nn.LSTM(
+        #     input_size=self.num_features,
+        #     hidden_size=self.num_features,
+        #     num_layers=self.num_rnn_layers,
+        #     batch_first=False,
+        # )
         self.sequence_decoder = torch.nn.LSTM(
             input_size=self.num_features,
             hidden_size=self.num_features,
@@ -96,7 +90,7 @@ class VAESoundscapeGenerator(L.LightningModule):
         # mean of weighted mixture of gaussians
         # NB: just a linear interpolation at the moment, but a spherical linear interpolation may reduce oddities in the generation
         mu_bar = torch.stack([
-            torch.stack([(1 - k) * mu[t] + k * mu[t + 1] for k in ks], dim=0)
+            torch.stack([self.slerp(mu[t], mu[t + 1], k) for k in ks], dim=0)
             for t in ts
         ], dim=0) # (ts - 1, k, bs, ld)
         # variance of weighted sum of gaussians
@@ -118,23 +112,25 @@ class VAESoundscapeGenerator(L.LightningModule):
         mu, log_sigma_sq = q_z_bar.chunk(2, dim=-1)
         seq, bs, ld = mu.size()
         # NB: potentially a big jump from the agg posterior to the first prediction...
-        z_init = MultivariateNormal(self.mu_agg.expand(bs, -1), self.sigma_agg.expand(bs, -1, -1)).rsample()
         z = Normal(mu[:-1], (0.5 * log_sigma_sq[:-1]).exp()).rsample()
         if self.training:
-            _, (h, c) = self.sequence_encoder(z)
+            # _, (h, c) = self.sequence_encoder(z)
             # z_hat, (h, c) = self.sequence_decoder(torch.cat([z_init.unsqueeze(0), z], dim=0))
-            z_t = z_init
+            z_t = z[0]
             z_hats = []
-            for t in range(seq):
+            h = torch.zeros(self.num_rnn_layers, bs, ld)
+            c = torch.zeros(self.num_rnn_layers, bs, ld)
+            for t in range(1, seq):
                 z_hat, (h, c) = self.sequence_decoder(z_t)
                 z_hats.append(z_hat)
                 teach_prob = self.teach_prob_current(self.trainer.global_step)
                 z_t = z[t] if np.random.choice([0, 1], p=[1 - teach_prob, teach_prob]) == 1 else z_hat
             z_hat = torch.stack(z_hats, dim=0)
         else:
-            z_t = z_init
+            z_t = z[0]
             z_hats = []
-            _, (h, c) = self.sequence_encoder(z)
+            h = torch.zeros(self.num_rnn_layers, bs, ld)
+            c = torch.zeros(self.num_rnn_layers, bs, ld)
             for t in range(seq):
                 z_t, (h, c) = self.sequence_decoder(z_t)
                 z_hats.append(z_t)
@@ -322,7 +318,6 @@ class VAESoundscapeGenerator(L.LightningModule):
 # --------------------------------------------------------------------------------------- #
 
 from src.core.models.backbones.transformer_encoder import TransformerEncoder
-from src.core.models.backbones.transformer_decoder import TransformerDecoder
 
 @dataclass(unsafe_hash=True, kw_only=True)
 class VAESoundscapeGeneratorTransformer(L.LightningModule):
@@ -371,19 +366,13 @@ class VAESoundscapeGeneratorTransformer(L.LightningModule):
 
     def __post_init__(self) -> None:
         self.embed = torch.nn.Linear(in_features=self.num_features, out_features=self.num_features)
-        self.sequence_encoder = TransformerEncoder(
+        self.sequence_decoder = TransformerEncoder(
             input_size=self.num_features,
             mlp_ratio=self.mlp_ratio,
             depth=self.num_attn_layers,
             num_heads=self.num_attn_heads,
         )
         self.project = torch.nn.Linear(in_features=self.num_features, out_features=self.num_features)
-        self.sequence_decoder = TransformerDecoder(
-            input_size=self.num_features,
-            mlp_ratio=self.mlp_ratio,
-            depth=self.num_attn_layers,
-            num_heads=self.num_attn_heads,
-        )
 
     def pre_process(self, q_z: torch.Tensor):
         k = self.num_points
@@ -396,7 +385,7 @@ class VAESoundscapeGeneratorTransformer(L.LightningModule):
         # mean of weighted mixture of gaussians
         # NB: just a linear interpolation at the moment, but a spherical linear interpolation may help generalise
         mu_bar = torch.stack([
-            torch.stack([(1 - k) * mu[t] + k * mu[t + 1] for k in ks], dim=0)
+            torch.stack([self.slerp(mu[t], mu[t + 1], k) for k in ks], dim=0)
             for t in ts
         ], dim=0) # (ts - 1, k, bs, ld)
         # variance of weighted sum of gaussians
@@ -423,24 +412,16 @@ class VAESoundscapeGeneratorTransformer(L.LightningModule):
         z_e = z_e + self.positional_encoding(z_e.size(0), z_e.size(2)).to(z_e.device).view(z_e.size(0), 1, z_e.size(2))
         attn_mask = self.causal_mask(z_e.size(0)).to(z_e.device)
 
-        _, h, encoder_attn = self.sequence_encoder(z_e)
-
         if self.training:
-            x, decoder_attn = self.sequence_decoder(z_e, h, attn_mask=attn_mask)
+            x, attn_w = self.sequence_decoder(z_e, attn_mask=attn_mask)
             z_hat = self.project(x)
-            # NB: we could treat this as a residual, and add it to z, so we're directly learning the derivative
-            # then we (1) compute the derivative of the encoder distribution while propagating uncertainty,
-            # (2) calculate the NLL of the 1st derivative and
-            # (3) minimise the scale of the derivative directly?
         else:
-            # condition generation from t=0 using a real sample, should probably use an agg posterior sample
-            # but we want to test just if it can do anything beyond one prediction so lets bootstrap it a tiny bit
             z_hat = torch.empty(0, *z[0].shape, device=z.device)
             for t in range(1, seq):
                 z_e_t = self.embed(torch.cat([z[0].unsqueeze(0), z_hat], dim=0))
                 z_e_t = z_e_t + self.positional_encoding(z_e_t.size(0), z_e_t.size(2)).to(z_e_t.device).view(z_e_t.size(0), 1, z_e_t.size(2))
                 attn_mask = self.causal_mask(z_e_t.size(0)).to(z_e_t.device)
-                x, decoder_attn = self.sequence_decoder(z_e_t, h[:, :t], attn_mask=attn_mask)
+                x, attn_w = self.sequence_decoder(z_e_t, attn_mask=attn_mask)
                 z_hat = self.project(x)
 
         return dict(
@@ -462,55 +443,6 @@ class VAESoundscapeGeneratorTransformer(L.LightningModule):
     def causal_mask(sequence_len: int) -> torch.Tensor:
         neg_inf = torch.from_numpy(np.ones((sequence_len, sequence_len)) * -np.inf)
         return torch.triu(neg_inf, diagonal=1).float()
-
-    @property
-    def teach_prob_params(self) -> Dict[str, Any]:
-        return dict(
-            x_min=self.teach_prob_step_start,
-            x_max=self.teach_prob_step_end,
-            y_min=self.teach_prob_start,
-            y_max=self.teach_prob_end,
-            k=self.teach_prob_slope,
-        )
-
-    @staticmethod
-    def bounded_sigmoid(x: float, x_min: float, x_max: float, y_min: float, y_max: float, k: float):
-        s = np.floor(np.log10(np.abs(x_max)))
-        z = k / 10**(s - 1)
-        return y_min + (y_max - y_min) / (1 + np.exp(-z * (x - ((x_min + x_max) / 2))))
-
-    def teach_prob_current(self, current_step: int) -> torch.Tensor:
-        if not self.training:
-            return 0.0
-        elif self.teach_prob_start is None:
-            return self.teach_prob_end
-        return torch.tensor(self.bounded_sigmoid(current_step, **self.teach_prob_params))
-
-    def loss(self, z_hat: torch.Tensor, q_z: torch.Tensor, **kwargs: Any) -> Dict[str, torch.Tensor]:
-        losses = []
-        outputs = dict()
-        # the negative log likelihood where our prior is the encoder's posterior
-        # is the mahanalobis distance between the predicted sample and the VAE encoders' posterior
-        mu, log_sigma_sq = q_z[:, 1:].chunk(2, dim=-1)
-        nll = (1/2 * (log_sigma_sq + ((z_hat - mu).pow(2) / log_sigma_sq.exp()))).sum(dim=-1).mean()
-        losses.append(nll)
-        outputs |= dict(log_likelihood_z=-nll.detach())
-        # # an alternative approach we compute the KL divergence between p(z_t|z_<t) and q(z_t|x_t)
-        # dkl = gaussian_kl_divergence(p_z, q_z)
-        # regularise by minimising the absolute value of the first derivative of predicted features
-        # encourage temporal smoothness between interpolated timesteps
-        # maybe because we've smoothed out the space, this should be a squared error?
-        # at the moment, this grows past the actual derivative, which means potentially its stepping around rather than smoothly transitioning?
-        dzhdt = z_hat.diff(dim=1, n=1).pow(2).sum(dim=-1).mean()
-        losses.append(self.gamma * dzhdt)
-        outputs |= dict(
-            dzhat_dt=dzhdt.detach(),
-            dz_dt=mu.detach().diff(dim=1, n=1).abs().sum(dim=-1).mean(),
-        )
-        # backprop loss
-        loss = sum(losses)
-        outputs |= dict(loss=loss)
-        return outputs
 
     @staticmethod
     def slerp(v0: torch.Tensor, v1: torch.Tensor, t: float | torch.Tensor, DOT_THRESHOLD: float = 0.9995):
@@ -548,6 +480,55 @@ class VAESoundscapeGeneratorTransformer(L.LightningModule):
             slerped = s0 * v0 + s1 * v1
             out = slerped.where(can_slerp.unsqueeze(-1), out)
         return out
+
+    @staticmethod
+    def bounded_sigmoid(x: float, x_min: float, x_max: float, y_min: float, y_max: float, k: float):
+        s = np.floor(np.log10(np.abs(x_max)))
+        z = k / 10**(s - 1)
+        return y_min + (y_max - y_min) / (1 + np.exp(-z * (x - ((x_min + x_max) / 2))))
+
+    @property
+    def teach_prob_params(self) -> Dict[str, Any]:
+        return dict(
+            x_min=self.teach_prob_step_start,
+            x_max=self.teach_prob_step_end,
+            y_min=self.teach_prob_start,
+            y_max=self.teach_prob_end,
+            k=self.teach_prob_slope,
+        )
+
+    def teach_prob_current(self, current_step: int) -> torch.Tensor:
+        if not self.training:
+            return 0.0
+        elif self.teach_prob_start is None:
+            return self.teach_prob_end
+        return torch.tensor(self.bounded_sigmoid(current_step, **self.teach_prob_params))
+
+    def loss(self, z_hat: torch.Tensor, q_z: torch.Tensor, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        losses = []
+        outputs = dict()
+        # the negative log likelihood where our prior is the encoder's posterior
+        # is the mahanalobis distance between the predicted sample and the VAE encoders' posterior
+        mu, log_sigma_sq = q_z[:, 1:].chunk(2, dim=-1)
+        nll = (1/2 * (log_sigma_sq + ((z_hat - mu).pow(2) / log_sigma_sq.exp()))).sum(dim=-1).mean()
+        losses.append(nll)
+        outputs |= dict(log_likelihood_z=-nll.detach())
+        # # an alternative approach we compute the KL divergence between p(z_t|z_<t) and q(z_t|x_t)
+        # dkl = gaussian_kl_divergence(p_z, q_z)
+        # regularise by minimising the absolute value of the first derivative of predicted features
+        # encourage temporal smoothness between interpolated timesteps
+        # maybe because we've smoothed out the space, this should be a squared error?
+        # at the moment, this grows past the actual derivative, which means potentially its stepping around rather than smoothly transitioning?
+        dzhdt = z_hat.diff(dim=1, n=1).pow(2).sum(dim=-1).mean()
+        losses.append(self.gamma * dzhdt)
+        outputs |= dict(
+            dzhat_dt=dzhdt.detach(),
+            dz_dt=mu.detach().diff(dim=1, n=1).abs().sum(dim=-1).mean(),
+        )
+        # backprop loss
+        loss = sum(losses)
+        outputs |= dict(loss=loss)
+        return outputs
 
     def metrics(self, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
         return dict(
