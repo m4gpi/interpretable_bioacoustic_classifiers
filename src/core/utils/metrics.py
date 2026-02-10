@@ -21,15 +21,22 @@ def gaussian_kl_divergence(p: torch.Tensor, q: torch.Tensor = torch.zeros(2)) ->
     return -1/2 * (1 + log_sigma_sq_p - log_sigma_sq_q - (log_sigma_sq_p.exp() + (mu_p - mu_q).pow(2)) / log_sigma_sq_q.exp())
 
 def autoregressive_prior(q_z: torch.Tensor, alpha: torch.Tensor, p_z_init: torch.Tensor | None = None):
-    # mixture distribution between q_z_t and standard normal by alpha
-    p_z = torch.zeros(1).expand(*q_z.size()).to(q_z.device) if p_z_init is None else p_z_init
+    # prior distribution is a standard normal
+    p_z = torch.zeros(1, device=q_z.device).expand(*q_z.size()) if p_z_init is None else p_z_init
     mu_p, log_sigma_sq_p = p_z.chunk(2, dim=-1)
+    # approximate posterior
     mu_q, log_sigma_sq_q = q_z.chunk(2, dim=-1)
-    mu_q_prev, log_sigma_sq_q_prev = 2 * (torch.zeros(mu_q.size(0), mu_q.size(-1)).to(mu_q.device),)
+    mu_q_prev = torch.zeros(mu_q.size(0), mu_q.size(-1), device=mu_q.device)
+    log_sigma_sq_q_prev = torch.zeros(mu_q.size(0), mu_q.size(-1), device=mu_q.device)
     for t in range(q_z.size(1)):
-        alpha_t = 0.0 if t == 0 else alpha # prevent downweighing the prior at t=0
+        # at t=0, set alpha to 0 (force standard normal)
+        alpha_t = 0.0 if t == 0 else alpha
+        # mean of current time-step is weighted average of previous timestep and 0
+        # kμ₁ + (1 - k)μ₂
         mu_p_current = alpha_t * mu_q_prev + (1 - alpha_t) * mu_p[:, t, :]
-        log_sigma_sq_p_current = (alpha_t * log_sigma_sq_q_prev.exp() + (1 - alpha_t) * log_sigma_sq_p[:, t, :].exp() + alpha_t * (1 - alpha_t) * mu_q_prev.pow(2)).log()
+        # variance of current time-step is weighted sum of variances between previous and 1, accounting for the means
+        # kσ₁² + (1 - k)σ₂² + k(1 - k)(μ₁ - μ₂)²
+        log_sigma_sq_p_current = (alpha_t * log_sigma_sq_q_prev.exp() + (1 - alpha_t) * log_sigma_sq_p[:, t, :].exp() + alpha_t * (1 - alpha_t) * (mu_q_prev - mu_p[:, t, :]).pow(2)).log()
         yield t, torch.cat([mu_p_current, log_sigma_sq_p_current], dim=-1)
         mu_q_prev, log_sigma_sq_q_prev = mu_q[:, t, :], log_sigma_sq_q[:, t, :]
 

@@ -9,7 +9,7 @@ from matplotlib import pyplot as plt
 from typing import Any, Dict, List, Tuple
 from torch.distributions.normal import Normal
 
-from src.core.models.sivae import SIVAE
+from src.core.models.tssi_vae import TSSIVAE
 from src.core.utils import metrics
 from src.core.utils.sketch import plot_mel_spectrogram
 
@@ -27,7 +27,7 @@ class VAESequenceDecoder(L.Callback):
         super().__init__()
         self.ckpt_path = ckpt_path
         self.num_per_batch = num_per_batch
-        self.model = SIVAE.load_from_checkpoint(ckpt_path)
+        self.model = TSSIVAE.load_from_checkpoint(ckpt_path)
         self.log_every_n_train_steps = log_every_n_train_steps
 
     def setup(
@@ -55,6 +55,7 @@ class VAESequenceDecoder(L.Callback):
             z = Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
             xs = self.model.decode(z, delta).cpu().squeeze(1)
             z_hat = pl_module(q_z)["z_pred"]
+            z_hat = torch.cat([z[:, :z_hat.size(1), :64], z_hat], dim=-1)
             x_hats = self.model.decode(z_hat, delta[:, :z_hat.size(1)].contiguous()).cpu().squeeze(1)
             # plot alongside each-other
             fig, axes = plt.subplots(nrows=self.num_per_batch, ncols=3, figsize=(15, self.num_per_batch * 3), width_ratios=[0.49, 0.49, 0.02])
@@ -86,6 +87,7 @@ class VAESequenceDecoder(L.Callback):
         z = Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
         xs = self.model.decode(z, delta).cpu().squeeze(1)
         z_hat = pl_module(q_z)["z_pred"]
+        z_hat = torch.cat([z[:, :10], torch.cat([z[:, :z_hat.size(1), :64], z_hat], dim=-1)], dim=1)
         x_hats = self.model.decode(z_hat, delta[:, :z_hat.size(1)].contiguous()).cpu().squeeze(1)
         # plot alongside each-other
         fig, axes = plt.subplots(nrows=self.num_per_batch, ncols=3, figsize=(15, self.num_per_batch * 3), width_ratios=[0.49, 0.49, 0.02])
@@ -97,6 +99,7 @@ class VAESequenceDecoder(L.Callback):
             vmin, vmax = min(x.min(), x_hat.min()), max(x.max(), x_hat.max())
             plot_mel_spectrogram(x.t(), vmin=vmin, vmax=vmax, ax=ax1, **self.model.spectrogram_params)
             mesh = plot_mel_spectrogram(x_hat.t(), vmin=vmin, vmax=vmax, ax=ax2, **self.model.spectrogram_params)
+            ax2.axvline(x=10 * 192, color="white")
             fig.colorbar(mesh, cax=cax, orientation="vertical")
         pl_module.logger.experiment.log({f"val/reconstruction": wandb.Image(fig)})
         plt.close()

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from omegaconf import DictConfig
 from torch.nn import functional as F
 from torch.distributions import Normal, MultivariateNormal
-from typing import Any, Dict, Callable, List, Tuple
+from typing import Any, Dict, Callable, List
 
 from src.core.utils.metrics import gaussian_kl_divergence
 from src.core.utils import detach_values, prefix_keys, Batch
@@ -24,7 +24,7 @@ __all__ = ["VAESoundscapeGenerator"]
 class VAESoundscapeGenerator(L.LightningModule):
     num_features: int = 128
     num_samples: int = 1
-    num_points: int = 10
+    num_points: int = 0
     num_rnn_layers: int = 3
     gamma: float = 1.0
 
@@ -64,36 +64,35 @@ class VAESoundscapeGenerator(L.LightningModule):
         return obj
 
     def __post_init__(self) -> None:
-        # self.sequence_encoder = torch.nn.LSTM(
-        #     input_size=self.num_features,
-        #     hidden_size=self.num_features,
-        #     num_layers=self.num_rnn_layers,
-        #     batch_first=False,
-        # )
+        self.embedding = torch.nn.Linear(in_features=self.num_features, out_features=self.num_features)
+        self.norm = torch.nn.LayerNorm(self.num_features)
+        self.sequence_encoder = torch.nn.LSTM(
+            input_size=self.num_features,
+            hidden_size=self.num_features,
+            num_layers=self.num_rnn_layers,
+        )
         self.sequence_decoder = torch.nn.LSTM(
             input_size=self.num_features,
             hidden_size=self.num_features,
             num_layers=self.num_rnn_layers,
             batch_first=False,
         )
-        # self.projection = torch.nn.Linear(in_features=self.num_features, out_features=self.num_features * 2)
         self._reset_cache()
 
     def pre_process(self, q_z: torch.Tensor):
         k = self.num_points
-        ts = torch.arange(q_z.size(0) - 1)
-        ks = torch.linspace(0.0, 1.0 - 1 / (k + 1), k + 1)
+        ts = torch.arange(q_z.size(0) - 1, device=q_z.device)
+        ks = torch.linspace(0.0, 1.0 - 1 / (k + 1), k + 1, device=q_z.device)
         # interpolate K points between each time-step by a weighted sum of gaussians
         # encourage small steps in the latent space during training, during inference we throw these points away
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         sigma_sq = log_sigma_sq.exp()
-        # mean of weighted mixture of gaussians
-        # NB: just a linear interpolation at the moment, but a spherical linear interpolation may reduce oddities in the generation
+        # weighted average of gaussians
         mu_bar = torch.stack([
             torch.stack([self.slerp(mu[t], mu[t + 1], k) for k in ks], dim=0)
             for t in ts
         ], dim=0) # (ts - 1, k, bs, ld)
-        # variance of weighted sum of gaussians
+        # variance of weighted average of gaussians
         # (1 - k)σ₁² + kσ₂² + k(1 - k)(μ₁ - μ₂)²
         sigma_sq_bar = torch.stack([
             torch.stack([(1 - k) * sigma_sq[t] + k * sigma_sq[t + 1] + (k * (1 - k) * (mu[t] - mu[t + 1]).pow(2)) for k in ks], dim=0)
@@ -106,49 +105,87 @@ class VAESoundscapeGenerator(L.LightningModule):
         return q_z_bar
 
     def forward(self, q_z: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        q_z = torch.cat([q_z[:, :, 64:128], q_z[:, :, 192:256]], dim=-1)
         q_z = q_z.transpose(0, 1)
         q_z_bar = self.pre_process(q_z)
         q_z_bar = q_z_bar.expand(self.num_samples, -1, -1, -1).transpose(0, 1).flatten(start_dim=1, end_dim=2) # (seq + k(seq-1), bs * samples, ld)
         mu, log_sigma_sq = q_z_bar.chunk(2, dim=-1)
         seq, bs, ld = mu.size()
-        # NB: potentially a big jump from the agg posterior to the first prediction...
-        z = Normal(mu[:-1], (0.5 * log_sigma_sq[:-1]).exp()).rsample()
+
+        dt = 1 / (self.num_points + 1)
+        z = mu # Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
+        dz_dt = z.diff(dim=0, n=1) / dt
+
+        # _, (h, c) = self.sequence_encoder()
+
         if self.training:
-            # _, (h, c) = self.sequence_encoder(z)
-            # z_hat, (h, c) = self.sequence_decoder(torch.cat([z_init.unsqueeze(0), z], dim=0))
-            z_t = z[0]
-            z_hats = []
-            h = torch.zeros(self.num_rnn_layers, bs, ld)
-            c = torch.zeros(self.num_rnn_layers, bs, ld)
-            for t in range(1, seq):
-                z_hat, (h, c) = self.sequence_decoder(z_t)
-                z_hats.append(z_hat)
+            if self.with_curriculum:
                 teach_prob = self.teach_prob_current(self.trainer.global_step)
-                z_t = z[t] if np.random.choice([0, 1], p=[1 - teach_prob, teach_prob]) == 1 else z_hat
-            z_hat = torch.stack(z_hats, dim=0)
+                z_hats = []
+                dzhat_dts = []
+                # initialize generator with z₀
+                z_t = z[0].unsqueeze(0)
+                h = torch.zeros(self.num_rnn_layers, bs, ld, device=z_t.device)
+                c = torch.zeros(self.num_rnn_layers, bs, ld, device=z_t.device)
+                # TODO: use zhats to account for cascade errors
+                for t in range(seq - 1):
+                    # predict Δẑₜ
+                    dzhat_dt, (h, c) = self.sequence_decoder(self.norm(self.embedding(z_t)), (h, c))
+                    # ẑₜ₊₁ = zₜ+ Δẑₜ
+                    z_t = z[t].unsqueeze(0) + dzhat_dt
+                    dzhat_dts.append(dzhat_dt)
+                    z_hats.append(z_t)
+                    if np.random.choice([0, 1], p=[1 - teach_prob, teach_prob]):
+                        # ẑₜ₊₁ = zₜ₊₁ (teacher forcing)
+                        z_t = z[t + 1].unsqueeze(0)
+                dzhat_dt = torch.cat(dzhat_dts, dim=0)
+                z_hat = torch.cat(z_hats, dim=0)
+            else:
+                # predict Δẑₜ
+                dzhat_dt, (h, c) = self.sequence_decoder(self.norm(self.embedding(z[:-1])))
+                # ẑₜ₊₁ = ẑₜ+ Δẑₜ
+                z_hat = z[:-1] + dzhat_dt
+            z_pred = z_hat[::(self.num_points + 1)]
         else:
-            z_t = z[0]
             z_hats = []
-            h = torch.zeros(self.num_rnn_layers, bs, ld)
-            c = torch.zeros(self.num_rnn_layers, bs, ld)
-            for t in range(seq):
-                z_t, (h, c) = self.sequence_decoder(z_t)
+            dzhat_dts = []
+            # initialize hidden states up to zₜ
+            t_init = 10
+            _, (h, c) = self.sequence_decoder(self.norm(self.embedding(z[:t_init])))
+            # begin prediction from Tinit
+            z_t = z[t_init].unsqueeze(0)
+            for t in range(t_init, seq - 1):
+                # predict Δzₜ
+                dzhat_dt, (h, c) = self.sequence_decoder(self.norm(self.embedding(z_t)), (h, c))
+                # ẑₜ₊₁ = ẑₜ+ Δẑₜ
+                z_t = z_t + dzhat_dt
+                dzhat_dts.append(dzhat_dt)
                 z_hats.append(z_t)
-            z_hat = torch.stack(z_hats, dim=0)
+            dzhat_dt = torch.cat(dzhat_dts, dim=0)
+            z_hat = torch.cat(z_hats, dim=0)
+            # only look at loss for predicted frames given initialisation at Tinit
+            dz_dt = dz_dt[t_init:]
+            z_pred = z_hat[int(t_init / dt)::(self.num_points + 1)]
         return dict(
+            dzhat_dt=dzhat_dt.transpose(0, 1),
+            dz_dt=dz_dt.transpose(0, 1),
             z_hat=z_hat.transpose(0, 1),
             q_z=q_z_bar.transpose(0, 1),
-            z=z[1:].transpose(0, 1),
-            z_pred=z_hat[::(self.num_points + 1)].transpose(0, 1)
+            z_pred=z_pred.transpose(0, 1),
+            z=z.transpose(0, 1),
         )
+
+    @property
+    def with_curriculum(self) -> bool:
+        return self.teach_prob_step_start is not None and self.teach_prob_step_end is not None
 
     @property
     def teach_prob_params(self) -> Dict[str, Any]:
         return dict(
             x_min=self.teach_prob_step_start,
             x_max=self.teach_prob_step_end,
-            y_min=self.teach_prob_start,
-            y_max=self.teach_prob_end,
+            y_min=self.teach_prob_end,
+            y_max=self.teach_prob_start,
             k=self.teach_prob_slope,
         )
 
@@ -174,11 +211,11 @@ class VAESoundscapeGenerator(L.LightningModule):
         c0: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if not z0:
-            z0 = MultivariateNormal(self.mu_agg.expand(bs, -1), self.sigma_agg.expand(bs, -1, -1)).rsample().unsqueeze(0)
+            z0 = MultivariateNormal(self.mu_agg.expand(1, -1), self.sigma_agg.expand(1, -1, -1)).rsample().unsqueeze(0)
         if not h0:
-            h0 = torch.zeros(self.num_rnn_layers, self.num_features, self.num_features, device=z.device)
+            h0 = torch.zeros(self.num_rnn_layers, 1, self.num_features, device=z.device)
         if not c0:
-            c0 = torch.zeros(self.num_rnn_layers, self.num_features, self.num_features, device=z.device)
+            c0 = torch.zeros(self.num_rnn_layers, 1, self.num_features, device=z.device)
         # initial conditions for generation
         zs = []
         z, h, c = z0, h0, c0
@@ -187,28 +224,47 @@ class VAESoundscapeGenerator(L.LightningModule):
             zs.append(z)
         return torch.stack(zs, dim=0).transpose(0, 1)
 
-    def loss(self, z_hat: torch.Tensor, q_z: torch.Tensor, z: torch.Tensor, **kwargs: Any) -> Dict[str, torch.Tensor]:
+    def loss(self, dzhat_dt: torch.Tensor, dz_dt: torch.Tensor, z_hat: torch.Tensor, q_z: torch.Tensor, z: torch.Tensor, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        bs, seq, ld = dz_dt.size()
         losses = []
         outputs = dict()
-        # the negative log likelihood where our prior is the encoder's posterior
-        # is the mahanalobis distance between the predicted sample and the VAE encoders' posterior
-        mu, log_sigma_sq = q_z.chunk(2, dim=-1)
-        nll = (1/2 * (log_sigma_sq + ((z_hat - mu).pow(2) / log_sigma_sq.exp()))).sum(dim=-1).mean()
-        losses.append(nll)
-        outputs |= dict(log_likelihood_z=-nll.detach())
-        # # an alternative approach we compute the KL divergence between p(z_t|z_<t) and q(z_t|x_t)
+        mse = (dzhat_dt - dz_dt).pow(2)
+        loss = mse.sum(dim=-1).mean()
+        losses.append(loss)
+        outputs |= dict(
+            mse=loss.detach(),
+            teach_prob=self.teach_prob_current(self.trainer.global_step),
+            # **{f"mse_z{i}": mse[:, :, i].mean() for i in range(ld)},
+        )
+        alpha = torch.linspace(0.5, 1.0, 64, device=dzhat_dt.device)
+        dzdt = (alpha * dzhat_dt).abs().sum(dim=-1)
+        losses.append(dzdt.mean())
+        outputs |= dict(
+            dzdt=dzdt.mean().detach(),
+        )
+        # # the negative log likelihood where our prior is the encoder's posterior
+        # # is the mahanalobis distance between the predicted sample and the VAE encoders' posterior
+        # mu, log_sigma_sq = q_z[:, 1:].chunk(2, dim=-1)
+        # nll = (1/2 * (log_sigma_sq + ((z_hat - mu).pow(2) / log_sigma_sq.exp())))
+        # loss = nll.sum(dim=-1).mean()
+        # losses.append(loss)
+        # outputs |= dict(
+        #     log_likelihood_z=-loss.detach(),
+        #     **{f"log_likelihood_z{i}": -nll[:, :, i].mean() for i in range(ld)},
+        # )
+        # # # an alternative approach we compute the KL divergence between p(z_t|z_<t) and q(z_t|x_t)
         # dkl = gaussian_kl_divergence(p_z, q_z)
         # regularise by minimising the absolute value of the first derivative of predicted features
-        # encourage temporal smoothness between interpolated timesteps
-        # maybe because we've smoothed out the space, this should be a squared error?
-        # at the moment, this grows past the actual derivative, which means potentially its stepping around rather than smoothly transitioning?
-        dzhat_dt = self.gamma * z_hat.diff(dim=1, n=1).abs().sum(dim=-1).mean()
-        dz_dt = self.gamma * mu.detach().diff(dim=1, n=1).abs().sum(dim=-1).mean()
-        losses.append(dzhat_dt)
-        outputs |= dict(
-            dzhat_dt=dzhat_dt.detach(),
-            dz_dt=dz_dt,
-        )
+        # dzhat_dt = z_hat.diff(dim=1, n=1).pow(2)
+        # dz_dt = z.diff(dim=1, n=1).pow(2)
+        # loss = dzhat_dt.sum(dim=-1).mean()
+        # losses.append(self.gamma * loss)
+        # outputs |= dict(
+        #     dzhat_dt=loss.detach(),
+        #     dz_dt=dz_dt.detach().sum(dim=-1).mean(),
+        #     **{f"dzhat{i}_dt": dzhat_dt[:, :, i].mean() for i in range(ld)},
+        #     **{f"dz{i}_dt": dz_dt[:, :, i].mean() for i in range(ld)},
+        # )
         # backprop loss
         loss = sum(losses)
         outputs |= dict(loss=loss)
@@ -252,14 +308,15 @@ class VAESoundscapeGenerator(L.LightningModule):
         return out
 
     def metrics(self, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
-        return dict(
-            teach_prob=self.teach_prob_current(self.trainer.global_step)
-        )
+        outputs = dict()
+        if self.with_curriculum:
+            outputs |= dict(teach_prob=self.teach_prob_current(self.trainer.global_step))
+        return outputs
 
     def training_step(self, batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
         step_outputs = self(batch.x, **kwargs)
         loss_outputs = self.loss(**step_outputs)
-        metrics = self.metrics(**step_outputs)
+        metrics = self.metrics(**step_outputs, **loss_outputs)
         self.training_step_outputs.append(step_outputs)
         self.log_dict(prefix_keys(loss_outputs | metrics, "train"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
         self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, "train")))
@@ -269,7 +326,7 @@ class VAESoundscapeGenerator(L.LightningModule):
         self.training_step_outputs.clear()
 
     @torch.no_grad()
-    def validation_step(self, batch: Tuple, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+    def validation_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
         step_outputs = self(batch.x, **kwargs)
         loss_outputs = self.loss(**step_outputs)
         metrics = self.metrics(**step_outputs)
@@ -278,21 +335,15 @@ class VAESoundscapeGenerator(L.LightningModule):
         self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, "val")))
         return loss_outputs | step_outputs
 
-    def on_validation_batch_end(self, outputs: Dict[str, torch.Tensor], batch, batch_idx: int) -> None:
+    def on_validation_batch_end(self, outputs: Dict[str, torch.Tensor], batch: Batch, batch_idx: int) -> None:
         self.validation_step_outputs.clear()
 
     @torch.no_grad()
-    def test_step(self, batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
+    def test_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
         return self(batch.x, **kwargs)
 
     @torch.no_grad()
-    def on_test_batch_end(
-        self,
-        outputs: Dict[str, torch.Tensor],
-        batch: Tuple[torch.Tensor, torch.Tensor],
-        batch_idx: int,
-        **kwargs: Any,
-    ) -> None:
+    def on_test_batch_end(self, outputs: Dict[str, torch.Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
         self.test_step_outputs.clear()
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
@@ -376,8 +427,8 @@ class VAESoundscapeGeneratorTransformer(L.LightningModule):
 
     def pre_process(self, q_z: torch.Tensor):
         k = self.num_points
-        ts = torch.arange(q_z.size(0) - 1)
-        ks = torch.linspace(0.0, 1.0 - 1 / (k + 1), k + 1)
+        ts = torch.arange(q_z.size(0) - 1, device=q_z.device)
+        ks = torch.linspace(0.0, 1.0 - 1 / (k + 1), k + 1, device=q_z.device)
         # interpolate K points between each time-step by a weighted sum of gaussians
         # encourage small steps in the latent space during training, during inference we throw these points away
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)

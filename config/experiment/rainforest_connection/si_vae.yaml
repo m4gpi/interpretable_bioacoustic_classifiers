@@ -3,7 +3,7 @@
 # python main.py +experiment=rainforest_connection/shift_invariant_vae
 
 defaults:
-  - override /model: smooth_nifti_vae
+  - override /model: shift_invariant_vae
   - override /data: rainforest_connection
   - override /transforms: cropped_log_mel_spectrogram
   - override /trainer: gpu

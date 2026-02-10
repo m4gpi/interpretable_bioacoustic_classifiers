@@ -13,20 +13,20 @@ test: true
 seed: 42
 
 data:
-  root: ./
+  root: ./models/tssi_vae.pt:v1
   seed: ${seed}
   train_batch_size: 32
   eval_batch_size: 32
 
 model:
-  num_features: 128
+  num_features: 64
   num_rnn_layers: 1
-  num_points: 100
+  num_points: 0 # 100
   num_samples: 1
   teach_prob_start: 1.0
   teach_prob_end: 0.1
-  teach_prob_step_start: 0
-  teach_prob_step_end: 10000
+  teach_prob_step_start: null # 0
+  teach_prob_step_end: null # 10000
   teach_prob_slope: 1.0
   learning_rate: 4.e-5
   optimiser_cls: torch.optim.AdamW
@@ -48,7 +48,7 @@ callbacks:
     save_top_k: -1
   vae_sequence_decoder:
     _target_: src.core.callbacks.vae_sequence_decoder.VAESequenceDecoder
-    ckpt_path: ${paths.root_dir}/sivae.ckpt
+    ckpt_path: ${data.root}/model.ckpt
     log_every_n_train_steps: ${trainer.val_check_interval}
 
 logger:
