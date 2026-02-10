@@ -1,6 +1,6 @@
 # @package _global_
 
-# python main.py +experiment=vae_soundscape_generator
+# python main.py +experiment=sounding_out/vae_soundscape_generator
 
 defaults:
   - override /model: vae_soundscape_generator
@@ -13,7 +13,7 @@ test: true
 seed: 42
 
 data:
-  root: ./models/tssi_vae.pt:v1
+  data_path: ./models/tssi_vae.pt:v1/features_hop=32.parquet
   seed: ${seed}
   train_batch_size: 32
   eval_batch_size: 32
@@ -21,8 +21,8 @@ data:
 model:
   num_features: 64
   num_rnn_layers: 1
-  num_points: 0 # 100
   num_samples: 1
+  num_init_frames: 60
   teach_prob_start: 1.0
   teach_prob_end: 0.1
   teach_prob_step_start: null # 0
@@ -48,8 +48,9 @@ callbacks:
     save_top_k: -1
   vae_sequence_decoder:
     _target_: src.core.callbacks.vae_sequence_decoder.VAESequenceDecoder
-    ckpt_path: ${data.root}/model.ckpt
+    ckpt_path: ./models/tssi_vae.pt:v1/model.ckpt
     log_every_n_train_steps: ${trainer.val_check_interval}
+    latent_hop_length: 1
 
 logger:
   wandb:

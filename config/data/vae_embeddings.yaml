@@ -1,5 +1,5 @@
 _target_: src.core.data.vae_embeddings.VAEEmbeddingsDataModule
-root:
+data_path:
 train_batch_size:
 eval_batch_size:
 val_prop: 0.2

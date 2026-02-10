@@ -23,12 +23,14 @@ class VAESequenceDecoder(L.Callback):
         ckpt_path: str,
         num_per_batch: int = 6,
         log_every_n_train_steps: int | None = None,
+        latent_hop_length: int = 6,
     ) -> None:
         super().__init__()
         self.ckpt_path = ckpt_path
         self.num_per_batch = num_per_batch
         self.model = TSSIVAE.load_from_checkpoint(ckpt_path)
         self.log_every_n_train_steps = log_every_n_train_steps
+        self.latent_hop_length = latent_hop_length
 
     def setup(
         self,
@@ -49,14 +51,19 @@ class VAESequenceDecoder(L.Callback):
         dataloader_idx: int = 0,
     ) -> None:
         if batch_idx % self.log_every_n_train_steps == 0:
+            frame_step = int(self.model.latent_window_length / self.latent_hop_length)
+            # decode original reconstruction
             q_z = batch.x[:self.num_per_batch]
             delta = batch.y[:self.num_per_batch]
             mu, log_sigma_sq = q_z.chunk(2, dim=-1)
             z = Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
+            z, delta = z[:, ::frame_step].contiguous(), delta[:, ::frame_step].contiguous()
             xs = self.model.decode(z, delta).cpu().squeeze(1)
-            z_hat = pl_module(q_z)["z_pred"]
-            z_hat = torch.cat([z[:, :z_hat.size(1), :64], z_hat], dim=-1)
-            x_hats = self.model.decode(z_hat, delta[:, :z_hat.size(1)].contiguous()).cpu().squeeze(1)
+            # decode AR generated
+            z_hat = pl_module(q_z)["z_hat"]
+            z_hat = z_hat[:, ::frame_step]
+            z_hat = torch.cat([z[:, :z_hat.size(1), :64], z_hat], dim=-1).contiguous()
+            x_hats = self.model.decode(z_hat, delta).cpu().squeeze(1)
             # plot alongside each-other
             fig, axes = plt.subplots(nrows=self.num_per_batch, ncols=3, figsize=(15, self.num_per_batch * 3), width_ratios=[0.49, 0.49, 0.02])
             for i, x, x_hat in zip(range(self.num_per_batch), xs, x_hats):
@@ -81,14 +88,21 @@ class VAESequenceDecoder(L.Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
+        frame_window_length = self.model.frame_window_length
+        frame_start = pl_module.num_init_frames
+        frame_step = int(self.model.latent_window_length / self.latent_hop_length)
+        # decode original reconstruction
         q_z = batch.x[:self.num_per_batch]
         delta = batch.y[:self.num_per_batch]
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         z = Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
+        z, delta = z[:, frame_start::frame_step].contiguous(), delta[:, frame_start::frame_step].contiguous()
         xs = self.model.decode(z, delta).cpu().squeeze(1)
-        z_hat = pl_module(q_z)["z_pred"]
-        z_hat = torch.cat([z[:, :10], torch.cat([z[:, :z_hat.size(1), :64], z_hat], dim=-1)], dim=1)
-        x_hats = self.model.decode(z_hat, delta[:, :z_hat.size(1)].contiguous()).cpu().squeeze(1)
+        # decode AR generated
+        z_hat = pl_module(q_z)["z_hat"]
+        z_hat = z_hat[:, frame_start::frame_step]
+        z_hat = torch.cat([z[:, :z_hat.size(1), :64], z_hat], dim=-1).contiguous()
+        x_hats = self.model.decode(z_hat, delta).cpu().squeeze(1)
         # plot alongside each-other
         fig, axes = plt.subplots(nrows=self.num_per_batch, ncols=3, figsize=(15, self.num_per_batch * 3), width_ratios=[0.49, 0.49, 0.02])
         for i, x, x_hat in zip(range(self.num_per_batch), xs, x_hats):
@@ -99,7 +113,7 @@ class VAESequenceDecoder(L.Callback):
             vmin, vmax = min(x.min(), x_hat.min()), max(x.max(), x_hat.max())
             plot_mel_spectrogram(x.t(), vmin=vmin, vmax=vmax, ax=ax1, **self.model.spectrogram_params)
             mesh = plot_mel_spectrogram(x_hat.t(), vmin=vmin, vmax=vmax, ax=ax2, **self.model.spectrogram_params)
-            ax2.axvline(x=10 * 192, color="white")
+            ax2.axvline(x=frame_start * frame_window_length, color="white")
             fig.colorbar(mesh, cax=cax, orientation="vertical")
         pl_module.logger.experiment.log({f"val/reconstruction": wandb.Image(fig)})
         plt.close()

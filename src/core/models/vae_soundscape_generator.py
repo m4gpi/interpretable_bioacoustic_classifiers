@@ -24,8 +24,8 @@ __all__ = ["VAESoundscapeGenerator"]
 class VAESoundscapeGenerator(L.LightningModule):
     num_features: int = 128
     num_samples: int = 1
-    num_points: int = 0
     num_rnn_layers: int = 3
+    num_init_frames: int = 10
     gamma: float = 1.0
 
     teach_prob_start: float | None = 1.0
@@ -79,40 +79,40 @@ class VAESoundscapeGenerator(L.LightningModule):
         )
         self._reset_cache()
 
-    def pre_process(self, q_z: torch.Tensor):
-        k = self.num_points
-        ts = torch.arange(q_z.size(0) - 1, device=q_z.device)
-        ks = torch.linspace(0.0, 1.0 - 1 / (k + 1), k + 1, device=q_z.device)
-        # interpolate K points between each time-step by a weighted sum of gaussians
-        # encourage small steps in the latent space during training, during inference we throw these points away
-        mu, log_sigma_sq = q_z.chunk(2, dim=-1)
-        sigma_sq = log_sigma_sq.exp()
-        # weighted average of gaussians
-        mu_bar = torch.stack([
-            torch.stack([self.slerp(mu[t], mu[t + 1], k) for k in ks], dim=0)
-            for t in ts
-        ], dim=0) # (ts - 1, k, bs, ld)
-        # variance of weighted average of gaussians
-        # (1 - k)σ₁² + kσ₂² + k(1 - k)(μ₁ - μ₂)²
-        sigma_sq_bar = torch.stack([
-            torch.stack([(1 - k) * sigma_sq[t] + k * sigma_sq[t + 1] + (k * (1 - k) * (mu[t] - mu[t + 1]).pow(2)) for k in ks], dim=0)
-            for t in ts
-        ], dim=0) # (ts - 1, k, bs, ld)
-        mu_bar = torch.cat([mu_bar.flatten(start_dim=0, end_dim=1), mu[-1:]], dim=0)
-        sigma_sq_bar = torch.cat([sigma_sq_bar.flatten(start_dim=0, end_dim=1), sigma_sq[-1:]], dim=0)
-        q_z_bar = torch.cat([mu_bar, sigma_sq_bar.log()], dim=-1)
-        assert q_z_bar.size(0) == q_z.size(0) + (q_z.size(0) - 1) * k
-        return q_z_bar
+    # def pre_process(self, q_z: torch.Tensor):
+    #     k = self.num_points
+    #     ts = torch.arange(q_z.size(0) - 1, device=q_z.device)
+    #     ks = torch.linspace(0.0, 1.0 - 1 / (k + 1), k + 1, device=q_z.device)
+    #     # interpolate K points between each time-step by a weighted sum of gaussians
+    #     # encourage small steps in the latent space during training, during inference we throw these points away
+    #     mu, log_sigma_sq = q_z.chunk(2, dim=-1)
+    #     sigma_sq = log_sigma_sq.exp()
+    #     # weighted average of gaussians
+    #     mu_bar = torch.stack([
+    #         torch.stack([self.slerp(mu[t], mu[t + 1], k) for k in ks], dim=0)
+    #         for t in ts
+    #     ], dim=0) # (ts - 1, k, bs, ld)
+    #     # variance of weighted average of gaussians
+    #     # (1 - k)σ₁² + kσ₂² + k(1 - k)(μ₁ - μ₂)²
+    #     sigma_sq_bar = torch.stack([
+    #         torch.stack([(1 - k) * sigma_sq[t] + k * sigma_sq[t + 1] + (k * (1 - k) * (mu[t] - mu[t + 1]).pow(2)) for k in ks], dim=0)
+    #         for t in ts
+    #     ], dim=0) # (ts - 1, k, bs, ld)
+    #     mu_bar = torch.cat([mu_bar.flatten(start_dim=0, end_dim=1), mu[-1:]], dim=0)
+    #     sigma_sq_bar = torch.cat([sigma_sq_bar.flatten(start_dim=0, end_dim=1), sigma_sq[-1:]], dim=0)
+    #     q_z_bar = torch.cat([mu_bar, sigma_sq_bar.log()], dim=-1)
+    #     assert q_z_bar.size(0) == q_z.size(0) + (q_z.size(0) - 1) * k
+    #     return q_z_bar
 
     def forward(self, q_z: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
         q_z = torch.cat([q_z[:, :, 64:128], q_z[:, :, 192:256]], dim=-1)
-        q_z = q_z.transpose(0, 1)
-        q_z_bar = self.pre_process(q_z)
+        q_z_bar = q_z.transpose(0, 1)
+        # q_z_bar = self.pre_process(q_z)
         q_z_bar = q_z_bar.expand(self.num_samples, -1, -1, -1).transpose(0, 1).flatten(start_dim=1, end_dim=2) # (seq + k(seq-1), bs * samples, ld)
         mu, log_sigma_sq = q_z_bar.chunk(2, dim=-1)
         seq, bs, ld = mu.size()
 
-        dt = 1 / (self.num_points + 1)
+        dt = 1
         z = mu # Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
         dz_dt = z.diff(dim=0, n=1) / dt
 
@@ -121,22 +121,20 @@ class VAESoundscapeGenerator(L.LightningModule):
         if self.training:
             if self.with_curriculum:
                 teach_prob = self.teach_prob_current(self.trainer.global_step)
-                z_hats = []
-                dzhat_dts = []
-                # initialize generator with z₀
+                h = torch.zeros(self.num_rnn_layers, bs, ld, device=z.device)
+                c = torch.zeros(self.num_rnn_layers, bs, ld, device=z.device)
                 z_t = z[0].unsqueeze(0)
-                h = torch.zeros(self.num_rnn_layers, bs, ld, device=z_t.device)
-                c = torch.zeros(self.num_rnn_layers, bs, ld, device=z_t.device)
-                # TODO: use zhats to account for cascade errors
+                z_hats = [z_t]
+                dzhat_dts = []
                 for t in range(seq - 1):
-                    # predict Δẑₜ
+                    # predict Δẑₜ using ẑₜ (or zₜ)
                     dzhat_dt, (h, c) = self.sequence_decoder(self.norm(self.embedding(z_t)), (h, c))
-                    # ẑₜ₊₁ = zₜ+ Δẑₜ
-                    z_t = z[t].unsqueeze(0) + dzhat_dt
+                    # update ẑₜ₊₁ = ẑₜ+ Δẑₜ
+                    z_t = z_t + dzhat_dt
                     dzhat_dts.append(dzhat_dt)
                     z_hats.append(z_t)
+                    # optional: ẑₜ₊₁ = zₜ₊₁ (teacher forcing)
                     if np.random.choice([0, 1], p=[1 - teach_prob, teach_prob]):
-                        # ẑₜ₊₁ = zₜ₊₁ (teacher forcing)
                         z_t = z[t + 1].unsqueeze(0)
                 dzhat_dt = torch.cat(dzhat_dts, dim=0)
                 z_hat = torch.cat(z_hats, dim=0)
@@ -145,33 +143,30 @@ class VAESoundscapeGenerator(L.LightningModule):
                 dzhat_dt, (h, c) = self.sequence_decoder(self.norm(self.embedding(z[:-1])))
                 # ẑₜ₊₁ = ẑₜ+ Δẑₜ
                 z_hat = z[:-1] + dzhat_dt
-            z_pred = z_hat[::(self.num_points + 1)]
         else:
-            z_hats = []
-            dzhat_dts = []
             # initialize hidden states up to zₜ
-            t_init = 10
-            _, (h, c) = self.sequence_decoder(self.norm(self.embedding(z[:t_init])))
-            # begin prediction from Tinit
-            z_t = z[t_init].unsqueeze(0)
+            t_init = self.num_init_frames
+            z_init = z[:t_init]
+            dzhat_dts, (h, c) = self.sequence_decoder(self.norm(self.embedding(z_init)))
+            # list of (1, bs, ld)
+            z_hats = list(torch.cat([z_init[0].unsqueeze(0), z_init + dzhat_dts], dim=0).unsqueeze(1).unbind(dim=0))
+            z_t = z_hats[t_init]
+            dzhat_dts = []
             for t in range(t_init, seq - 1):
-                # predict Δzₜ
+                # predict Δẑₜ using ẑₜ
                 dzhat_dt, (h, c) = self.sequence_decoder(self.norm(self.embedding(z_t)), (h, c))
-                # ẑₜ₊₁ = ẑₜ+ Δẑₜ
+                # update ẑₜ₊₁ = ẑₜ+ Δẑₜ
                 z_t = z_t + dzhat_dt
                 dzhat_dts.append(dzhat_dt)
                 z_hats.append(z_t)
+            dz_dt = dz_dt[t_init:]
             dzhat_dt = torch.cat(dzhat_dts, dim=0)
             z_hat = torch.cat(z_hats, dim=0)
-            # only look at loss for predicted frames given initialisation at Tinit
-            dz_dt = dz_dt[t_init:]
-            z_pred = z_hat[int(t_init / dt)::(self.num_points + 1)]
         return dict(
             dzhat_dt=dzhat_dt.transpose(0, 1),
             dz_dt=dz_dt.transpose(0, 1),
             z_hat=z_hat.transpose(0, 1),
             q_z=q_z_bar.transpose(0, 1),
-            z_pred=z_pred.transpose(0, 1),
             z=z.transpose(0, 1),
         )
 
@@ -377,7 +372,7 @@ class VAESoundscapeGeneratorTransformer(L.LightningModule):
     num_attn_heads: int = 8
     mlp_ratio: int = 4
     num_samples: int = 1
-    num_points: int = 10
+    # num_points: int = 10
     gamma: float = 1.0
 
     teach_prob_start: float | None = 1.0
@@ -478,7 +473,6 @@ class VAESoundscapeGeneratorTransformer(L.LightningModule):
         return dict(
             z_hat=z_hat.transpose(0, 1),
             q_z=q_z_bar.transpose(0, 1),
-            z_pred=z_hat[::(self.num_points + 1)].transpose(0, 1)
         )
 
     @staticmethod

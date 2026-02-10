@@ -115,6 +115,7 @@ class TSSIVAE(L.LightningModule):
         return obj
 
     def __post_init__(self):
+        self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.sigma_z_min = self.sigma_z_min or self.sigma_z_max
         self.feature_encoder = init_cnn_feature_encoder(
@@ -613,7 +614,7 @@ class TSSIVAE(L.LightningModule):
         frame_hop_length: float | None = None,
         **kwargs: Any
     ) -> pd.DataFrame:
-        frame_hop_length = frame_hop_length or self.frame_hop_length
+        frame_hop_length = 32 * 5 # frame_hop_length or self.frame_hop_length
         x, *_ = batch
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
         q_z, delta = self.encode(x, hop_length=frame_hop_length)

@@ -25,18 +25,20 @@ def frame_fold(x: Tensor, hop_length: int, window_length: int, padding_mode: Opt
         ch = try_or(lambda: x.size(-3), 1)
         x = x.view(1, ch, x.size(-2), x.size(-1))
     N, C, H, W = x.size()
-    T = int(np.floor(((H - (window_length - 1) - 1) / hop_length) + 1))
-    if padding_mode and (remaining := x.size(-2) % hop_length):
-        # when the window is greater than the hop, pad at the borders
-        pad = window_length - remaining
-        # NB: presupposes that pad is equally divisible by 2
-        x = F.pad(x.transpose(-1, -2), (pad // 2, pad // 2, 0, 0), padding_mode).transpose(-1, -2)
+    # calculate the number of frames
+    T = H / hop_length
+    # if the window is greater than the hop, we need to pad
+    if padding_mode and (diff := window_length - hop_length):
+        # if the difference is uneven, padding is potentially uneven
+        left_pad = diff // 2
+        right_pad = diff // 2 + diff % 2
+        x = F.pad(x.transpose(-1, -2), (left_pad, right_pad, 0, 0), padding_mode).transpose(-1, -2)
     # apply framing in time to compute a sequence of windows
     unfold = nn.Unfold(kernel_size=(window_length, W), stride=(hop_length, 1))
     # unfold to output (N, C * W * window_lenth, T)
     x_framed = unfold(x)
     # reshape to (N, T, C, window, W)
-    x_framed = x_framed.transpose(-1, -2).reshape(N, T, C, window_length, W)
+    x_framed = x_framed.transpose(-1, -2).reshape(N, int(T), C, window_length, W)
     return x_framed
 
 def unframe_fold(x: Tensor, hop_length: int, num_timesteps: Optional[int]) -> Tensor:

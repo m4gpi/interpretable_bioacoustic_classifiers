@@ -78,7 +78,7 @@ class VAEEmbeddings(torch.utils.data.Dataset):
 
 @attrs.define(kw_only=True)
 class VAEEmbeddingsDataModule(L.LightningDataModule):
-    root: str | pathlib.Path = attrs.field(converter=pathlib.Path)
+    data_path: str | pathlib.Path = attrs.field(converter=pathlib.Path)
     transforms: Callable | None = None
 
     train_batch_size: int | None = attrs.field(default=None)
@@ -114,7 +114,7 @@ class VAEEmbeddingsDataModule(L.LightningDataModule):
         return torch.Generator().manual_seed(self.seed)
 
     def setup(self, stage: str | None = None) -> None:
-        self.features = pd.read_parquet(self.root / "features.parquet").reset_index()
+        self.features = pd.read_parquet(self.data_path).reset_index()
         self.data = VAEEmbeddings(features=self.features)
         self.train_data = VAEEmbeddings(features=self.features[self.features["dataloader_idx"] == 0])
         self.val_data = VAEEmbeddings(features=self.features[self.features["dataloader_idx"] == 1])
