@@ -96,11 +96,11 @@ class VAESequenceDecoder(L.Callback):
         delta = batch.y[:self.num_per_batch]
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         z = Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
-        z, delta = z[:, frame_start::frame_step].contiguous(), delta[:, frame_start::frame_step].contiguous()
+        z, delta = z[:, ::frame_step].contiguous(), delta[:, ::frame_step].contiguous()
         xs = self.model.decode(z, delta).cpu().squeeze(1)
         # decode AR generated
         z_hat = pl_module(q_z)["z_hat"]
-        z_hat = z_hat[:, frame_start::frame_step]
+        z_hat = z_hat[:, ::frame_step]
         z_hat = torch.cat([z[:, :z_hat.size(1), :64], z_hat], dim=-1).contiguous()
         x_hats = self.model.decode(z_hat, delta).cpu().squeeze(1)
         # plot alongside each-other
@@ -113,7 +113,7 @@ class VAESequenceDecoder(L.Callback):
             vmin, vmax = min(x.min(), x_hat.min()), max(x.max(), x_hat.max())
             plot_mel_spectrogram(x.t(), vmin=vmin, vmax=vmax, ax=ax1, **self.model.spectrogram_params)
             mesh = plot_mel_spectrogram(x_hat.t(), vmin=vmin, vmax=vmax, ax=ax2, **self.model.spectrogram_params)
-            ax2.axvline(x=frame_start * frame_window_length, color="white")
+            ax2.axvline(x=frame_start / frame_step * frame_window_length, color="white")
             fig.colorbar(mesh, cax=cax, orientation="vertical")
         pl_module.logger.experiment.log({f"val/reconstruction": wandb.Image(fig)})
         plt.close()
