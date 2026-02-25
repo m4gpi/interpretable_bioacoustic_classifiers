@@ -32,7 +32,6 @@ transforms:
 
 model:
   sigma_z_max: 0.2
-  sigma_z_mode: FIXED
   smooth_prop: 0.5
   delta_sigma_step_start: 0
   delta_sigma_step_end: 20_000

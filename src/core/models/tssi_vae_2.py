@@ -70,7 +70,6 @@ class TSSIVAE(L.LightningModule):
     sigma_z_min: float | None = None
     sigma_z_step_start: int | None = 0
     sigma_z_step_end: int | None = 1
-    sigma_z_mode: str = "FIXED"
     learning_rate: float = 4e-5
     optimiser_cls: str = "torch.optim.AdamW"
     optimiser_config: DictConfig | None = None
@@ -92,8 +91,6 @@ class TSSIVAE(L.LightningModule):
         plt.switch_backend('agg')
         log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.fit(self, train_dataloaders=data_module.train_dataloader(), val_dataloaders=data_module.val_dataloader())
-        log.info(f"Beginning testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.test(self, dataloaders=data_module.test_dataloader())
 
     def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any]):
         log.info(f"Encoding <{config.data.get('_target_')}> with <{config.model.get('_target_')}>")
@@ -284,12 +281,7 @@ class TSSIVAE(L.LightningModule):
             (mu_z[:, :t] * self.gaussian_kernel(t, h)).sum(dim=1, keepdims=True)
             for t in range(1, mu_z.size(1) + 1)
         ], dim=1)
-        log_sigma_sq_z_smooth = log_sigma_sq_z
-        # log_sigma_sq_z_smooth = torch.cat([
-        #     (log_sigma_sq_z[:, :t].exp() * self.gaussian_kernel(t, h, log_sigma_sq_z.device).pow(2)).sum(dim=1, keepdims=True)
-        #     for t in range(1, log_sigma_sq_z.size(1) + 1)
-        # ], dim=1)
-        q_z = torch.cat([mu_z_smooth, log_sigma_sq_z_smooth], dim=-1)
+        q_z = torch.cat([mu_z_smooth, log_sigma_sq_z], dim=-1)
         q_z_i, q_z_j = q_z.chunk(2, dim=0)
         mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
         mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
@@ -375,10 +367,6 @@ class TSSIVAE(L.LightningModule):
             if i == len(self.feature_decoder) - 2:
                 U = translation(U, delta.view(delta.size(0) * delta.size(1), 1, 1, 1), padding_mode="circular")
                 U = U.unflatten(0, (delta.size(0), delta.size(1))).transpose(1, 2).flatten(start_dim=2, end_dim=3)
-            # if i == len(self.feature_decoder) - 1:
-                # U = U.view(delta.size(0), delta.size(1), *U.size()[1:]).transpose(1, 2).reshape(delta.size(0), U.size(1), num_timesteps, U.size(3))
-                # num_timesteps = (self.frame_window_length * delta.size(1)) // 2**(len(self.feature_decoder) - i)
-                # U = unframe(U.view(delta.size(0), delta.size(1), *U.size()[1:]), hop_length=U.size(-2), num_timesteps=num_timesteps)
             U = block(U)
         return U
 
@@ -523,23 +511,6 @@ class TSSIVAE(L.LightningModule):
                 mesh = plot_mel_spectrogram(recons[i].T, **self.spectrogram_params, vmin=recons.min(), vmax=recons.max(), ax=axes[i, 1])
             self.logger.experiment.log({ f"val/spectrogram_i": wandb.Image(fig) })
             plt.close(fig)
-            # plot shifted reconstructions
-            specs = step_outputs["x_j"].squeeze()
-            specs = specs.view(x.size(0), -1, *specs.size()[1:]).cpu().numpy()[:, :5]
-            recons = step_outputs["x_hat_j"].squeeze()
-            recons = recons.view(x.size(0), -1, *recons.size()[1:]).cpu().numpy()[:, :5]
-            nrows, ncols = specs.shape[0], specs.shape[1]
-            fig, axes = plt.subplots(nrows=nrows, ncols=ncols * 2, figsize=(15, nrows * 2), sharey=True, sharex=True)
-            for i in range(nrows):
-                for j in range(ncols):
-                    ax1, ax2 = axes[i, j], axes[i, j + ncols]
-                    plot_mel_spectrogram(specs[i, j].T, **self.spectrogram_params, vmin=specs.min(), vmax=specs.max(), ax=ax1)
-                    plot_mel_spectrogram(recons[i, j].T, **self.spectrogram_params, vmin=recons.min(), vmax=recons.max(), ax=ax2)
-                    for ax in [ax1, ax2]:
-                        ax.tick_params(axis="both", bottom=False, left=False, labelbottom=False, labelleft=False)
-                        ax.set_ylabel("")
-            self.logger.experiment.log({ f"val/spectrogram_j": wandb.Image(fig) })
-            plt.close(fig)
             # plot histograms of latent distribution
             mu, _ = step_outputs["q_z_i"].chunk(2, dim=-1)
             fig, (*axes, cax) = plt.subplots(nrows=1, ncols=hist.size(0) + 1, width_ratios=[*[(1 - 0.01) / batch_size for _ in range(batch_size)], 0.01])
@@ -550,7 +521,6 @@ class TSSIVAE(L.LightningModule):
             cbar = plt.colorbar(im, cax=cax, orientation="vertical")
             self.logger.experiment.log({ f"val/z_hist": wandb.Image(fig) })
             plt.close(fig)
-
         self.validation_step_outputs.clear()
 
     @torch.no_grad()
@@ -580,22 +550,6 @@ class TSSIVAE(L.LightningModule):
                 mesh = plot_mel_spectrogram(specs[i].T, **self.spectrogram_params, vmin=specs.min(), vmax=specs.max(), ax=axes[i, 0])
                 mesh = plot_mel_spectrogram(recons[i].T, **self.spectrogram_params, vmin=recons.min(), vmax=recons.max(), ax=axes[i, 1])
             self.logger.experiment.log({ f"test/spectrogram_i": wandb.Image(fig) })
-            plt.close(fig)
-            specs = step_outputs["x_j"].squeeze()
-            specs = specs.view(x.size(0), -1, *specs.size()[1:]).cpu().numpy()[:, :5]
-            recons = step_outputs["x_hat_j"].squeeze()
-            recons = recons.view(x.size(0), -1, *recons.size()[1:]).cpu().numpy()[:, :5]
-            nrows, ncols = specs.shape[0], specs.shape[1]
-            fig, axes = plt.subplots(nrows=nrows, ncols=ncols * 2, figsize=(15, nrows * 2), sharey=True, sharex=True)
-            for i in range(nrows):
-                for j in range(ncols):
-                    ax1, ax2 = axes[i, j], axes[i, j + ncols]
-                    plot_mel_spectrogram(specs[i, j].T, **self.spectrogram_params, vmin=specs.min(), vmax=specs.max(), ax=ax1)
-                    plot_mel_spectrogram(recons[i, j].T, **self.spectrogram_params, vmin=recons.min(), vmax=recons.max(), ax=ax2)
-                    for ax in [ax1, ax2]:
-                        ax.tick_params(axis="both", bottom=False, left=False, labelbottom=False, labelleft=False)
-                        ax.set_ylabel("")
-            self.logger.experiment.log({ f"test/spectrogram_j": wandb.Image(fig) })
             plt.close(fig)
         self.test_step_outputs.clear()
 

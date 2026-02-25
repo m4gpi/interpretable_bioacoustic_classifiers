@@ -37,8 +37,6 @@ from src.core.utils import soft_clip, linear_decay, bounded_sigmoid, nth_percent
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-plt.switch_backend('agg')
-
 __all__ = ["SIVAE"]
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
@@ -71,7 +69,6 @@ class SIVAE(L.LightningModule):
     sigma_z_min: float | None = None
     sigma_z_step_start: int | None = 0
     sigma_z_step_end: int | None = 1
-    sigma_z_mode: str = "FIXED"
     learning_rate: float = 4e-5
     optimiser_cls: str = "torch.optim.AdamW"
     optimiser_config: DictConfig | None = None
@@ -80,22 +77,17 @@ class SIVAE(L.LightningModule):
     scheduler_interval: str = "step"
     scheduler_frequency: int = 1
 
-    p_dt_step_start: int | None = None
-    p_dt_step_end: int | None = None
-    p_dt_sigma_min: float | None = None
-    p_dt_sigma_max: float = 2.0
-    p_dt_step_slope: float = 1.0
-
-    smooth_prop: float | None = None
-    smooth_alpha_min: float | None = None
-    smooth_alpha_max: float | None = None
-    non_smooth_alpha: float | None = None
+    cross_decode: str = "soft"
+    delta_sigma_step_start: int | None = None
+    delta_sigma_step_end: int | None = None
+    delta_sigma_min: float | None = None
+    delta_sigma_max: float = 2.0
+    delta_sigma_step_slope: float = 1.0
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+        plt.switch_backend('agg')
         log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.fit(self, train_dataloaders=data_module.train_dataloader(), val_dataloaders=data_module.val_dataloader())
-        log.info(f"Beginning testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.test(self, dataloaders=data_module.test_dataloader())
 
     def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any]):
         log.info(f"Encoding <{config.data.get('_target_')}> with <{config.model.get('_target_')}>")
@@ -113,6 +105,7 @@ class SIVAE(L.LightningModule):
         return obj
 
     def __post_init__(self):
+        self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.sigma_z_min = self.sigma_z_min or self.sigma_z_max
         self.feature_encoder = init_cnn_feature_encoder(
@@ -175,10 +168,6 @@ class SIVAE(L.LightningModule):
         return len(self.cnn_block_sizes)
 
     @property
-    def latent_splits(self) -> Tuple[Tensor, ...]:
-        return torch.arange(self.latent_dim),
-
-    @property
     def latent_frequency_dim(self) -> int:
         return self.num_mel_bins // 2**(self.cnn_layers - 1)
 
@@ -220,80 +209,70 @@ class SIVAE(L.LightningModule):
         )
 
     @property
-    def latent_splits(self) -> Tuple[Tensor, Tensor]:
-        return self.smooth_idx, self.non_smooth_idx
-
-    @property
-    def num_non_smooth(self):
-        return self.latent_dim - self.num_smooth
-
-    @property
-    def num_smooth(self):
-        return int(self.latent_dim * (self.smooth_prop or 0))
-
-    @property
-    def non_smooth_idx(self):
-        return torch.arange(0, self.num_non_smooth)
-
-    @property
-    def smooth_idx(self):
-        return torch.arange(self.num_non_smooth, self.num_non_smooth + self.num_smooth)
-
-    @property
-    def alpha(self) -> Tensor:
-        return torch.cat([
-            torch.ones(len(self.non_smooth_idx)) * self.non_smooth_alpha,
-            torch.linspace(self.smooth_alpha_min, self.smooth_alpha_max, len(self.smooth_idx))
-        ])[torch.cat([self.non_smooth_idx, self.smooth_idx])].to(list(self.parameters())[0].device)
-
-    @property
-    def p_dt_sigma_params(self):
+    def delta_sigma_params(self):
         return dict(
-            x_min=self.p_dt_step_start,
-            x_max=self.p_dt_step_end,
-            y_min=self.p_dt_sigma_min,
-            y_max=self.p_dt_sigma_max,
-            k=self.p_dt_step_slope or 1.0,
+            x_min=self.delta_sigma_step_start,
+            x_max=self.delta_sigma_step_end,
+            y_min=self.delta_sigma_min,
+            y_max=self.delta_sigma_max,
+            k=self.delta_sigma_step_slope or 1.0,
         )
 
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
         # ensure x_i is a full sequence that can be divided into equal length frames
         x_i = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
         # encode posterior for full sequence
-        q_z_i, dt_i = self.encode(x_i) # (bs, seq, ld)
-        mu_x_i, log_sigma_sq_x_i = q_z_i.chunk(2, dim=-1)
+        q_z_i, delta_i = self.encode(x_i) # (bs, seq, ld)
         # x_j is x_i chunked into independently translated frames
-        x_i_framed = frame(x_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
+        x_i_framed = x_i.view(x.size(0), -1, 1, self.frame_window_length, x.size(-1)).flatten(end_dim=1)
+        # draw a sample from the prior over translations
         epsilon = torch.randn(x_i_framed.size(0), 1, 1, 1).to(x_i.device)
-        sigma_dt = self.p_dt_sigma_current(self.trainer.global_step)
-        dt = epsilon * sigma_dt
-        x_j = translation(x_i_framed, dt, padding_mode="circular")
+        sigma_delta = self.delta_sigma_current(self.trainer.global_step)
+        delta = epsilon * sigma_delta
+        x_j = translation(x_i_framed, delta, padding_mode="circular")
         # encode posterior for translated frames separately
-        q_z_j, dt_j = self.encode(x_j) # (bs * seq, 1, ld)
-        mu_x_j, log_sigma_sq_x_j = q_z_j.chunk(2, dim=-1)
-        # soft cross-decoding averages the distributions
-        # mu_k = (mu_i + mu_j) / 2, sigma^2_k = (sigma^2_i + sigma^2_j) / 2^2
-        mu_x = torch.stack([mu_x_i.flatten(end_dim=1), mu_x_j.flatten(end_dim=1)], dim=1).mean(dim=1)
-        log_sigma_sq_x = (torch.stack([log_sigma_sq_x_i.flatten(end_dim=1).exp(), log_sigma_sq_x_j.flatten(end_dim=1).exp()], dim=1).sum(dim=1) / 4).log()
-        z = Normal(mu_x, (0.5 * log_sigma_sq_x).exp()).rsample()  # (bs, seq, ld)
-        # stack q_z back together
-        q_z = torch.cat([mu_x, log_sigma_sq_x], dim=-1).view(q_z_i.size())
-        # decode to feature maps
-        U_hat = self.mlp_decode(z) # (bs * seq, ch, fr, fq)
-        # reconstruct a contiguous sequence
-        x_hat_i = self.cnn_decode(U_hat, dt_i) # (bs, 1, fr * seq, fq)
-        # and reconstruct independent translations
-        x_hat_j = self.cnn_decode(U_hat, dt_j) # (bs * seq, 1, fr, fq)
+        q_z_j, delta_j = self.encode(x_j) # (bs * seq, 1, ld)
+        q_z_j = q_z_j.view(q_z_i.size())
+        # stack together distributions
+        q_z = torch.cat([q_z_i, q_z_j], dim=0)
+        q_z_i, q_z_j = q_z.chunk(2, dim=0)
+        mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
+        mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
+        # cross-decode translated representations
+        if self.cross_decode == "soft":
+            # soft cross-decoding is a weighted sum of gaussians distributions
+            # μ₃ = 1/2μ₁ + 1/2μ₂, σ₃² = 1/2²σ₁² + 1/2²σ₂²
+            mu_z = 1/2 * mu_z_i + 1/2 * mu_z_j
+            log_sigma_sq_z = (1/4 * log_sigma_sq_z_i.exp() + 1/4 * log_sigma_sq_z_j.exp()).log()
+            # reparametrise
+            z = Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample() # (bs, seq, ld)
+            # decode to feature maps
+            U_hat = self.mlp_decode(z.flatten(end_dim=1)) # (bs * seq, ch, fr, fq)
+            # reconstruct a contiguous sequence
+            x_hat_i = self.cnn_decode(U_hat, delta_i) # (bs, 1, fr * seq, fq)
+            # and reconstruct independent translations
+            x_hat_j = self.cnn_decode(U_hat, delta_j) # (bs * seq, 1, fr, fq)
+        elif self.cross_decode == "hard":
+            # reparametrise
+            z_i = Normal(mu_z_i, (0.5 * log_sigma_sq_z_i).exp()).rsample() # (bs, seq, ld)
+            z_j = Normal(mu_z_j, (0.5 * log_sigma_sq_z_j).exp()).rsample() # (bs, seq, ld)
+            # decode to feature maps
+            U_hat_i = self.mlp_decode(z_i.flatten(end_dim=1)) # (bs * seq, ch, fr, fq)
+            U_hat_j = self.mlp_decode(z_j.flatten(end_dim=1)) # (bs * seq, ch, fr, fq)
+            # hard decoding swaps the distributions
+            # reconstruct a contiguous sequence for shifts i using features j
+            x_hat_i = self.cnn_decode(U_hat_j, delta_i) # (bs, 1, fr * seq, fq)
+            # reconstruct independent translations for shifts j using features i
+            x_hat_j = self.cnn_decode(U_hat_i, delta_j) # (bs * seq, 1, fr, fq)
         # frame for frame-wise loss
-        x_hat_i_framed = frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
+        x_hat_i_framed = x_hat_i.view(x_hat_i.size(0), -1, 1, self.frame_window_length, x_hat_i.size(-1)).flatten(end_dim=1)
         return dict(
             x_i=x_i, x_j=x_j,
             x_i_framed=x_i_framed,
             x_hat_i=x_hat_i, x_hat_j=x_hat_j,
             x_hat_i_framed=x_hat_i_framed,
-            q_z=q_z,
-            q_z_i=q_z_i, q_z_j=q_z_j,
-            dt_i=dt_i, dt_j=dt_j
+            q_z=q_z, q_z_i=q_z_i, q_z_j=q_z_j,
+            delta_i=delta_i, delta_j=delta_j
         )
 
     def encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
@@ -310,40 +289,45 @@ class SIVAE(L.LightningModule):
         frame_params = self.latent_frame_params
         if hop_length is not None:
             frame_params.update(dict(hop_length=hop_length // 2**(self.cnn_layers)))
-        x = frame(x, **frame_params) if x.size(-2) > self.latent_window_length else x.unsqueeze(1)
+        if x.size(-2) > self.latent_window_length:
+            # encode overlapping features when a different valid hop is specified
+            if hop_length != self.latent_window_length:
+                x = frame(x, **frame_params) if x.size(-2) > self.latent_window_length else x.unsqueeze(1)
+            else:
+                x = x.view(x.size(0), x.size(1), x.size(2) // self.latent_window_length, self.latent_window_length, x.size(3)).transpose(1, 2)
+        else:
+            x = x.unsqueeze(1)
         return x
 
     def mlp_encode(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
-        mu_x, log_sigma_sq_x = q_z.chunk(2, dim=-1)
-        log_sigma_sq_x = soft_clip(log_sigma_sq_x, minimum=np.log(self.sigma_x_min ** 2))
-        q_z = torch.cat([mu_x, log_sigma_sq_x], dim=-1)
-        dt = self.offset_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
-        return q_z, dt
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=np.log(self.sigma_x_min ** 2))
+        q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
+        delta = self.offset_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
+        return q_z, delta
 
-    def decode(self, z: Tensor, dt: Tensor | None = None) -> Tensor:
-        U = self.content_decoder(z.flatten(end_dim=1))
-        for i, block in enumerate(self.feature_decoder):
-            if dt is not None and i == len(self.feature_decoder) - 2:
-                U = translation(U, dt.view(dt.size(0) * dt.size(1), 1, 1, 1), padding_mode="circular")
-            if i == len(self.feature_decoder) - 1:
-                num_timesteps = (self.frame_window_length * z.size(1)) // 2**(len(self.feature_decoder) - i)
-                U = unframe(U.view(z.size(0), z.size(1), *U.size()[1:]), hop_length=U.size(-2), num_timesteps=num_timesteps)
-            U = block(U)
-        return U
+    def decode(self, z: Tensor, delta: Tensor | None = None) -> Tensor:
+        x = self.mlp_decode(z.flatten(end_dim=1))
+        x = self.cnn_decode(x, delta)
+        return x
 
     def mlp_decode(self, z: Tensor) -> Tensor:
         return self.content_decoder(z)
 
-    def cnn_decode(self, U: Tensor, dt: Tensor) -> Tensor:
+    def cnn_decode(self, U: Tensor, delta: Tensor) -> Tensor:
         for i, block in enumerate(self.feature_decoder):
             if i == len(self.feature_decoder) - 2:
-                U = translation(U, dt.view(dt.size(0) * dt.size(1), 1, 1, 1), padding_mode="circular")
-            if i == len(self.feature_decoder) - 1:
-                num_timesteps = (self.frame_window_length * dt.size(1)) // 2**(len(self.feature_decoder) - i)
-                U = unframe(U.view(dt.size(0), dt.size(1), *U.size()[1:]), hop_length=U.size(-2), num_timesteps=num_timesteps)
+                U = translation(U, delta.view(delta.size(0) * delta.size(1), 1, 1, 1), padding_mode="circular")
+                U = U.unflatten(0, (delta.size(0), delta.size(1))).transpose(1, 2).flatten(start_dim=2, end_dim=3)
             U = block(U)
         return U
+
+    @staticmethod
+    def bounded_sigmoid(x: float, x_min: float, x_max: float, y_min: float, y_max: float, k: float):
+        s = np.floor(np.log10(np.abs(x_max)))
+        z = k / 10**(s - 1)
+        return y_min + (y_max - y_min) / (1 + np.exp(-z * (x - ((x_min + x_max) / 2))))
 
     def loss(
         self,
@@ -353,11 +337,9 @@ class SIVAE(L.LightningModule):
         x_hat_i: Tensor,
         x_hat_j: Tensor,
         x_hat_i_framed: Tensor,
-        q_z_i: Tensor,
-        q_z_j: Tensor,
-        dt_i: Tensor,
-        dt_j: Tensor,
         q_z: Tensor,
+        delta_i: Tensor,
+        delta_j: Tensor,
         **kwargs: Any,
     ) -> Dict[str, Tensor]:
         outputs = dict()
@@ -365,45 +347,31 @@ class SIVAE(L.LightningModule):
         # maximise likelihood p(x_i|z_j) framewise to ensure invariance to sequence length
         x = torch.cat([x_i_framed, x_j], dim=0)
         x_hat = torch.cat([x_hat_i_framed, x_hat_j], dim=0)
-        log_sigma_sq_z = torch.tensor(self.sigma_z_max).pow(2).log()
-        nll = negative_log_likelihood(x, x_hat, log_sigma_sq_z).flatten(start_dim=-3).sum(dim=-1)
-        losses.append(nll.mean())
-        mae_frame = (x_hat - x).flatten(start_dim=-3).abs().sum(dim=-1)
-        outputs |= dict(log_likelihood_x=-nll.detach().mean(), sigma_z=(0.5 * log_sigma_sq_z).exp().detach(), mae_frame=mae_frame.detach().mean())
-        # MAP estimate of the alignment factor p(x|dt)p(dt)
-        dt = torch.cat([dt_i.flatten(end_dim=1).unsqueeze(1), dt_j], dim=0)
-        mu_dt_wrt_x = torch.zeros(1).to(dt.device)
-        log_sigma_sq_dt_wrt_x= self.p_dt_sigma_current(self.trainer.global_step).pow(2).log()
-        intra_frame_nll = negative_log_likelihood(dt, mu_dt_wrt_x, log_sigma_sq_dt_wrt_x)
-        losses.append(intra_frame_nll.mean())
-        outputs |= dict(log_likelihood_dt=-intra_frame_nll.detach().mean())
-        # when applying the smoothness loss
-        if self.smooth_prop is not None:
-            # anchor q_z using an autoregressive prior, a mixture of gaussians between previous timestep and standard normal
-            prior_dkl = torch.cat([
-                gaussian_kl_divergence(q_z[:, t, :], p_z_t).unsqueeze(1)
-                for t, p_z_t in autoregressive_prior(q_z[:, :, :], self.alpha)
-            ], dim=1)
-            smooth_dkl = prior_dkl[:, :, self.smooth_idx].sum(dim=-1)
-            non_smooth_dkl = prior_dkl[:, :, self.non_smooth_idx].sum(dim=-1)
-            prior_dkl = prior_dkl.sum(dim=-1)
-            losses.append(prior_dkl.mean())
-            outputs |= dict(
-                prior_dkl=prior_dkl.detach().mean(),
-                smooth_dkl=smooth_dkl.detach().mean(),
-                non_smooth_dkl=non_smooth_dkl.detach().mean(),
-            )
-        else:
-            prior_dkl = gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
-            losses.append(prior_dkl.mean())
-            outputs |= dict(prior_dkl=prior_dkl.detach().mean())
+        log_sigma_sq_x = torch.tensor(self.sigma_z_max).pow(2).log()
+        # sum over pixels, mean over translations, sequence and batch
+        nll = negative_log_likelihood(x, x_hat, log_sigma_sq_x).flatten(start_dim=-3).sum(dim=-1).mean()
+        losses.append(nll)
+        mae_frame = (x_hat.detach() - x.detach()).flatten(start_dim=-3).abs().sum(dim=-1).mean()
+        sigma_x = (0.5 * log_sigma_sq_x).exp().detach()
+        outputs |= dict(log_likelihood_x=-nll, sigma_x=sigma_x, mae_frame=mae_frame)
+        # MAP estimate of the alignment factor p(x|δ)p(δ)
+        delta = torch.cat([delta_i, delta_j.view(delta_i.size())], dim=0)
+        mu_delta = torch.zeros(1).to(delta.device)
+        sigma_delta = self.delta_sigma_current(self.trainer.global_step)
+        shift_nll = negative_log_likelihood(delta, mu_delta, sigma_delta.pow(2).log()).mean()
+        losses.append(shift_nll)
+        outputs |= dict(log_likelihood_delta=-shift_nll, sigma_delta=sigma_delta)
+        # standard KL
+        dkl = gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1).mean()
+        losses.append(dkl)
+        outputs |= dict(dkl=dkl)
         # sum the loss components
         outputs |= dict(loss=sum(losses))
         return outputs
 
-    def p_dt_sigma_current(self, t: int) -> Tensor:
-        if self.p_dt_sigma_min is None: return self.p_dt_sigma_max
-        return torch.tensor(bounded_sigmoid(t, **self.p_dt_sigma_params))
+    def delta_sigma_current(self, t: int) -> Tensor:
+        if self.delta_sigma_min is None: return self.delta_sigma_max
+        return torch.tensor(self.bounded_sigmoid(t, **self.delta_sigma_params))
 
     def metrics(
         self,
@@ -413,33 +381,29 @@ class SIVAE(L.LightningModule):
         x_hat_i: Tensor,
         x_hat_j: Tensor,
         x_hat_i_framed: Tensor,
+        q_z: Tensor,
         q_z_i: Tensor,
         q_z_j: Tensor,
-        dt_i: Tensor,
-        dt_j: Tensor,
-        q_z: Tensor,
+        delta_i: Tensor,
+        delta_j: Tensor,
         **kwargs: Any
     ) -> Dict[str, Any]:
-        x = torch.cat([x_i_framed, x_j], dim=0)
-        x_hat = torch.cat([x_hat_i_framed, x_hat_j], dim=0)
-        mae_frame = (x_hat - x).abs().flatten(start_dim=-3).mean(dim=-1).cpu()
-        mu_x, log_sigma_sq_x = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z.chunk(2, dim=-1))
-        sigma_x = np.exp(0.5 * log_sigma_sq_x)
-        mu_x_i, log_sigma_sq_x_i = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z_i.chunk(2, dim=-1))
-        sigma_x_i = np.exp(0.5 * log_sigma_sq_x_i)
-        mu_x_j, log_sigma_sq_x_j = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z_j.chunk(2, dim=-1))
-        sigma_x_j = np.exp(0.5 * log_sigma_sq_x_j)
-        dt = torch.cat([dt_i.flatten(end_dim=1).unsqueeze(1), dt_j])
+        mu_z, log_sigma_sq_z = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z.chunk(2, dim=-1))
+        sigma_z = np.exp(0.5 * log_sigma_sq_z)
+        mu_z_i, log_sigma_sq_z_i = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z_i.chunk(2, dim=-1))
+        sigma_x_i = np.exp(0.5 * log_sigma_sq_z_i)
+        mu_z_j, log_sigma_sq_z_j = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z_j.chunk(2, dim=-1))
+        sigma_x_j = np.exp(0.5 * log_sigma_sq_z_j)
+        delta = torch.cat([delta_i.flatten(end_dim=1).unsqueeze(1), delta_j])
         return dict(
-            p_sigma_dt=self.p_dt_sigma_current(self.trainer.global_step),
-            mae_frame=wandb.Histogram(np_histogram=np.histogram(mae_frame, range=[0, 5])),
-            mu_x=wandb.Histogram(np_histogram=np.histogram(mu_x, range=[-5.0, 5.0])),
-            sigma_x=wandb.Histogram(np_histogram=np.histogram(sigma_x, range=[-5.0, 5.0])),
-            mu_x_i=wandb.Histogram(np_histogram=np.histogram(mu_x_i, range=[-5.0, 5.0])),
+            sigma_delta=self.delta_sigma_current(self.trainer.global_step),
+            mu_z=wandb.Histogram(np_histogram=np.histogram(mu_z, range=[-5.0, 5.0])),
+            sigma_x=wandb.Histogram(np_histogram=np.histogram(sigma_z, range=[-5.0, 5.0])),
+            mu_z_i=wandb.Histogram(np_histogram=np.histogram(mu_z_i, range=[-5.0, 5.0])),
             sigma_x_i=wandb.Histogram(np_histogram=np.histogram(sigma_x_i, range=[0.0, 2.0])),
-            mu_x_j=wandb.Histogram(np_histogram=np.histogram(mu_x_j, range=[-5.0, 5.0])),
+            mu_z_j=wandb.Histogram(np_histogram=np.histogram(mu_z_j, range=[-5.0, 5.0])),
             sigma_x_j=wandb.Histogram(np_histogram=np.histogram(sigma_x_j, range=[0.0, 2.0])),
-            dt=wandb.Histogram(np_histogram=np.histogram(dt.flatten(end_dim=-2).cpu().numpy(), bins=64, range=[-5.0, 5.0])),
+            delta=wandb.Histogram(np_histogram=np.histogram(delta.flatten(end_dim=-2).cpu().numpy(), bins=64, range=[-5.0, 5.0])),
         )
 
     def training_step(
