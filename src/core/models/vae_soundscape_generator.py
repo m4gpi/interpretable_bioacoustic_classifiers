@@ -20,13 +20,73 @@ log = logging.getLogger(__name__)
 
 __all__ = ["VAESoundscapeGenerator"]
 
+# def timestep_interpolation(self, q_z: torch.Tensor, k: int):
+#     ts = torch.arange(q_z.size(0) - 1, device=q_z.device)
+#     ks = torch.linspace(0.0, 1.0 - 1 / (k + 1), k + 1, device=q_z.device)
+#     # interpolate K points between each time-step by a weighted sum of gaussians
+#     # encourage small steps in the latent space during training, during inference we throw these points away
+#     mu, log_sigma_sq = q_z.chunk(2, dim=-1)
+#     sigma_sq = log_sigma_sq.exp()
+#     # weighted average of gaussians
+#     mu_bar = torch.stack([
+#         torch.stack([slerp(mu[t], mu[t + 1], k) for k in ks], dim=0)
+#         for t in ts
+#     ], dim=0) # (ts - 1, k, bs, ld)
+#     # variance of weighted average of gaussians
+#     # (1 - k)σ₁² + kσ₂² + k(1 - k)(μ₁ - μ₂)²
+#     sigma_sq_bar = torch.stack([
+#         torch.stack([(1 - k) * sigma_sq[t] + k * sigma_sq[t + 1] + (k * (1 - k) * (mu[t] - mu[t + 1]).pow(2)) for k in ks], dim=0)
+#         for t in ts
+#     ], dim=0) # (ts - 1, k, bs, ld)
+#     mu_bar = torch.cat([mu_bar.flatten(start_dim=0, end_dim=1), mu[-1:]], dim=0)
+#     sigma_sq_bar = torch.cat([sigma_sq_bar.flatten(start_dim=0, end_dim=1), sigma_sq[-1:]], dim=0)
+#     q_z_bar = torch.cat([mu_bar, sigma_sq_bar.log()], dim=-1)
+#     assert q_z_bar.size(0) == q_z.size(0) + (q_z.size(0) - 1) * k
+#     return q_z_bar
+
+# def slerp(v0: torch.Tensor, v1: torch.Tensor, t: float | torch.Tensor, DOT_THRESHOLD: float = 0.9995):
+#     assert v0.shape == v1.shape, "shapes of v0 and v1 must match"
+#     # Normalize the vectors to get the directions and angles
+#     v0_norm = torch.linalg.norm(v0, dim=-1)
+#     v1_norm = torch.linalg.norm(v1, dim=-1)
+#     v0_normed = v0 / v0_norm.unsqueeze(-1)
+#     v1_normed = v1 / v1_norm.unsqueeze(-1)
+#     # Dot product with the normalized vectors
+#     dot = (v0_normed * v1_normed).sum(-1)
+#     dot_mag = dot.abs()
+#     # if dp is NaN, it's because the v0 or v1 row was filled with 0s
+#     # If absolute value of dot product is almost 1, vectors are ~colinear, so use lerp
+#     gotta_lerp = dot_mag.isnan() | (dot_mag > DOT_THRESHOLD)
+#     can_slerp = ~gotta_lerp
+#     t_batch_dim_count: int = max(0, t.dim()-v0.dim()) if isinstance(t, torch.Tensor) else 0
+#     t_batch_dims: torch.Size = t.shape[:t_batch_dim_count] if isinstance(t, torch.Tensor) else torch.Size([])
+#     out = torch.zeros_like(v0.expand(*t_batch_dims, *[-1]*v0.dim()))
+#     # if no elements are lerpable, our vectors become 0-dimensional, preventing broadcasting
+#     if gotta_lerp.any():
+#         lerped = torch.lerp(v0, v1, t)
+#         out = lerped.where(gotta_lerp.unsqueeze(-1), out)
+#     # if no elements are slerpable, our vectors become 0-dimensional, preventing broadcasting
+#     if can_slerp.any():
+#         # Calculate initial angle between v0 and v1
+#         theta_0 = dot.arccos().unsqueeze(-1)
+#         sin_theta_0 = theta_0.sin()
+#         # Angle at timestep t
+#         theta_t = theta_0 * t
+#         sin_theta_t = theta_t.sin()
+#         # Finish the slerp algorithm
+#         s0 = (theta_0 - theta_t).sin() / sin_theta_0
+#         s1 = sin_theta_t / sin_theta_0
+#         slerped = s0 * v0 + s1 * v1
+#         out = slerped.where(can_slerp.unsqueeze(-1), out)
+#     return out
+
 @dataclass(unsafe_hash=True, kw_only=True)
 class VAESoundscapeGenerator(L.LightningModule):
     num_features: int = 128
     num_samples: int = 1
     num_rnn_layers: int = 3
     num_init_frames: int = 10
-    gamma: float = 1.0
+    sigma_dzdt: float = 0.2
 
     teach_prob_start: float | None = 1.0
     teach_prob_end: float = 0.1
@@ -79,41 +139,16 @@ class VAESoundscapeGenerator(L.LightningModule):
         )
         self._reset_cache()
 
-    # def pre_process(self, q_z: torch.Tensor):
-    #     k = self.num_points
-    #     ts = torch.arange(q_z.size(0) - 1, device=q_z.device)
-    #     ks = torch.linspace(0.0, 1.0 - 1 / (k + 1), k + 1, device=q_z.device)
-    #     # interpolate K points between each time-step by a weighted sum of gaussians
-    #     # encourage small steps in the latent space during training, during inference we throw these points away
-    #     mu, log_sigma_sq = q_z.chunk(2, dim=-1)
-    #     sigma_sq = log_sigma_sq.exp()
-    #     # weighted average of gaussians
-    #     mu_bar = torch.stack([
-    #         torch.stack([self.slerp(mu[t], mu[t + 1], k) for k in ks], dim=0)
-    #         for t in ts
-    #     ], dim=0) # (ts - 1, k, bs, ld)
-    #     # variance of weighted average of gaussians
-    #     # (1 - k)σ₁² + kσ₂² + k(1 - k)(μ₁ - μ₂)²
-    #     sigma_sq_bar = torch.stack([
-    #         torch.stack([(1 - k) * sigma_sq[t] + k * sigma_sq[t + 1] + (k * (1 - k) * (mu[t] - mu[t + 1]).pow(2)) for k in ks], dim=0)
-    #         for t in ts
-    #     ], dim=0) # (ts - 1, k, bs, ld)
-    #     mu_bar = torch.cat([mu_bar.flatten(start_dim=0, end_dim=1), mu[-1:]], dim=0)
-    #     sigma_sq_bar = torch.cat([sigma_sq_bar.flatten(start_dim=0, end_dim=1), sigma_sq[-1:]], dim=0)
-    #     q_z_bar = torch.cat([mu_bar, sigma_sq_bar.log()], dim=-1)
-    #     assert q_z_bar.size(0) == q_z.size(0) + (q_z.size(0) - 1) * k
-    #     return q_z_bar
-
     def forward(self, q_z: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
-        q_z = torch.cat([q_z[:, :, 64:128], q_z[:, :, 192:256]], dim=-1)
+        # q_z = torch.cat([q_z[:, :, 64:128], q_z[:, :, 192:256]], dim=-1)
         q_z_bar = q_z.transpose(0, 1)
-        # q_z_bar = self.pre_process(q_z)
+        # q_z_bar = self.timestep_interpolation(q_z, self.num_points)
         q_z_bar = q_z_bar.expand(self.num_samples, -1, -1, -1).transpose(0, 1).flatten(start_dim=1, end_dim=2) # (seq + k(seq-1), bs * samples, ld)
         mu, log_sigma_sq = q_z_bar.chunk(2, dim=-1)
         seq, bs, ld = mu.size()
 
         dt = 1
-        z = mu # Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
+        z = Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
         dz_dt = z.diff(dim=0, n=1) / dt
 
         # _, (h, c) = self.sequence_encoder()
@@ -223,15 +258,19 @@ class VAESoundscapeGenerator(L.LightningModule):
         bs, seq, ld = dz_dt.size()
         losses = []
         outputs = dict()
-        mse = (dzhat_dt - dz_dt).pow(2)
-        loss = mse.sum(dim=-1).mean()
-        losses.append(loss)
+        log_sigma_sq_dzdt = torch.tensor(self.sigma_dzdt).pow(2).log()
+        nll = 1/2 * (log_sigma_sq_dzdt + ((dz_dt - dzhat_dt).pow(2) / log_sigma_sq_dzdt.exp()))
+        nll = nll.sum(dim=-1).mean()
+        losses.append(nll)
         outputs |= dict(
-            mse=loss.detach(),
+            log_likelihood_dzdt=-nll.detach(),
             teach_prob=self.teach_prob_current(self.trainer.global_step),
-            # **{f"mse_z{i}": mse[:, :, i].mean() for i in range(ld)},
+            # **{f"nll_z{i}": nll[:, :, i].mean() for i in range(ld)},
         )
-        alpha = torch.linspace(0.5, 1.0, 64, device=dzhat_dt.device)
+        alpha = torch.cat([
+            torch.zeros(64, dtype=torch.float32, device=dzhat_dt.device),
+            torch.linspace(0.5, 1.0, 64, device=dzhat_dt.device),
+        ])
         dzdt = (alpha * dzhat_dt).abs().sum(dim=-1)
         losses.append(dzdt.mean())
         outputs |= dict(
@@ -264,43 +303,6 @@ class VAESoundscapeGenerator(L.LightningModule):
         loss = sum(losses)
         outputs |= dict(loss=loss)
         return outputs
-
-    @staticmethod
-    def slerp(v0: torch.Tensor, v1: torch.Tensor, t: float | torch.Tensor, DOT_THRESHOLD: float = 0.9995):
-        assert v0.shape == v1.shape, "shapes of v0 and v1 must match"
-        # Normalize the vectors to get the directions and angles
-        v0_norm = torch.linalg.norm(v0, dim=-1)
-        v1_norm = torch.linalg.norm(v1, dim=-1)
-        v0_normed = v0 / v0_norm.unsqueeze(-1)
-        v1_normed = v1 / v1_norm.unsqueeze(-1)
-        # Dot product with the normalized vectors
-        dot = (v0_normed * v1_normed).sum(-1)
-        dot_mag = dot.abs()
-        # if dp is NaN, it's because the v0 or v1 row was filled with 0s
-        # If absolute value of dot product is almost 1, vectors are ~colinear, so use lerp
-        gotta_lerp = dot_mag.isnan() | (dot_mag > DOT_THRESHOLD)
-        can_slerp = ~gotta_lerp
-        t_batch_dim_count: int = max(0, t.dim()-v0.dim()) if isinstance(t, torch.Tensor) else 0
-        t_batch_dims: torch.Size = t.shape[:t_batch_dim_count] if isinstance(t, torch.Tensor) else torch.Size([])
-        out = torch.zeros_like(v0.expand(*t_batch_dims, *[-1]*v0.dim()))
-        # if no elements are lerpable, our vectors become 0-dimensional, preventing broadcasting
-        if gotta_lerp.any():
-            lerped = torch.lerp(v0, v1, t)
-            out = lerped.where(gotta_lerp.unsqueeze(-1), out)
-        # if no elements are slerpable, our vectors become 0-dimensional, preventing broadcasting
-        if can_slerp.any():
-            # Calculate initial angle between v0 and v1
-            theta_0 = dot.arccos().unsqueeze(-1)
-            sin_theta_0 = theta_0.sin()
-            # Angle at timestep t
-            theta_t = theta_0 * t
-            sin_theta_t = theta_t.sin()
-            # Finish the slerp algorithm
-            s0 = (theta_0 - theta_t).sin() / sin_theta_0
-            s1 = sin_theta_t / sin_theta_0
-            slerped = s0 * v0 + s1 * v1
-            out = slerped.where(can_slerp.unsqueeze(-1), out)
-        return out
 
     def metrics(self, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
         outputs = dict()

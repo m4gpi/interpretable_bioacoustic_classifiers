@@ -264,7 +264,7 @@ class RainforestConnectionDataModule(L.LightningDataModule):
         RainforestConnection(root=self.root, download=True)
         return self
 
-    def setup(self, stage: str):
+    def setup(self, stage: str | None = None):
         self.data = RainforestConnection(self.root, test=False, download=False, **self.dataset_params)
         self.val_data, self.train_data = torch.utils.data.random_split(self.data, (self.val_prop, 1 - self.val_prop), generator=self.generator)
         self.test_data = RainforestConnection(self.root, test=True, download=False, **self.dataset_params)

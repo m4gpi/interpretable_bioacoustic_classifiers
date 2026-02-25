@@ -59,11 +59,9 @@ def evaluate(cfg):
             })
 
     try:
-        model.evaluate(
-            trainer=trainer,
-            config=cfg,
-            data_module=data_module,
-        )
+        evaluator = hydra.utils.instantiate(cfg.evaluator)
+        import code; code.interact(local=locals())
+        evaluator(trainer, model, data_module, cfg)
     except Exception as e:
         log.error(e)
     finally:

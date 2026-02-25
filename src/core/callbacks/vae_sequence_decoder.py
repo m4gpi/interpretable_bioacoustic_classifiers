@@ -61,8 +61,8 @@ class VAESequenceDecoder(L.Callback):
             xs = self.model.decode(z, delta).cpu().squeeze(1)
             # decode AR generated
             z_hat = pl_module(q_z)["z_hat"]
-            z_hat = z_hat[:, ::frame_step]
-            z_hat = torch.cat([z[:, :z_hat.size(1), :64], z_hat], dim=-1).contiguous()
+            z_hat = z_hat[:, ::frame_step].contiguous()
+            # z_hat = torch.cat([z[:, :z_hat.size(1), :64], z_hat], dim=-1).contiguous()
             x_hats = self.model.decode(z_hat, delta).cpu().squeeze(1)
             # plot alongside each-other
             fig, axes = plt.subplots(nrows=self.num_per_batch, ncols=3, figsize=(15, self.num_per_batch * 3), width_ratios=[0.49, 0.49, 0.02])
@@ -100,8 +100,8 @@ class VAESequenceDecoder(L.Callback):
         xs = self.model.decode(z, delta).cpu().squeeze(1)
         # decode AR generated
         z_hat = pl_module(q_z)["z_hat"]
-        z_hat = z_hat[:, ::frame_step]
-        z_hat = torch.cat([z[:, :z_hat.size(1), :64], z_hat], dim=-1).contiguous()
+        z_hat = z_hat[:, ::frame_step].contiguous()
+        # z_hat = torch.cat([z[:, :z_hat.size(1), :64], z_hat], dim=-1).contiguous()
         x_hats = self.model.decode(z_hat, delta).cpu().squeeze(1)
         # plot alongside each-other
         fig, axes = plt.subplots(nrows=self.num_per_batch, ncols=3, figsize=(15, self.num_per_batch * 3), width_ratios=[0.49, 0.49, 0.02])

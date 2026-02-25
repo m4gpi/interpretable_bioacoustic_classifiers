@@ -1,0 +1,2 @@
+_target_: src.core.evaluators.latent_sequence_fourier_analysis.LatentSequenceFourierAnalysis
+results_dir:

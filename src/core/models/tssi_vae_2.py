@@ -32,13 +32,13 @@ from src.core.models.components import (
 from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, autoregressive_prior
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
-from src.core.utils.sketch import plot_mel_spectrogram
+from src.core.utils.sketch import plot_mel_spectrogram, plot_latent_sequence_histogram
 from src.core.utils import soft_clip, linear_decay, nth_percentile, detach_values, prefix_keys, to_snake_case
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-__all__ = ["SIVAE"]
+__all__ = ["TSSIVAE"]
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
 class TSSIVAE(L.LightningModule):
@@ -87,9 +87,6 @@ class TSSIVAE(L.LightningModule):
     delta_sigma_step_slope: float = 1.0
 
     smooth_prop: float = 0.5
-    smooth_alpha_min: float | None = 0.5
-    smooth_alpha_max: float | None = 1.0
-    non_smooth_alpha: float | None = 0.0
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         plt.switch_backend('agg')
@@ -242,13 +239,6 @@ class TSSIVAE(L.LightningModule):
         return torch.arange(self.num_non_smooth, self.num_non_smooth + self.num_smooth)
 
     @property
-    def alpha(self) -> Tensor:
-        return torch.cat([
-            torch.ones(len(self.non_smooth_idx)) * self.non_smooth_alpha,
-            torch.linspace(self.smooth_alpha_min, self.smooth_alpha_max, len(self.smooth_idx))
-        ])[torch.cat([self.non_smooth_idx, self.smooth_idx])].to(list(self.parameters())[0].device)
-
-    @property
     def delta_sigma_params(self):
         return dict(
             x_min=self.delta_sigma_step_start,
@@ -258,12 +248,23 @@ class TSSIVAE(L.LightningModule):
             k=self.delta_sigma_step_slope or 1.0,
         )
 
+    @staticmethod
+    def gaussian_kernel(K: int, h: torch.Tensor) -> torch.Tensor:
+        k = torch.arange(1, K + 1, dtype=torch.float32, device=self.device).view(1, K, 1)
+        w = torch.exp(-(k.pow(2)) / (2 * h.pow(2)))
+        return (w / w.sum(dim=1, keepdims=True)).flip(dims=[1])
+
+    def bandwidth(self, h_min: float, h_max: float) -> torch.Tensor:
+        return torch.cat([
+            torch.ones(len(self.non_smooth_idx), device=self.device) * h_min,
+            torch.linspace(h_min, h_max, len(self.smooth_idx), device=self.device)
+        ])
+
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
         # ensure x_i is a full sequence that can be divided into equal length frames
         x_i = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
         # encode posterior for full sequence
         q_z_i, delta_i = self.encode(x_i) # (bs, seq, ld)
-        mu_x_i, log_sigma_sq_x_i = q_z_i.chunk(2, dim=-1)
         # x_j is x_i chunked into independently translated frames
         x_i_framed = x_i.view(x.size(0), -1, 1, self.frame_window_length, x.size(-1)).flatten(end_dim=1)
         # draw a sample from the prior over translations
@@ -274,17 +275,32 @@ class TSSIVAE(L.LightningModule):
         # encode posterior for translated frames separately
         q_z_j, delta_j = self.encode(x_j) # (bs * seq, 1, ld)
         q_z_j = q_z_j.view(q_z_i.size())
-        mu_x_j, log_sigma_sq_x_j = q_z_j.chunk(2, dim=-1)
         # stack together distributions
         q_z = torch.cat([q_z_i, q_z_j], dim=0)
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        # gaussian smoothing on the posterior means with an auto-regressively truncated kernel
+        h = self.bandwidth(h_min=1e-1, h_max=mu_z.size(1)/3)
+        mu_z_smooth = torch.cat([
+            (mu_z[:, :t] * self.gaussian_kernel(t, h)).sum(dim=1, keepdims=True)
+            for t in range(1, mu_z.size(1) + 1)
+        ], dim=1)
+        log_sigma_sq_z_smooth = log_sigma_sq_z
+        # log_sigma_sq_z_smooth = torch.cat([
+        #     (log_sigma_sq_z[:, :t].exp() * self.gaussian_kernel(t, h, log_sigma_sq_z.device).pow(2)).sum(dim=1, keepdims=True)
+        #     for t in range(1, log_sigma_sq_z.size(1) + 1)
+        # ], dim=1)
+        q_z = torch.cat([mu_z_smooth, log_sigma_sq_z_smooth], dim=-1)
+        q_z_i, q_z_j = q_z.chunk(2, dim=0)
+        mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
+        mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
         # cross-decode translated representations
         if self.cross_decode == "soft":
-            # soft cross-decoding averages the distributions
-            # μ₃ = 1/2μ₁ + 1/2μ₂, σ₃² = 1/2σ₁² + 1/2σ₂² + 1/4(μ₁ - μ₂)²
-            mu_x = 1/2 * mu_x_i + 1/2 * mu_x_j
-            log_sigma_sq_x = (1/2 * log_sigma_sq_x_i.exp() + 1/2 * log_sigma_sq_x_j.exp() + 1/4 * (mu_x_i - mu_x_j).pow(2)).log()
+            # soft cross-decoding is a weighted sum of gaussians distributions
+            # μ₃ = 1/2μ₁ + 1/2μ₂, σ₃² = 1/2²σ₁² + 1/2²σ₂²
+            mu_z = 1/2 * mu_z_i + 1/2 * mu_z_j
+            log_sigma_sq_z = (1/4 * log_sigma_sq_z_i.exp() + 1/4 * log_sigma_sq_z_j.exp()).log()
             # reparametrise
-            z = Normal(mu_x, (0.5 * log_sigma_sq_x).exp()).rsample() # (bs, seq, ld)
+            z = Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample() # (bs, seq, ld)
             # decode to feature maps
             U_hat = self.mlp_decode(z.flatten(end_dim=1)) # (bs * seq, ch, fr, fq)
             # reconstruct a contiguous sequence
@@ -293,8 +309,8 @@ class TSSIVAE(L.LightningModule):
             x_hat_j = self.cnn_decode(U_hat, delta_j) # (bs * seq, 1, fr, fq)
         elif self.cross_decode == "hard":
             # reparametrise
-            z_i = Normal(mu_x_i, (0.5 * log_sigma_sq_x_i).exp()).rsample() # (bs, seq, ld)
-            z_j = Normal(mu_x_j, (0.5 * log_sigma_sq_x_j).exp()).rsample() # (bs, seq, ld)
+            z_i = Normal(mu_z_i, (0.5 * log_sigma_sq_z_i).exp()).rsample() # (bs, seq, ld)
+            z_j = Normal(mu_z_j, (0.5 * log_sigma_sq_z_j).exp()).rsample() # (bs, seq, ld)
             # decode to feature maps
             U_hat_i = self.mlp_decode(z_i.flatten(end_dim=1)) # (bs * seq, ch, fr, fq)
             U_hat_j = self.mlp_decode(z_j.flatten(end_dim=1)) # (bs * seq, ch, fr, fq)
@@ -340,9 +356,9 @@ class TSSIVAE(L.LightningModule):
 
     def mlp_encode(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
-        mu_x, log_sigma_sq_x = q_z.chunk(2, dim=-1)
-        log_sigma_sq_x = soft_clip(log_sigma_sq_x, minimum=np.log(self.sigma_x_min ** 2))
-        q_z = torch.cat([mu_x, log_sigma_sq_x], dim=-1)
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=np.log(self.sigma_x_min ** 2))
+        q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         delta = self.offset_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         return q_z, delta
 
@@ -381,8 +397,6 @@ class TSSIVAE(L.LightningModule):
         x_hat_j: Tensor,
         x_hat_i_framed: Tensor,
         q_z: Tensor,
-        q_z_i: Tensor,
-        q_z_j: Tensor,
         delta_i: Tensor,
         delta_j: Tensor,
         **kwargs: Any,
@@ -392,13 +406,13 @@ class TSSIVAE(L.LightningModule):
         # maximise likelihood p(x_i|z_j) framewise to ensure invariance to sequence length
         x = torch.cat([x_i_framed, x_j], dim=0)
         x_hat = torch.cat([x_hat_i_framed, x_hat_j], dim=0)
-        log_sigma_sq_z = torch.tensor(self.sigma_z_max).pow(2).log()
+        log_sigma_sq_x = torch.tensor(self.sigma_z_max).pow(2).log()
         # sum over pixels, mean over translations, sequence and batch
-        nll = negative_log_likelihood(x, x_hat, log_sigma_sq_z).flatten(start_dim=-3).sum(dim=-1).mean()
+        nll = negative_log_likelihood(x, x_hat, log_sigma_sq_x).flatten(start_dim=-3).sum(dim=-1).mean()
         losses.append(nll)
         mae_frame = (x_hat.detach() - x.detach()).flatten(start_dim=-3).abs().sum(dim=-1).mean()
-        sigma_z = (0.5 * log_sigma_sq_z).exp().detach()
-        outputs |= dict(log_likelihood_x=-nll, sigma_z=sigma_z, mae_frame=mae_frame)
+        sigma_x = (0.5 * log_sigma_sq_x).exp().detach()
+        outputs |= dict(log_likelihood_x=-nll, sigma_x=sigma_x, mae_frame=mae_frame)
         # MAP estimate of the alignment factor p(x|δ)p(δ)
         delta = torch.cat([delta_i, delta_j.view(delta_i.size())], dim=0)
         mu_delta = torch.zeros(1).to(delta.device)
@@ -406,18 +420,16 @@ class TSSIVAE(L.LightningModule):
         shift_nll = negative_log_likelihood(delta, mu_delta, sigma_delta.pow(2).log()).mean()
         losses.append(shift_nll)
         outputs |= dict(log_likelihood_delta=-shift_nll, sigma_delta=sigma_delta)
-        # anchor q_z using an autoregressive prior
-        # sum over latent dimension, mean over translations, sequence and batch
-        dkl = torch.cat([
-            gaussian_kl_divergence(q_z[:, t, :], p_z_t).unsqueeze(1)
-            for t, p_z_t in autoregressive_prior(q_z, self.alpha)
-        ], dim=1)
-        kld = dkl.sum(dim=-1).mean()
-        losses.append(kld)
+        # standard KL
+        h = q_z.size(1)/3 - self.bandwidth(h_min=1e-1, h_max=q_z.size(1)/3)
+        w = h / h.max()
+        prior_dkl = w * gaussian_kl_divergence_standard_prior(q_z)
+        dkl = prior_dkl.sum(dim=-1).mean()
+        losses.append(dkl)
         outputs |= dict(
-            dkl=kld,
-            smooth_dkl=dkl[:, :, self.smooth_idx].detach().sum(dim=-1).mean(),
-            non_smooth_dkl=dkl[:, :, self.non_smooth_idx].detach().sum(dim=-1).mean(),
+            dkl=dkl,
+            dkl_non_smooth=prior_dkl[:, :, self.non_smooth_idx].detach().sum(dim=-1).mean(),
+            dkl_smooth=prior_dkl[:, :, self.smooth_idx].detach().sum(dim=-1).mean(),
         )
         # sum the loss components
         outputs |= dict(loss=sum(losses))
@@ -444,18 +456,18 @@ class TSSIVAE(L.LightningModule):
     ) -> Dict[str, Any]:
         mu_z, log_sigma_sq_z = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z.chunk(2, dim=-1))
         sigma_z = np.exp(0.5 * log_sigma_sq_z)
-        mu_x_i, log_sigma_sq_x_i = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z_i.chunk(2, dim=-1))
-        sigma_x_i = np.exp(0.5 * log_sigma_sq_x_i)
-        mu_x_j, log_sigma_sq_x_j = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z_j.chunk(2, dim=-1))
-        sigma_x_j = np.exp(0.5 * log_sigma_sq_x_j)
+        mu_z_i, log_sigma_sq_z_i = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z_i.chunk(2, dim=-1))
+        sigma_x_i = np.exp(0.5 * log_sigma_sq_z_i)
+        mu_z_j, log_sigma_sq_z_j = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z_j.chunk(2, dim=-1))
+        sigma_x_j = np.exp(0.5 * log_sigma_sq_z_j)
         delta = torch.cat([delta_i.flatten(end_dim=1).unsqueeze(1), delta_j])
         return dict(
             sigma_delta=self.delta_sigma_current(self.trainer.global_step),
-            mu_x=wandb.Histogram(np_histogram=np.histogram(mu_z, range=[-5.0, 5.0])),
+            mu_z=wandb.Histogram(np_histogram=np.histogram(mu_z, range=[-5.0, 5.0])),
             sigma_x=wandb.Histogram(np_histogram=np.histogram(sigma_z, range=[-5.0, 5.0])),
-            mu_x_i=wandb.Histogram(np_histogram=np.histogram(mu_x_i, range=[-5.0, 5.0])),
+            mu_z_i=wandb.Histogram(np_histogram=np.histogram(mu_z_i, range=[-5.0, 5.0])),
             sigma_x_i=wandb.Histogram(np_histogram=np.histogram(sigma_x_i, range=[0.0, 2.0])),
-            mu_x_j=wandb.Histogram(np_histogram=np.histogram(mu_x_j, range=[-5.0, 5.0])),
+            mu_z_j=wandb.Histogram(np_histogram=np.histogram(mu_z_j, range=[-5.0, 5.0])),
             sigma_x_j=wandb.Histogram(np_histogram=np.histogram(sigma_x_j, range=[0.0, 2.0])),
             delta=wandb.Histogram(np_histogram=np.histogram(delta.flatten(end_dim=-2).cpu().numpy(), bins=64, range=[-5.0, 5.0])),
         )
@@ -529,30 +541,13 @@ class TSSIVAE(L.LightningModule):
             self.logger.experiment.log({ f"val/spectrogram_j": wandb.Image(fig) })
             plt.close(fig)
             # plot histograms of latent distribution
-            zs, _ = step_outputs["q_z_i"].chunk(2, dim=-1)
-            batch_size, sequence_len, latent_dim = zs.shape
-            z_min, z_max, num_bins = -3.5, 3.5, 20
-            hist = torch.zeros(batch_size, num_bins, latent_dim)
-            bins = torch.linspace(z_min, z_max, num_bins + 1)
-            epsilon = 1e-8
-            for j in range(num_bins):
-                hist[:, j, ...] = ((bins[j] < zs) & (zs < bins[j + 1])).sum(axis=1) / sequence_len
-                hist = torch.softmax((hist + epsilon).log(), dim=1)
-            fig, axes = plt.subplots(nrows=1, ncols=hist.size(0) + 1, width_ratios=[*[(1 - 0.01) / batch_size for _ in range(batch_size)], 0.01])
-            for i, ax in enumerate(axes[:-1]):
-                im = ax.imshow(
-                    hist[i].t(),
-                    extent=[z_min, z_max, 1, latent_dim],
-                    cmap=sns.color_palette("magma", as_cmap=True),
-                    aspect="auto",
-                    interpolation="none",
-                    vmin=0.0,
-                    vmax=1.0,
-                )
-                ax.tick_params(axis='x', rotation=90)
-                ax.set_xticks(np.linspace(z_min, z_max, num_bins + 1))
-                ax.set_yticks(np.arange(0, latent_dim, 4))
-            cbar = plt.colorbar(im, cax=axes[-1], orientation="vertical")
+            mu, _ = step_outputs["q_z_i"].chunk(2, dim=-1)
+            fig, (*axes, cax) = plt.subplots(nrows=1, ncols=hist.size(0) + 1, width_ratios=[*[(1 - 0.01) / batch_size for _ in range(batch_size)], 0.01])
+            batch_size, sequence_len, latent_dim = mu.shape
+            z_min, z_max, num_bins = -5.0, 5.0, 30
+            for i, ax in enumerate(axes):
+                im = plot_latent_histogram(mu[i], ax=ax, cbar=False)
+            cbar = plt.colorbar(im, cax=cax, orientation="vertical")
             self.logger.experiment.log({ f"val/z_hist": wandb.Image(fig) })
             plt.close(fig)
 

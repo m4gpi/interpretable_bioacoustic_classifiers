@@ -19,21 +19,22 @@ data:
   eval_batch_size: 32
 
 model:
-  num_features: 64
+  num_features: 128
   num_rnn_layers: 1
   num_samples: 1
   num_init_frames: 60
-  teach_prob_start: 1.0
-  teach_prob_end: 0.1
+  sigma_dzdt: 1.0
+  teach_prob_start: 0.8
+  teach_prob_end: 0.0
   teach_prob_step_start: null # 0
   teach_prob_step_end: null # 10000
   teach_prob_slope: 1.0
   learning_rate: 4.e-5
   optimiser_cls: torch.optim.AdamW
-  # scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
-  # scheduler_config:
-    # T_max: 40_000
-    # eta_min: 4.e-7
+  scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+  scheduler_config:
+    T_max: 40_000
+    eta_min: 4.e-7
 
 trainer:
   max_steps: 10_000

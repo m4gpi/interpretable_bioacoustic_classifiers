@@ -14,7 +14,7 @@ from matplotlib import pyplot as plt
 from matplotlib.colors import Colormap
 from matplotlib.axes import Axes
 from matplotlib.image import AxesImage
-from matplotlib.collections import QuadMesh
+from matplotlib.collections import QuadMesh, LineCollection
 from matplotlib import cm
 from numpy.typing import NDArray
 from typing import Any, Dict, List, Tuple
@@ -177,3 +177,45 @@ def plot_species_proba_spectrogram(
     pred_handles = [tp_line, fp_line, fn_line, tn_line]
 
     return im, spec_handles, pred_handles, ax2
+
+def plot_latent_sequence_histogram(
+    Z: NDArray,
+    ax: Axes | None = None,
+    range: Tuple[float, float] = [-3.5, 3.5],
+    num_bins: int = 20,
+    cbar: bool = True,
+) -> Axes:
+    ax = ax if ax is not None else plt.gca()
+    sequence_len, latent_dim = Z.shape
+    z_min, z_max = range
+    hist = torch.zeros(num_bins, latent_dim)
+    bins = torch.linspace(z_min, z_max, num_bins + 1)
+    epsilon = 1e-8
+    for j in np.arange(num_bins):
+        hist[j, ...] = ((bins[j] < Z) & (Z < bins[j + 1])).sum(axis=0) / sequence_len
+        hist = torch.softmax((hist + epsilon).log(), dim=0)
+    im = ax.imshow(
+        hist.t(),
+        extent=[z_min, z_max, 0, latent_dim - 1],
+        cmap=sns.color_palette("magma", as_cmap=True),
+        aspect="auto",
+        interpolation="none",
+        origin="lower",
+        vmin=0.0,
+        vmax=1.0,
+    )
+    ax.tick_params(axis='x', rotation=90)
+    ax.set_xticks(np.linspace(z_min, z_max, num_bins + 1))
+    ax.set_yticks(np.arange(0, latent_dim, 4))
+    if cbar:
+        cbar = plt.colorbar(im, ax=ax, orientation="vertical")
+    return im
+
+def multiline(xs: List, ys: List, c: List, ax: Axes = None, **kwargs: Any):
+    ax = plt.gca() if ax is None else ax
+    segments = [np.column_stack([x, y]) for x, y in zip(xs, ys)]
+    lc = LineCollection(segments, **kwargs)
+    lc.set_array(np.asarray(c))
+    ax.add_collection(lc)
+    ax.autoscale()
+    return lc
