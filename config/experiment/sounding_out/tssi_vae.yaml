@@ -9,14 +9,6 @@ defaults:
   - override /trainer: gpu
   - override /logger: wandb
 
-train: true
-test: true
-seed: 42
-
-data:
-  seed: ${seed}
-  root: /mnt/data0/kag25/sounding_out
-
 transforms:
   log_mel_spectrogram:
       sample_rate: ${model.sample_rate}

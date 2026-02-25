@@ -1,0 +1,63 @@
+# @package _global_
+
+# python main.py +experiment=shift_invariant_vae
+
+defaults:
+  - override /model: shift_invariant_vae
+  # - override /transforms: cropped_log_mel_spectrogram
+  - override /trainer: gpu
+  - override /logger: wandb
+
+# transforms:
+#   log_mel_spectrogram:
+#       sample_rate: ${model.sample_rate}
+#       window_length: ${model.fft_window_length}
+#       hop_length: ${model.fft_hop_length}
+#       num_mel_bins: ${model.num_mel_bins}
+#       mel_min_hertz: ${model.mel_min_hertz}
+#       mel_max_hertz: ${model.mel_max_hertz}
+#       mel_scaling_factor: ${model.mel_scaling_factor}
+#       mel_break_frequency: ${model.mel_break_frequency}
+#   center_crop:
+#       size: [7488, 64]
+
+model:
+  sigma_z_max: 0.2
+  delta_sigma_step_start: 0
+  delta_sigma_step_end: 20_000
+  delta_sigma_min: 0.1
+  delta_sigma_max: 2.0
+  delta_sigma_step_slope: 0.4
+  learning_rate: 4.e-5
+  optimiser_cls: torch.optim.AdamW
+  scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+  scheduler_config:
+    T_max: 30_000
+    eta_min: 4.e-7
+
+trainer:
+  profiler:
+    _target_: lightning.pytorch.profilers.PyTorchProfiler
+    record_shapes: True
+    profile_memory: True
+    with_stack: True
+    on_trace_ready:
+      _target_: torch.profiler.tensorboard_trace_handler
+      dir_name: ${paths.root_dir}/logs/sivae.pt:v0
+  max_steps: 30_000
+  max_epochs: -1
+  log_every_n_steps: 100
+  val_check_interval: 2500
+  num_sanity_val_steps: 0
+
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.root_dir}/checkpoints/sivae.pt:v0/
+    filename: model.pt
+    save_top_k: 1
+
+logger:
+  wandb:
+    id: ${run_id}
+    project: temporal_kernel_smoothing
+    group: shift_invariance_pretraining

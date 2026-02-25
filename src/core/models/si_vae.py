@@ -1,4 +1,5 @@
 import enum
+import functools
 import itertools
 import lightning as L
 import logging
@@ -29,6 +30,7 @@ from src.core.models.components import (
     init_alignment_encoder,
 )
 from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, autoregressive_prior
+from src.core.transforms.log_mel_spectrogram import mel_filterbanks
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
 from src.core.utils.sketch import plot_mel_spectrogram
@@ -108,6 +110,14 @@ class SIVAE(L.LightningModule):
         self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.sigma_z_min = self.sigma_z_min or self.sigma_z_max
+        self.mel_filterbanks = torch.nn.Parameter(torch.tensor(mel_filterbanks(
+            num_mel_bins=self.num_mel_bins,
+            mel_min_hertz=self.mel_min_hertz,
+            mel_max_hertz=self.mel_max_hertz,
+            linear_frequencies=np.linspace(0.0, self.sample_rate / 2, (self.fft_window_length // 2) + 1),
+            scaling_factor=self.mel_scaling_factor,
+            break_frequency=self.mel_break_frequency,
+        )).t(), requires_grad=False)
         self.feature_encoder = init_cnn_feature_encoder(
             block_sizes=self.cnn_block_sizes,
             block_width=self.cnn_block_width,
@@ -218,13 +228,32 @@ class SIVAE(L.LightningModule):
             k=self.delta_sigma_step_slope or 1.0,
         )
 
+    def pre_process(self, x: Tensor) -> torch.Tensor:
+        # remove DC offset
+        x = x - x.mean(dim=-1, keepdims=True)
+        # apply fourier transform
+        window = torch.hann_window(self.fft_window_length).to(self.device)
+        x = torch.stft(x, self.fft_window_length, self.fft_hop_length, window=window, return_complex=True)
+        # discard phase
+        x = x.abs()
+        # transpose time on inner axes
+        x = x.transpose(-1, -2)
+        # crop to frame size
+        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
+        # apply mel
+        x = x @ self.mel_filterbanks
+        # apply log
+        x = torch.clamp(x, min=1e-6).log()
+        # add a channel dimension
+        x = x.unsqueeze(1)
+        return x
+
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
-        # ensure x_i is a full sequence that can be divided into equal length frames
-        x_i = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
+        x_i = self.pre_process(x)
         # encode posterior for full sequence
         q_z_i, delta_i = self.encode(x_i) # (bs, seq, ld)
         # x_j is x_i chunked into independently translated frames
-        x_i_framed = x_i.view(x.size(0), -1, 1, self.frame_window_length, x.size(-1)).flatten(end_dim=1)
+        x_i_framed = x_i.view(x_i.size(0), -1, 1, self.frame_window_length, x_i.size(-1)).flatten(end_dim=1)
         # draw a sample from the prior over translations
         epsilon = torch.randn(x_i_framed.size(0), 1, 1, 1).to(x_i.device)
         sigma_delta = self.delta_sigma_current(self.trainer.global_step)

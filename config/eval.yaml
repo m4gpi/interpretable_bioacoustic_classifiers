@@ -16,4 +16,4 @@ task_name: test
 tags: ["dev"]
 ckpt_path: null
 save_path: null
-seed: null
+seed: 42
