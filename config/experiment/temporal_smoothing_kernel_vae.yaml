@@ -1,14 +1,15 @@
 # @package _global_
 
-# python main.py +experiment=shift_invariant_vae
+# python main.py +experiment=temporal_smoothing_kernel_vae
 
 defaults:
-  - override /model: shift_invariant_vae
+  - override /model: temporal_smoothing_kernel_vae
   - override /trainer: gpu
   - override /logger: wandb
 
 model:
   sigma_z_max: 0.2
+  smooth_prop: 0.5
   delta_sigma_step_start: 0
   delta_sigma_step_end: 20_000
   delta_sigma_min: 0.1
@@ -18,24 +19,23 @@ model:
   optimiser_cls: torch.optim.AdamW
   scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
   scheduler_config:
-    T_max: 30_000
+    T_max: 40_000
     eta_min: 4.e-7
 
 trainer:
-  max_steps: 30_000
+  max_steps: 100_000
   max_epochs: -1
   log_every_n_steps: 100
   val_check_interval: 2500
-  num_sanity_val_steps: 0
 
 callbacks:
   model_checkpoint:
-    dirpath: ${paths.root_dir}/checkpoints/sivae.pt:v0/
-    filename: model
+    dirpath: ${paths.root_dir}/checkpoints/tsk_vae.pt:v0/
+    filename: model_{{step}}
+    every_n_train_steps: 50_000
     save_top_k: 1
 
 logger:
   wandb:
     id: ${run_id}
     project: temporal_kernel_smoothing
-    group: shift_invariance_pretraining

@@ -27,5 +27,4 @@ class Encoder(Evaluator):
         log.info(f"Encoding <{config.data.get('_target_')}> with <{config.model.get('_target_')}>")
         predictions = trainer.predict(model, data_module.predict_dataloader(), ckpt_path=config.get("ckpt_path"), return_predictions=True)
         df = pd.concat(list(itertools.chain(*predictions)), axis=0)
-        import code; code.interact(local=locals())
         df.to_parquet(self.results_dir / "features.parquet")

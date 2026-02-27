@@ -1,26 +1,11 @@
 # @package _global_
 
-# python main.py +experiment=sounding_out/tssi_vae
+# python main.py +experiment=temporal_smoothing_prior_vae
 
 defaults:
-  - override /model: temporally_smooth_shift_invariant_vae
-  - override /data: sounding_out_chorus
-  - override /transforms: cropped_log_mel_spectrogram
+  - override /model: temporal_smoothing_prior_vae
   - override /trainer: gpu
   - override /logger: wandb
-
-transforms:
-  log_mel_spectrogram:
-      sample_rate: ${model.sample_rate}
-      window_length: ${model.fft_window_length}
-      hop_length: ${model.fft_hop_length}
-      num_mel_bins: ${model.num_mel_bins}
-      mel_min_hertz: ${model.mel_min_hertz}
-      mel_max_hertz: ${model.mel_max_hertz}
-      mel_scaling_factor: ${model.mel_scaling_factor}
-      mel_break_frequency: ${model.mel_break_frequency}
-  center_crop:
-      size: [7488, 64]
 
 model:
   sigma_z_max: 0.2

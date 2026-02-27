@@ -110,6 +110,7 @@ class SIVAE(L.LightningModule):
         self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.sigma_z_min = self.sigma_z_min or self.sigma_z_max
+
         self.mel_filterbanks = torch.nn.Parameter(torch.tensor(mel_filterbanks(
             num_mel_bins=self.num_mel_bins,
             mel_min_hertz=self.mel_min_hertz,
@@ -118,6 +119,7 @@ class SIVAE(L.LightningModule):
             scaling_factor=self.mel_scaling_factor,
             break_frequency=self.mel_break_frequency,
         )).t(), requires_grad=False)
+
         self.feature_encoder = init_cnn_feature_encoder(
             block_sizes=self.cnn_block_sizes,
             block_width=self.cnn_block_width,

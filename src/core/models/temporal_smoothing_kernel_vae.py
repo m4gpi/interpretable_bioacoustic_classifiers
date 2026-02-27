@@ -30,9 +30,10 @@ from src.core.models.components import (
     init_alignment_encoder,
 )
 from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, autoregressive_prior
+from src.core.transforms.log_mel_spectrogram import mel_filterbanks
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
-from src.core.utils.sketch import plot_mel_spectrogram, plot_latent_sequence_histogram
+from src.core.utils.sketch import plot_mel_spectrogram, plot_latent_sequence_histogram, plot_latent_power_spectral_density_heatmap, multiline
 from src.core.utils import soft_clip, linear_decay, nth_percentile, detach_values, prefix_keys, to_snake_case
 
 logging.basicConfig(level=logging.INFO)
@@ -87,10 +88,15 @@ class TSSIVAE(L.LightningModule):
 
     smooth_prop: float = 0.5
 
-    def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+    def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any]):
         plt.switch_backend('agg')
         log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.fit(self, train_dataloaders=data_module.train_dataloader(), val_dataloaders=data_module.val_dataloader())
+        trainer.fit(
+            self,
+            train_dataloaders=data_module.train_dataloader(),
+            val_dataloaders=data_module.val_dataloader(),
+            ckpt_path=config.get("ckpt_path")
+        )
 
     def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any]):
         log.info(f"Encoding <{config.data.get('_target_')}> with <{config.model.get('_target_')}>")
@@ -111,6 +117,19 @@ class TSSIVAE(L.LightningModule):
         self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.sigma_z_min = self.sigma_z_min or self.sigma_z_max
+
+        self.mel_filterbanks = torch.nn.Parameter(
+            torch.tensor(mel_filterbanks(
+                num_mel_bins=self.num_mel_bins,
+                mel_min_hertz=self.mel_min_hertz,
+                mel_max_hertz=self.mel_max_hertz,
+                linear_frequencies=np.linspace(0.0, self.sample_rate / 2, (self.fft_window_length // 2) + 1),
+                scaling_factor=self.mel_scaling_factor,
+                break_frequency=self.mel_break_frequency,
+            )).t(),
+            requires_grad=False,
+        )
+
         self.feature_encoder = init_cnn_feature_encoder(
             block_sizes=self.cnn_block_sizes,
             block_width=self.cnn_block_width,
@@ -245,8 +264,7 @@ class TSSIVAE(L.LightningModule):
             k=self.delta_sigma_step_slope or 1.0,
         )
 
-    @staticmethod
-    def gaussian_kernel(K: int, h: torch.Tensor) -> torch.Tensor:
+    def gaussian_kernel(self, K: int, h: torch.Tensor) -> torch.Tensor:
         k = torch.arange(1, K + 1, dtype=torch.float32, device=self.device).view(1, K, 1)
         w = torch.exp(-(k.pow(2)) / (2 * h.pow(2)))
         return (w / w.sum(dim=1, keepdims=True)).flip(dims=[1])
@@ -257,31 +275,55 @@ class TSSIVAE(L.LightningModule):
             torch.linspace(h_min, h_max, len(self.smooth_idx), device=self.device)
         ])
 
+    def bandwidth_1(self) -> torch.Tensor:
+        return torch.cat([
+            torch.ones(self.latent_dim // 4, device=self.device) * 1e-1,
+            torch.linspace(1e-1, 1.0, self.latent_dim // 4, device=self.device),
+            torch.linspace(1.0, 13.0, self.latent_dim // 2, device=self.device),
+        ])
+
+    def kl_weights(self) -> torch.Tensor:
+        return torch.cat([
+            torch.ones(self.latent_dim // 4, device=self.device),
+            torch.zeros(3 * self.latent_dim // 4, device=self.device)
+        ])
+
+    def pre_process(self, x: Tensor) -> torch.Tensor:
+        # remove DC offset
+        x = x - x.mean(dim=-1, keepdims=True)
+        # apply fourier transform
+        window = torch.hann_window(self.fft_window_length).to(self.device)
+        x = torch.stft(x, self.fft_window_length, self.fft_hop_length, window=window, return_complex=True)
+        # discard phase
+        x = x.abs()
+        # transpose time on inner axes
+        x = x.transpose(-1, -2)
+        # crop to frame size
+        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
+        # apply mel
+        x = x @ self.mel_filterbanks
+        # apply log
+        x = torch.clamp(x, min=1e-6).log()
+        # add a channel dimension
+        x = x.unsqueeze(1)
+        return x
+
+    def translations(self, x: torch.Tensor) -> torch.Tensor:
+        epsilon = torch.randn(x.size(0), 1, 1, 1, device=x.device)
+        sigma_delta = self.delta_sigma_current(self.trainer.global_step)
+        return translation(x, epsilon * sigma_delta, padding_mode="circular")
+
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
-        # ensure x_i is a full sequence that can be divided into equal length frames
-        x_i = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
+        x_i = self.pre_process(x)
         # encode posterior for full sequence
         q_z_i, delta_i = self.encode(x_i) # (bs, seq, ld)
         # x_j is x_i chunked into independently translated frames
-        x_i_framed = x_i.view(x.size(0), -1, 1, self.frame_window_length, x.size(-1)).flatten(end_dim=1)
-        # draw a sample from the prior over translations
-        epsilon = torch.randn(x_i_framed.size(0), 1, 1, 1).to(x_i.device)
-        sigma_delta = self.delta_sigma_current(self.trainer.global_step)
-        delta = epsilon * sigma_delta
-        x_j = translation(x_i_framed, delta, padding_mode="circular")
-        # encode posterior for translated frames separately
+        x_i_framed = x_i.view(x_i.size(0), -1, 1, self.frame_window_length, x_i.size(-1)).flatten(end_dim=1)
+        x_j = self.translations(x_i_framed)
         q_z_j, delta_j = self.encode(x_j) # (bs * seq, 1, ld)
-        q_z_j = q_z_j.view(q_z_i.size())
+        q_z_j = q_z_j.view(q_z_i.size()) # (bs, seq, ld)
         # stack together distributions
-        q_z = torch.cat([q_z_i, q_z_j], dim=0)
-        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
-        # gaussian smoothing on the posterior means with an auto-regressively truncated kernel
-        h = self.bandwidth(h_min=1e-1, h_max=mu_z.size(1)/3)
-        mu_z_smooth = torch.cat([
-            (mu_z[:, :t] * self.gaussian_kernel(t, h)).sum(dim=1, keepdims=True)
-            for t in range(1, mu_z.size(1) + 1)
-        ], dim=1)
-        q_z = torch.cat([mu_z_smooth, log_sigma_sq_z], dim=-1)
+        q_z = torch.cat([q_z_i, q_z_j], dim=0) # (bs * 2, seq, ld)
         q_z_i, q_z_j = q_z.chunk(2, dim=0)
         mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
         mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
@@ -349,6 +391,11 @@ class TSSIVAE(L.LightningModule):
     def mlp_encode(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        h = self.bandwidth_1()
+        mu_z = torch.cat([
+            (mu_z[:, :t] * self.gaussian_kernel(t, h)).sum(dim=1, keepdims=True)
+            for t in range(1, mu_z.size(1) + 1)
+        ], dim=1)
         log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=np.log(self.sigma_x_min ** 2))
         q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         delta = self.offset_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
@@ -409,16 +456,11 @@ class TSSIVAE(L.LightningModule):
         losses.append(shift_nll)
         outputs |= dict(log_likelihood_delta=-shift_nll, sigma_delta=sigma_delta)
         # standard KL
-        h = q_z.size(1)/3 - self.bandwidth(h_min=1e-1, h_max=q_z.size(1)/3)
-        w = h / h.max()
+        w = self.kl_weights()
         prior_dkl = w * gaussian_kl_divergence_standard_prior(q_z)
         dkl = prior_dkl.sum(dim=-1).mean()
         losses.append(dkl)
-        outputs |= dict(
-            dkl=dkl,
-            dkl_non_smooth=prior_dkl[:, :, self.non_smooth_idx].detach().sum(dim=-1).mean(),
-            dkl_smooth=prior_dkl[:, :, self.smooth_idx].detach().sum(dim=-1).mean(),
-        )
+        outputs |= dict(dkl=dkl)
         # sum the loss components
         outputs |= dict(loss=sum(losses))
         return outputs
@@ -501,26 +543,60 @@ class TSSIVAE(L.LightningModule):
         x, *_ = batch
         if batch_idx < 4 and len(self.validation_step_outputs):
             step_outputs = self.validation_step_outputs[0]
-            # plot full sequence reconstructions
+
             specs = step_outputs["x_i"].squeeze().cpu().numpy()
             recons = step_outputs["x_hat_i"].squeeze().cpu().numpy()
-            nrows = step_outputs["x_i"].size(0)
-            fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(15, nrows * 2))
-            for i in range(nrows):
-                mesh = plot_mel_spectrogram(specs[i].T, **self.spectrogram_params, vmin=specs.min(), vmax=specs.max(), ax=axes[i, 0])
-                mesh = plot_mel_spectrogram(recons[i].T, **self.spectrogram_params, vmin=recons.min(), vmax=recons.max(), ax=axes[i, 1])
-            self.logger.experiment.log({ f"val/spectrogram_i": wandb.Image(fig) })
-            plt.close(fig)
-            # plot histograms of latent distribution
-            mu, _ = step_outputs["q_z_i"].chunk(2, dim=-1)
-            fig, (*axes, cax) = plt.subplots(nrows=1, ncols=hist.size(0) + 1, width_ratios=[*[(1 - 0.01) / batch_size for _ in range(batch_size)], 0.01])
-            batch_size, sequence_len, latent_dim = mu.shape
-            z_min, z_max, num_bins = -5.0, 5.0, 30
-            for i, ax in enumerate(axes):
-                im = plot_latent_histogram(mu[i], ax=ax, cbar=False)
-            cbar = plt.colorbar(im, cax=cax, orientation="vertical")
-            self.logger.experiment.log({ f"val/z_hist": wandb.Image(fig) })
-            plt.close(fig)
+            mu = step_outputs["q_z_i"].chunk(2, dim=-1)[0].cpu().numpy()
+            num_samples = min(6, step_outputs["x_i"].size(0))
+
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(15, 12), width_ratios=[0.97, 0.03], constrained_layout=True)
+
+                mesh = plot_mel_spectrogram(
+                    specs[i].T,
+                    **self.spectrogram_params,
+                    ax=axes[0, 0],
+                    vmin=specs.min(), vmax=specs.max(),
+                )
+                axes[0, 0].set_title("Original Mel Spectrogram")
+                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+
+                mesh = plot_mel_spectrogram(
+                    recons[i].T,
+                    **self.spectrogram_params,
+                    ax=axes[1, 0],
+                    vmin=specs.min(), vmax=specs.max(),
+                )
+                axes[1, 0].set_title("Reconstructed Mel Spectrogram")
+                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+
+                lc = multiline(
+                    np.arange(mu.shape[1]).repeat(mu.shape[2]).reshape(*mu[i].shape).T,
+                    ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0)).T,
+                    np.hstack([np.ones(64) * 1e-1, np.linspace(1e-1, 39/3, 64)]),
+                    ax=axes[2, 0],
+                    cmap='jet',
+                    lw=2,
+                    alpha=0.75,
+                )
+                axes[2, 0].set_xlabel("Time ($t$)")
+                axes[2, 0].set_ylabel(r"$\mathbf{z}_{\text{norm}}(t)$")
+                axes[2, 0].set_title("Latent Time-series by Kernel Smoothness")
+                cbar = plt.colorbar(lc, cax=axes[2, 1])
+                cbar.set_label("Kernel Bandwidth (h)", rotation=90)
+
+                im = plot_latent_power_spectral_density_heatmap(
+                    mu[i],
+                    audio_sample_rate=48_000,
+                    audio_fft_hop_length=384,
+                    audio_frame_length_hops=192,
+                    ax=axes[3, 0],
+                    cbar=False,
+                )
+                axes[3, 0].set_title("Latent Power Spectral Density (Welch)")
+                fig.colorbar(im, cax=axes[3, 1], orientation="vertical")
+                self.logger.experiment.log({ f"val/image": wandb.Image(fig) })
+                plt.close(fig)
         self.validation_step_outputs.clear()
 
     @torch.no_grad()
@@ -564,8 +640,7 @@ class TSSIVAE(L.LightningModule):
     ) -> pd.DataFrame:
         frame_hop_length = frame_hop_length or self.frame_hop_length
         x, *_ = batch
-        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
-        q_z, delta = self.encode(x, hop_length=frame_hop_length)
+        q_z, delta = self.encode(self.pre_process(x), hop_length=frame_hop_length)
         bs, seq, *_ = q_z.size()
         sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
         seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()

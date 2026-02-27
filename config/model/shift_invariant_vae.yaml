@@ -1,4 +1,4 @@
-_target_: src.core.models.si_vae.SIVAE
+_target_: src.core.models.shift_invariant_vae.SIVAE
 sigma_z_max: 0.2
 delta_sigma_step_start: 0
 delta_sigma_step_end: 20_000
