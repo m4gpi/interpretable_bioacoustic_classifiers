@@ -10,7 +10,7 @@ import torch
 import wandb
 
 from omegaconf import DictConfig, OmegaConf
-from typing import Any, List, Dict, Tuple
+from typing import Any, Callable, List, Dict, Tuple
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
@@ -26,7 +26,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         L.seed_everything(cfg.seed, workers=True)
 
     log.info("Instantiating transforms...")
-    transforms: List[L.Callback] = instantiate_transforms(cfg.get("transforms"))
+    transforms: Callable = instantiate_transforms(cfg.get("transforms"))
 
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     data_module: L.LightningDataModule = hydra.utils.instantiate(cfg.data, transforms=transforms)
