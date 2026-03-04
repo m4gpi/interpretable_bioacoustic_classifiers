@@ -30,15 +30,16 @@ from src.core.models.components import (
     init_alignment_encoder,
 )
 from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, autoregressive_prior
+from src.core.transforms.log_mel_spectrogram import mel_filterbanks
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
-from src.core.utils.sketch import plot_mel_spectrogram
+from src.core.utils.sketch import plot_mel_spectrogram, plot_latent_sequence_histogram, plot_latent_power_spectral_density_heatmap, plot_latent_time_series
 from src.core.utils import soft_clip, linear_decay, nth_percentile, detach_values, prefix_keys, to_snake_case
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-__all__ = ["SIVAE"]
+__all__ = ["TSSIVAE"]
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
 class TSSIVAE(L.LightningModule):
@@ -94,19 +95,12 @@ class TSSIVAE(L.LightningModule):
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         plt.switch_backend('agg')
         log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.fit(self, train_dataloaders=data_module.train_dataloader(), val_dataloaders=data_module.val_dataloader())
-        log.info(f"Beginning testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.test(self, dataloaders=data_module.test_dataloader())
-
-    def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any]):
-        log.info(f"Encoding <{config.data.get('_target_')}> with <{config.model.get('_target_')}>")
-        ckpt_path = config.get("ckpt_path")
-        assert ckpt_path is not None, f"No checkpoint found at {ckpt_path}"
-        predictions = trainer.predict(self, data_module.predict_dataloader(), ckpt_path=config.get("ckpt_path"), return_predictions=True)
-        df = pd.concat(list(itertools.chain(*predictions)), axis=0)
-        save_path = pathlib.Path(ckpt_path).parent / "features.parquet"
-        log.info(f"Saving predictions to {save_path}")
-        df.to_parquet(save_path)
+        trainer.fit(
+            self,
+            train_dataloaders=data_module.train_dataloader(),
+            val_dataloaders=data_module.val_dataloader(),
+            ckpt_path=config.get("ckpt_path")
+        )
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
@@ -117,6 +111,19 @@ class TSSIVAE(L.LightningModule):
         self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.sigma_z_min = self.sigma_z_min or self.sigma_z_max
+
+        self.mel_filterbanks = torch.nn.Parameter(
+            torch.tensor(mel_filterbanks(
+                num_mel_bins=self.num_mel_bins,
+                mel_min_hertz=self.mel_min_hertz,
+                mel_max_hertz=self.mel_max_hertz,
+                linear_frequencies=np.linspace(0.0, self.sample_rate / 2, (self.fft_window_length // 2) + 1),
+                scaling_factor=self.mel_scaling_factor,
+                break_frequency=self.mel_break_frequency,
+            )).t(),
+            requires_grad=False,
+        )
+
         self.feature_encoder = init_cnn_feature_encoder(
             block_sizes=self.cnn_block_sizes,
             block_width=self.cnn_block_width,
@@ -242,13 +249,6 @@ class TSSIVAE(L.LightningModule):
         return torch.arange(self.num_non_smooth, self.num_non_smooth + self.num_smooth)
 
     @property
-    def alpha(self) -> Tensor:
-        return torch.cat([
-            torch.ones(len(self.non_smooth_idx)) * self.non_smooth_alpha,
-            torch.linspace(self.smooth_alpha_min, self.smooth_alpha_max, len(self.smooth_idx))
-        ])[torch.cat([self.non_smooth_idx, self.smooth_idx])].to(list(self.parameters())[0].device)
-
-    @property
     def delta_sigma_params(self):
         return dict(
             x_min=self.delta_sigma_step_start,
@@ -258,33 +258,60 @@ class TSSIVAE(L.LightningModule):
             k=self.delta_sigma_step_slope or 1.0,
         )
 
+    @property
+    def alpha(self) -> torch.Tensor:
+        return torch.cat([
+            torch.ones(len(self.non_smooth_idx), device=self.device) * self.non_smooth_alpha,
+            torch.linspace(self.smooth_alpha_min, self.smooth_alpha_max, len(self.smooth_idx), device=self.device)
+        ])
+
+    def pre_process(self, x: torch.Tensor) -> torch.Tensor:
+        # remove DC offset
+        x = x - x.mean(dim=-1, keepdims=True)
+        # apply fourier transform
+        window = torch.hann_window(self.fft_window_length).to(self.device)
+        x = torch.stft(x, self.fft_window_length, self.fft_hop_length, window=window, return_complex=True)
+        # discard phase
+        x = x.abs()
+        # transpose time on inner axes
+        x = x.transpose(-1, -2)
+        # crop to frame size
+        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
+        # apply mel
+        x = x @ self.mel_filterbanks
+        # apply log
+        x = torch.clamp(x, min=1e-6).log()
+        # add a channel dimension
+        x = x.unsqueeze(1)
+        return x
+
+    def translations(self, x: torch.Tensor) -> torch.Tensor:
+        epsilon = torch.randn(x.size(0), 1, 1, 1, device=x.device)
+        sigma_delta = self.delta_sigma_current(self.trainer.global_step)
+        return translation(x, epsilon * sigma_delta, padding_mode="circular")
+
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
-        # ensure x_i is a full sequence that can be divided into equal length frames
-        x_i = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
+        x_i = self.pre_process(x)
         # encode posterior for full sequence
         q_z_i, delta_i = self.encode(x_i) # (bs, seq, ld)
-        mu_x_i, log_sigma_sq_x_i = q_z_i.chunk(2, dim=-1)
         # x_j is x_i chunked into independently translated frames
-        x_i_framed = x_i.view(x.size(0), -1, 1, self.frame_window_length, x.size(-1)).flatten(end_dim=1)
-        # draw a sample from the prior over translations
-        epsilon = torch.randn(x_i_framed.size(0), 1, 1, 1).to(x_i.device)
-        sigma_delta = self.delta_sigma_current(self.trainer.global_step)
-        delta = epsilon * sigma_delta
-        x_j = translation(x_i_framed, delta, padding_mode="circular")
-        # encode posterior for translated frames separately
+        x_i_framed = x_i.view(x_i.size(0), -1, 1, self.frame_window_length, x_i.size(-1)).flatten(end_dim=1)
+        x_j = self.translations(x_i_framed)
         q_z_j, delta_j = self.encode(x_j) # (bs * seq, 1, ld)
-        q_z_j = q_z_j.view(q_z_i.size())
-        mu_x_j, log_sigma_sq_x_j = q_z_j.chunk(2, dim=-1)
+        q_z_j = q_z_j.view(q_z_i.size()) # (bs, seq, ld)
         # stack together distributions
-        q_z = torch.cat([q_z_i, q_z_j], dim=0)
+        q_z = torch.cat([q_z_i, q_z_j], dim=0) # (bs * 2, seq, ld)
+        q_z_i, q_z_j = q_z.chunk(2, dim=0)
+        mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
+        mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
         # cross-decode translated representations
         if self.cross_decode == "soft":
-            # soft cross-decoding averages the distributions
-            # μ₃ = 1/2μ₁ + 1/2μ₂, σ₃² = 1/2σ₁² + 1/2σ₂² + 1/4(μ₁ - μ₂)²
-            mu_x = 1/2 * mu_x_i + 1/2 * mu_x_j
-            log_sigma_sq_x = (1/2 * log_sigma_sq_x_i.exp() + 1/2 * log_sigma_sq_x_j.exp() + 1/4 * (mu_x_i - mu_x_j).pow(2)).log()
+            # soft cross-decoding is a weighted sum of gaussians distributions
+            # μ₃ = 1/2μ₁ + 1/2μ₂, σ₃² = 1/2²σ₁² + 1/2²σ₂²
+            mu_z = 1/2 * mu_z_i + 1/2 * mu_z_j
+            log_sigma_sq_z = (1/4 * log_sigma_sq_z_i.exp() + 1/4 * log_sigma_sq_z_j.exp()).log()
             # reparametrise
-            z = Normal(mu_x, (0.5 * log_sigma_sq_x).exp()).rsample() # (bs, seq, ld)
+            z = Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample() # (bs, seq, ld)
             # decode to feature maps
             U_hat = self.mlp_decode(z.flatten(end_dim=1)) # (bs * seq, ch, fr, fq)
             # reconstruct a contiguous sequence
@@ -293,8 +320,8 @@ class TSSIVAE(L.LightningModule):
             x_hat_j = self.cnn_decode(U_hat, delta_j) # (bs * seq, 1, fr, fq)
         elif self.cross_decode == "hard":
             # reparametrise
-            z_i = Normal(mu_x_i, (0.5 * log_sigma_sq_x_i).exp()).rsample() # (bs, seq, ld)
-            z_j = Normal(mu_x_j, (0.5 * log_sigma_sq_x_j).exp()).rsample() # (bs, seq, ld)
+            z_i = Normal(mu_z_i, (0.5 * log_sigma_sq_z_i).exp()).rsample() # (bs, seq, ld)
+            z_j = Normal(mu_z_j, (0.5 * log_sigma_sq_z_j).exp()).rsample() # (bs, seq, ld)
             # decode to feature maps
             U_hat_i = self.mlp_decode(z_i.flatten(end_dim=1)) # (bs * seq, ch, fr, fq)
             U_hat_j = self.mlp_decode(z_j.flatten(end_dim=1)) # (bs * seq, ch, fr, fq)
@@ -501,61 +528,64 @@ class TSSIVAE(L.LightningModule):
         x, *_ = batch
         if batch_idx < 4 and len(self.validation_step_outputs):
             step_outputs = self.validation_step_outputs[0]
-            # plot full sequence reconstructions
+
             specs = step_outputs["x_i"].squeeze().cpu().numpy()
             recons = step_outputs["x_hat_i"].squeeze().cpu().numpy()
-            nrows = step_outputs["x_i"].size(0)
-            fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(15, nrows * 2))
-            for i in range(nrows):
-                mesh = plot_mel_spectrogram(specs[i].T, **self.spectrogram_params, vmin=specs.min(), vmax=specs.max(), ax=axes[i, 0])
-                mesh = plot_mel_spectrogram(recons[i].T, **self.spectrogram_params, vmin=recons.min(), vmax=recons.max(), ax=axes[i, 1])
-            self.logger.experiment.log({ f"val/spectrogram_i": wandb.Image(fig) })
-            plt.close(fig)
-            # plot shifted reconstructions
-            specs = step_outputs["x_j"].squeeze()
-            specs = specs.view(x.size(0), -1, *specs.size()[1:]).cpu().numpy()[:, :5]
-            recons = step_outputs["x_hat_j"].squeeze()
-            recons = recons.view(x.size(0), -1, *recons.size()[1:]).cpu().numpy()[:, :5]
-            nrows, ncols = specs.shape[0], specs.shape[1]
-            fig, axes = plt.subplots(nrows=nrows, ncols=ncols * 2, figsize=(15, nrows * 2), sharey=True, sharex=True)
-            for i in range(nrows):
-                for j in range(ncols):
-                    ax1, ax2 = axes[i, j], axes[i, j + ncols]
-                    plot_mel_spectrogram(specs[i, j].T, **self.spectrogram_params, vmin=specs.min(), vmax=specs.max(), ax=ax1)
-                    plot_mel_spectrogram(recons[i, j].T, **self.spectrogram_params, vmin=recons.min(), vmax=recons.max(), ax=ax2)
-                    for ax in [ax1, ax2]:
-                        ax.tick_params(axis="both", bottom=False, left=False, labelbottom=False, labelleft=False)
-                        ax.set_ylabel("")
-            self.logger.experiment.log({ f"val/spectrogram_j": wandb.Image(fig) })
-            plt.close(fig)
-            # plot histograms of latent distribution
-            zs, _ = step_outputs["q_z_i"].chunk(2, dim=-1)
-            batch_size, sequence_len, latent_dim = zs.shape
-            z_min, z_max, num_bins = -3.5, 3.5, 20
-            hist = torch.zeros(batch_size, num_bins, latent_dim)
-            bins = torch.linspace(z_min, z_max, num_bins + 1)
-            epsilon = 1e-8
-            for j in range(num_bins):
-                hist[:, j, ...] = ((bins[j] < zs) & (zs < bins[j + 1])).sum(axis=1) / sequence_len
-                hist = torch.softmax((hist + epsilon).log(), dim=1)
-            fig, axes = plt.subplots(nrows=1, ncols=hist.size(0) + 1, width_ratios=[*[(1 - 0.01) / batch_size for _ in range(batch_size)], 0.01])
-            for i, ax in enumerate(axes[:-1]):
-                im = ax.imshow(
-                    hist[i].t(),
-                    extent=[z_min, z_max, 1, latent_dim],
-                    cmap=sns.color_palette("magma", as_cmap=True),
-                    aspect="auto",
-                    interpolation="none",
-                    vmin=0.0,
-                    vmax=1.0,
-                )
-                ax.tick_params(axis='x', rotation=90)
-                ax.set_xticks(np.linspace(z_min, z_max, num_bins + 1))
-                ax.set_yticks(np.arange(0, latent_dim, 4))
-            cbar = plt.colorbar(im, cax=axes[-1], orientation="vertical")
-            self.logger.experiment.log({ f"val/z_hist": wandb.Image(fig) })
-            plt.close(fig)
+            mu = step_outputs["q_z_i"].chunk(2, dim=-1)[0].cpu().numpy()
+            num_samples = min(6, step_outputs["x_i"].size(0))
 
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(15, 12), width_ratios=[0.97, 0.03], constrained_layout=True)
+
+                mesh = plot_mel_spectrogram(
+                    specs[i].T,
+                    **self.spectrogram_params,
+                    ax=axes[0, 0],
+                    vmin=specs.min(), vmax=specs.max(),
+                )
+                axes[0, 0].set_title("Original Mel Spectrogram")
+                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+
+                mesh = plot_mel_spectrogram(
+                    recons[i].T,
+                    **self.spectrogram_params,
+                    ax=axes[1, 0],
+                    vmin=specs.min(), vmax=specs.max(),
+                )
+                axes[1, 0].set_title("Reconstructed Mel Spectrogram")
+                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+
+                lc = plot_latent_time_series(
+                    ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0)).numpy(),
+                    self.alpha,
+                    audio_sample_rate=self.sample_rate,
+                    audio_fft_hop_length=self.fft_hop_length,
+                    audio_frame_length_hops=self.frame_window_length,
+                    ax=axes[2, 0],
+                    cbar=False,
+                    cmap='jet',
+                    lw=2,
+                    alpha=0.75,
+                )
+                axes[2, 0].set_xlabel("Time ($t$)")
+                axes[2, 0].set_ylabel(r"$\mathbf{z}_{\text{norm}}(t)$")
+                axes[2, 0].set_title("Latent Time-series")
+                cbar = plt.colorbar(lc, cax=axes[2, 1])
+                cbar.set_label("Alpha ($\alpha$)", rotation=90)
+
+                im = plot_latent_power_spectral_density_heatmap(
+                    ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0)).numpy(),
+                    fft_length=mu[i].shape[0],
+                    audio_sample_rate=self.sample_rate,
+                    audio_fft_hop_length=self.fft_hop_length,
+                    audio_frame_length_hops=self.frame_window_length,
+                    ax=axes[3, 0],
+                    cbar=False,
+                )
+                axes[3, 0].set_title("Latent Power Spectral Density")
+                fig.colorbar(im, cax=axes[3, 1], orientation="vertical")
+                self.logger.experiment.log({ f"val/image": wandb.Image(fig) })
+                plt.close(fig)
         self.validation_step_outputs.clear()
 
     @torch.no_grad()

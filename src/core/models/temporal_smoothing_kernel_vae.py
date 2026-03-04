@@ -98,16 +98,6 @@ class TSSIVAE(L.LightningModule):
             ckpt_path=config.get("ckpt_path")
         )
 
-    def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any]):
-        log.info(f"Encoding <{config.data.get('_target_')}> with <{config.model.get('_target_')}>")
-        ckpt_path = config.get("ckpt_path")
-        assert ckpt_path is not None, f"No checkpoint found at {ckpt_path}"
-        predictions = trainer.predict(self, data_module.predict_dataloader(), ckpt_path=config.get("ckpt_path"), return_predictions=True)
-        df = pd.concat(list(itertools.chain(*predictions)), axis=0)
-        save_path = pathlib.Path(ckpt_path).parent / "features.parquet"
-        log.info(f"Saving predictions to {save_path}")
-        df.to_parquet(save_path)
-
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
         L.LightningModule.__init__(obj)
@@ -275,6 +265,9 @@ class TSSIVAE(L.LightningModule):
             torch.linspace(h_min, h_max, len(self.smooth_idx), device=self.device)
         ])
 
+    def kl_weights(self, bandwidth: torch.Tensor) -> torch.Tensor:
+        return 
+
     def bandwidth_1(self) -> torch.Tensor:
         return torch.cat([
             torch.ones(self.latent_dim // 4, device=self.device) * 1e-1,
@@ -391,13 +384,11 @@ class TSSIVAE(L.LightningModule):
     def mlp_encode(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
-        h = self.bandwidth_1()
-        mu_z = torch.cat([
-            (mu_z[:, :t] * self.gaussian_kernel(t, h)).sum(dim=1, keepdims=True)
-            for t in range(1, mu_z.size(1) + 1)
-        ], dim=1)
-        log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=np.log(self.sigma_x_min ** 2))
-        q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
+        # temporal smoothing
+        h = self.bandwidth(h_min=1e-1, h_max=mu_z.size(1)/3)
+        mu_z = torch.cat([(mu_z[:, :t] * self.gaussian_kernel(t, h)).sum(dim=1, keepdims=True) for t in range(1, mu_z.size(1) + 1)], dim=1)
+        # softclip variance of features so it doesnt get too small
+        q_z = torch.cat([mu_z, soft_clip(log_sigma_sq_z, minimum=np.log(self.sigma_x_min ** 2))], dim=-1)
         delta = self.offset_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         return q_z, delta
 
@@ -456,7 +447,8 @@ class TSSIVAE(L.LightningModule):
         losses.append(shift_nll)
         outputs |= dict(log_likelihood_delta=-shift_nll, sigma_delta=sigma_delta)
         # standard KL
-        w = self.kl_weights()
+        h = self.bandwidth(h_min=1e-1, h_max=q_z.size(1)/3)
+        w = 1 - (h / h.max())
         prior_dkl = w * gaussian_kl_divergence_standard_prior(q_z)
         dkl = prior_dkl.sum(dim=-1).mean()
         losses.append(dkl)
@@ -570,30 +562,34 @@ class TSSIVAE(L.LightningModule):
                 axes[1, 0].set_title("Reconstructed Mel Spectrogram")
                 fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
 
-                lc = multiline(
-                    np.arange(mu.shape[1]).repeat(mu.shape[2]).reshape(*mu[i].shape).T,
-                    ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0)).T,
+                lc = plot_latent_time_series(
+                    ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0)).numpy(),
                     np.hstack([np.ones(64) * 1e-1, np.linspace(1e-1, 39/3, 64)]),
+                    audio_sample_rate=self.sample_rate,
+                    audio_fft_hop_length=self.fft_hop_length,
+                    audio_frame_length_hops=self.frame_window_length,
                     ax=axes[2, 0],
+                    cbar=False,
                     cmap='jet',
                     lw=2,
                     alpha=0.75,
                 )
                 axes[2, 0].set_xlabel("Time ($t$)")
                 axes[2, 0].set_ylabel(r"$\mathbf{z}_{\text{norm}}(t)$")
-                axes[2, 0].set_title("Latent Time-series by Kernel Smoothness")
+                axes[2, 0].set_title("Latent Time-series")
                 cbar = plt.colorbar(lc, cax=axes[2, 1])
-                cbar.set_label("Kernel Bandwidth (h)", rotation=90)
+                cbar.set_label("Alpha ($\alpha$)", rotation=90)
 
                 im = plot_latent_power_spectral_density_heatmap(
-                    mu[i],
-                    audio_sample_rate=48_000,
-                    audio_fft_hop_length=384,
-                    audio_frame_length_hops=192,
+                    ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0)).numpy(),
+                    fft_length=mu[i].shape[0],
+                    audio_sample_rate=self.sample_rate,
+                    audio_fft_hop_length=self.fft_hop_length,
+                    audio_frame_length_hops=self.frame_window_length,
                     ax=axes[3, 0],
                     cbar=False,
                 )
-                axes[3, 0].set_title("Latent Power Spectral Density (Welch)")
+                axes[3, 0].set_title("Latent Power Spectral Density")
                 fig.colorbar(im, cax=axes[3, 1], orientation="vertical")
                 self.logger.experiment.log({ f"val/image": wandb.Image(fig) })
                 plt.close(fig)

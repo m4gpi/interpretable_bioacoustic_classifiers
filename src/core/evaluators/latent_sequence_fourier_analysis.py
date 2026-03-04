@@ -17,17 +17,11 @@ from matplotlib import pyplot as plt
 from torchvision import transforms as T
 from typing import Any, List, Dict, Tuple
 
-from src.core.utils.sketch import plot_mel_spectrogram
+from src.core.utils.sketch import plot_mel_spectrogram, plot_latent_power_spectral_density_heatmap, multiline
 from src.core.evaluators.base import Evaluator
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
-
-# TODO: compute fourier transform across each dimension independently, get a spectrum of the features
-# stack spectrums for each dimension and plot as a heatmap
-
-# TODO: compute histograms, fix ranges, 95% percentile of latent space, with high number of bins
-# compute derivative histogram, fix ranges, 95% percentile of latent space derivatives
 
 __all__ = ["LatentSequenceFourierAnalysis"]
 
@@ -37,6 +31,7 @@ class LatentSequenceFourierAnalysis(Evaluator):
         self.results_dir = pathlib.Path(results_dir)
         self.results_dir.mkdir(exist_ok=True, parents=True)
 
+    @torch.no_grad()
     def __call__(self, trainer, model, data_module, config) -> None:
         ckpt_path = config.get("ckpt_path")
         assert ckpt_path is not None, f"No checkpoint found at {ckpt_path}"
@@ -52,92 +47,48 @@ class LatentSequenceFourierAnalysis(Evaluator):
         ).set_index(df.index.names)
 
         log.info(f"Computing STFT over each latent dimension")
-        num_fft_hops = data_module.data.segment_len * model.sample_rate / model.fft_hop_length
-        frame_length_seconds = (1 / model.sample_rate * model.fft_hop_length) * model.frame_window_length
-        seq_len = int(data_module.data.segment_len / frame_length_seconds)
-        mu = df.values[:, :model.latent_dim].reshape(-1, int(seq_len), model.latent_dim)
-        sampling_freq = 1 / frame_length_seconds
-        nyquist = sampling_freq / 2
-        freqs = np.fft.rfftfreq(seq_len, frame_length_seconds)
-        window = np.hanning(seq_len)
-        with tqdm.tqdm(total=mu.shape[0]) as pbar:
-            for x, file_name in zip(mu, df.file_name.unique()):
-                fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(7, 11), width_ratios=[0.95, 0.05], constrained_layout=True)
-                metadata = data_module.data.metadata[data_module.data.metadata.file_name == file_name].iloc[0]
-                spectrogram = data_module.transforms(data_module.data.load_sample(metadata.file_path)).squeeze()
-                mesh = plot_mel_spectrogram(spectrogram.T, **model.spectrogram_params, vmin=spectrogram.min(), vmax=spectrogram.max(), ax=axes[0, 0])
+
+        seq_len = df.index.get_level_values("timestep").max() + 1
+        metadata = data_module.data.metadata
+
+        zs = df.loc[:, [f"z_mean_{i}" for i in range(model.latent_dim)]].reshape(-1, int(seq_len), model.latent_dim)
+        delta = df.loc[:, "delta"].values.reshape(-1, int(seq_len), 1)
+
+        zs = torch.as_tensor(mu, device=model.device, dtype=torch.float32)
+        delta = torch.as_tensor(delta, device=model.device, dtype=torch.float32)
+
+        with tqdm.tqdm(total=mu.size(0)) as pbar:
+            for file_name, z in zip(df.file_name.unique(), zs):
+                fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(11, 8), width_ratios=[0.97, 0.03], constrained_layout=True)
+                row = metadata[metadata.file_name == file_name].iloc[0]
+                x = data_module.transforms(data_module.data.load_sample(row.file_path)).squeeze()
+                x_hat = model.decode(x.unsqueeze(0), delta[i].unsqueeze(0)).detach().squeeze().T
+
+                mesh = plot_mel_spectrogram(x.T, **model.spectrogram_params, vmin=x.min(), vmax=x.max(), ax=axes[0, 0])
                 fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
-                mag, phase = self.spectra(x, window)
-                im = self.plot_spectra(mag, freqs, ax=axes[1, 0], cmap=sns.color_palette("light:b", as_cmap=True))
-                cbar = fig.colorbar(im, cax=axes[1, 1], orientation="vertical")
-                cbar.set_label("Magnitude")
-                im = self.plot_spectra(phase, freqs, ax=axes[2, 0], cmap=plt.get_cmap("twilight"))
-                cbar = fig.colorbar(im, cax=axes[2, 1], orientation="vertical")
-                cbar.set_label("Phase")
-                hist = torch.zeros(10, 128)
-                bins = torch.linspace(-3.5, 3.5, 10 + 1)
-                for j in range(10):
-                    hist[j, ...] = ((bins[j] < x) & (x < bins[j + 1])).sum(axis=0) / seq_len
-                    hist = torch.softmax((hist + 1e-8).log(), dim=0)
-                im = axes[3, 0].imshow(
-                    hist.t(),
-                    extent=[-3.5, 3.5, 1, 128],
-                    cmap=sns.color_palette("magma", as_cmap=True),
-                    aspect="auto",
-                    interpolation="none",
-                    vmin=0.0,
-                    vmax=1.0,
-                )
-                ax.tick_params(axis='x', rotation=90)
-                ax.set_xticks(np.linspace(-3.5, 3.5, 10 + 1))
-                ax.set_yticks(np.arange(0, 127, 4))
-                cbar = fig.colorbar(im, cax=axes[3, 1], orientation="vertical")
-                fig.suptitle("Spectra of Latent Timeseries Means")
+                axes[1, 0].set_title("Original")
+
+                mesh = plot_mel_spectrogram(x_hat, **model.spectrogram_params, ax=axes[1, 0])
+                fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+                axes[1, 0].set_title("Reconstruction")
+
+                ts = torch.arange(x.size(0)).repeat(x.size(1)),
+                z_norm = ((z - z.mean(axis=0)) / z.std(axis=0)).t(),
+                hs = torch.cat([torch.ones(64) * 1e-1, torch.linspace(1e-1, 39/3, 64)])
+                lc = multiline(ts, z_norm, hs, ax=axes[2, 0], cmap='jet', lw=2, alpha=0.75)
+                cbar = fig.colorbar(lc, cax=axes[2, 1])
+                cbar.set_label("Kernel Bandwidth (h)", rotation=90)
+                axes[2, 0].set_xlabel("Time ($t$)")
+                axes[2, 0].set_ylabel(r"$\mathbf{z}_{\text{norm}}(t)$")
+                axes[2, 0].set_title("Latent Time-series by Kernel Smoothness")
+
+                spec_params = dict(audio_sample_rate=model.sample_rate, audio_fft_hop_length=model.fft_hop_length, audio_frame_length_hops=model.frame_window_length)
+                mesh = plot_latent_power_spectral_density_heatmap(z, fft_length=seq_len, **spec_params, ax=axes[3, 0], cbar=False)
+                fig.colorbar(mesh, cax=axes[3, 1], orientation="vertical")
+                axes[0 + 2, 0].set_title("Latent Power Spectral Density")
+
+                fig.suptitle("Spectral Analysis of Latent Time-series")
                 fig.savefig(self.results_dir / f"{file_name}.png")
                 plt.close()
                 pbar.update(1)
         log.info(f"Saved to {str(self.results_dir)}")
-
-    @staticmethod
-    def spectra(x, window):
-        spectra = []
-        for j in range(x.shape[-1]):
-            spectrum = np.fft.rfft(x[:, j] * window)
-            spectra.append(spectrum)
-        spectra = np.vstack(spectra)
-        mag = np.abs(spectra)
-        phase = np.angle(spectra)
-        return mag, phase
-
-    @staticmethod
-    def plot_spectra(Z, fq, ax, cmap):
-        xx, yy = np.meshgrid(np.arange(Z.shape[0]), fq)
-        mesh = ax.pcolormesh(xx, yy, Z.T, cmap=cmap)
-        ax.set_xticks(np.arange(0, Z.shape[0], 4) + 1)
-        ax.set_yticks(fq)
-        ax.tick_params(axis='x', rotation=90)
-        ax.set_xlabel("Latent Dimension")
-        ax.set_ylabel("Frequency (Hz)")
-        return mesh
-
-def main(config: DictConfig):
-    log.info("Instantiating transforms...")
-    transforms: List[L.Callback] = instantiate_transforms(config.get("transforms"))
-
-    log.info(f"Instantiating datamodule <{config.data._target_}>")
-    data_module: L.LightningDataModule = hydra.utils.instantiate(config.data, transforms=transforms)
-    data_module.setup()
-
-    log.info(f"Instantiating model <{config.model._target_}>")
-    model = hydra.utils.instantiate(config.model, **data_module.data.model_params)
-
-    log.info(f"Instantiating trainer <{config.trainer._target_}>")
-    trainer: L.Trainer = hydra.utils.instantiate(config.trainer)
-
-    evaluator = LatentSequenceFourierAnalysis(results_dir=pathlib.Path("./models/tssi_vae.pt:v2/latent_sequence_fourier_analysis"))
-    evaluator(trainer, model, data_module, config)
-
-if __name__ == "__main__":
-    main()
-
-

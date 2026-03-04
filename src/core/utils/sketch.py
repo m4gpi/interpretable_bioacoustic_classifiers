@@ -212,17 +212,46 @@ def plot_latent_sequence_histogram(
         cbar = plt.colorbar(im, ax=ax, orientation="vertical")
     return im
 
-def multiline(xs: List, ys: List, c: List, ax: Axes = None, **kwargs: Any):
+def multiline(xs: List, ys: List, cs: List | None = None, ax: Axes = None, **kwargs: Any) -> LineCollection:
     ax = plt.gca() if ax is None else ax
     segments = [np.column_stack([x, y]) for x, y in zip(xs, ys)]
     lc = LineCollection(segments, **kwargs)
-    lc.set_array(np.asarray(c))
+    if cs is not None:
+        lc.set_array(np.asarray(cs))
     ax.add_collection(lc)
-    ax.autoscale()
+    ax.autoscale(tight=True)
+    return lc
+
+def plot_latent_time_series(
+    zs: NDArray,
+    cs: NDArray | None = None,
+    audio_sample_rate: int = 48_000,
+    audio_fft_hop_length: int = 384,
+    audio_frame_length_hops: int = 192,
+    ax: Axes = None,
+    cmap: str =  "jet",
+    cbar: bool = False,
+    **kwargs: Any,
+) -> LineCollection:
+    ax = plt.gca() if ax is None else ax
+    seq_len = zs.shape[0]
+    frame_duration_seconds = (audio_fft_hop_length / audio_sample_rate) * audio_frame_length_hops
+    duration_seconds = frame_duration_seconds * seq_len
+    xs = np.arange(seq_len).repeat(zs.shape[1]).reshape(*zs.shape).T
+    lc = multiline(xs, zs.T, cs, ax=ax, cmap=cmap, **kwargs)
+    ax.set_xticks(
+        np.arange(seq_len),
+        labels=np.arange(frame_duration_seconds, duration_seconds + frame_duration_seconds, frame_duration_seconds).round(3),
+        rotation=90
+    )
+    if cbar:
+        fig = plt.gcf()
+        fig.colorbar(lc, ax=ax, orientation="vertical")
     return lc
 
 def plot_latent_power_spectral_density_heatmap(
     X: NDArray,
+    fft_length: int,
     audio_sample_rate: int = 48_000,
     audio_fft_hop_length: int = 384,
     audio_frame_length_hops: int = 192,
@@ -232,13 +261,12 @@ def plot_latent_power_spectral_density_heatmap(
     **kwargs: Any,
 ) -> QuadMesh:
     ax = ax.gca() if ax is None else ax
-    X = (X - X.mean(axis=0)) / X.std(axis=0) 
     seq_len, latent_dim = X.shape
     ld = np.arange(latent_dim)
     frame_length_seconds = (audio_fft_hop_length * audio_frame_length_hops / audio_sample_rate)
     fs = audio_sample_rate / (audio_fft_hop_length * audio_frame_length_hops)
-    fq = np.fft.rfftfreq(seq_len, frame_length_seconds)
-    Z = np.vstack([signal.welch(X[:, j], fs, nperseg=seq_len)[1] for j in range(latent_dim)])
+    fq = np.fft.rfftfreq(fft_length, frame_length_seconds)
+    Z = np.vstack([signal.welch(X[:, j], fs, nperseg=fft_length)[1] for j in range(latent_dim)])
     xx, yy = np.meshgrid(ld, fq)
     mesh = ax.pcolormesh(xx, yy, Z.T, cmap=cmap, **kwargs)
     ax.set_xticks(ld[::4] + 1)

@@ -26,18 +26,18 @@ def autoregressive_prior(q_z: torch.Tensor, alpha: torch.Tensor, p_z_init: torch
     mu_p, log_sigma_sq_p = p_z.chunk(2, dim=-1)
     # approximate posterior
     mu_q, log_sigma_sq_q = q_z.chunk(2, dim=-1)
+    # at t = 0, the prior is standard normal
     mu_q_prev = torch.zeros(mu_q.size(0), mu_q.size(-1), device=mu_q.device)
     log_sigma_sq_q_prev = torch.zeros(mu_q.size(0), mu_q.size(-1), device=mu_q.device)
     for t in range(q_z.size(1)):
-        # at t=0, set alpha to 0 (force standard normal)
+        # at t = 0, prior is standard normal
         alpha_t = 0.0 if t == 0 else alpha
-        # mean of current time-step is weighted average of previous timestep and 0
-        # kμ₁ + (1 - k)μ₂
+        # μ₃ = αμ₁ + (1 - α)μ₂
         mu_p_current = alpha_t * mu_q_prev + (1 - alpha_t) * mu_p[:, t, :]
-        # variance of current time-step is weighted sum of variances between previous and 1, accounting for the means
-        # kσ₁² + (1 - k)σ₂² + k(1 - k)(μ₁ - μ₂)²
-        log_sigma_sq_p_current = (alpha_t * log_sigma_sq_q_prev.exp() + (1 - alpha_t) * log_sigma_sq_p[:, t, :].exp() + alpha_t * (1 - alpha_t) * (mu_q_prev - mu_p[:, t, :]).pow(2)).log()
+        # σ²₃ = α²σ²₁ + (1 - α)²σ²₂
+        log_sigma_sq_p_current = (alpha_t**2 * log_sigma_sq_q_prev.exp() + (1 - alpha_t)**2 * log_sigma_sq_p[:, t, :].exp()).log()
         yield t, torch.cat([mu_p_current, log_sigma_sq_p_current], dim=-1)
+        # now the prior is the previous timestep
         mu_q_prev, log_sigma_sq_q_prev = mu_q[:, t, :], log_sigma_sq_q[:, t, :]
 
 def info_noise_contrastive_estimation(x1: torch.Tensor, x2: torch.Tensor, y: torch.Tensor, tau: float = 0.1):

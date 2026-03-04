@@ -31,7 +31,7 @@ trainer:
 callbacks:
   model_checkpoint:
     dirpath: ${paths.root_dir}/checkpoints/tsk_vae.pt:v0/
-    filename: model_{{step}}
+    filename: model
     every_n_train_steps: 50_000
     save_top_k: 1
 
