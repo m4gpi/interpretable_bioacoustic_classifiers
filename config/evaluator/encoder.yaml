@@ -1,2 +1,2 @@
 _target_: src.core.evaluators.encoder.Encoder
-results_dir:
+results_path:

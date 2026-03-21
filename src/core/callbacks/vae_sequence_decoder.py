@@ -9,7 +9,6 @@ from matplotlib import pyplot as plt
 from typing import Any, Dict, List, Tuple
 from torch.distributions.normal import Normal
 
-from src.core.models.tssi_vae import TSSIVAE
 from src.core.utils import metrics
 from src.core.utils.sketch import plot_mel_spectrogram
 
@@ -17,9 +16,15 @@ plt.switch_backend('agg')
 
 __all__ = ["VAESequenceDecoder"]
 
+def load_from_checkpoint(model, ckpt_path, map_location: str = "cpu"):
+    checkpoint = torch.load(ckpt_path, weights_only=False, map_location=map_location)
+    model.load_state_dict(checkpoint["state_dict"], strict=False)
+    return model
+
 class VAESequenceDecoder(L.Callback):
     def __init__(
         self,
+        model: torch.nn.Module,
         ckpt_path: str,
         num_per_batch: int = 6,
         log_every_n_train_steps: int | None = None,
@@ -28,7 +33,7 @@ class VAESequenceDecoder(L.Callback):
         super().__init__()
         self.ckpt_path = ckpt_path
         self.num_per_batch = num_per_batch
-        self.model = TSSIVAE.load_from_checkpoint(ckpt_path)
+        self.model = load_from_checkpoint(model, ckpt_path)
         self.log_every_n_train_steps = log_every_n_train_steps
         self.latent_hop_length = latent_hop_length
 

@@ -265,20 +265,11 @@ class TSSIVAE(L.LightningModule):
             torch.linspace(h_min, h_max, len(self.smooth_idx), device=self.device)
         ])
 
-    def kl_weights(self, bandwidth: torch.Tensor) -> torch.Tensor:
-        return 
-
     def bandwidth_1(self) -> torch.Tensor:
         return torch.cat([
             torch.ones(self.latent_dim // 4, device=self.device) * 1e-1,
             torch.linspace(1e-1, 1.0, self.latent_dim // 4, device=self.device),
             torch.linspace(1.0, 13.0, self.latent_dim // 2, device=self.device),
-        ])
-
-    def kl_weights(self) -> torch.Tensor:
-        return torch.cat([
-            torch.ones(self.latent_dim // 4, device=self.device),
-            torch.zeros(3 * self.latent_dim // 4, device=self.device)
         ])
 
     def pre_process(self, x: Tensor) -> torch.Tensor:
@@ -404,6 +395,7 @@ class TSSIVAE(L.LightningModule):
         for i, block in enumerate(self.feature_decoder):
             if i == len(self.feature_decoder) - 2:
                 U = translation(U, delta.view(delta.size(0) * delta.size(1), 1, 1, 1), padding_mode="circular")
+            if i == len(self.feature_decoder) - 1:
                 U = U.unflatten(0, (delta.size(0), delta.size(1))).transpose(1, 2).flatten(start_dim=2, end_dim=3)
             U = block(U)
         return U

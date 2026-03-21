@@ -39,10 +39,10 @@ from src.core.utils import soft_clip, linear_decay, nth_percentile, detach_value
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-__all__ = ["TSSIVAE"]
+__all__ = ["TCVAEEMA"]
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
-class TSSIVAE(L.LightningModule):
+class TCVAEEMA(L.LightningModule):
     sample_rate: int = 48_000
     fft_window_length: int = 512
     fft_hop_length: int = 384
@@ -112,17 +112,14 @@ class TSSIVAE(L.LightningModule):
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.sigma_z_min = self.sigma_z_min or self.sigma_z_max
 
-        self.mel_filterbanks = torch.nn.Parameter(
-            torch.tensor(mel_filterbanks(
-                num_mel_bins=self.num_mel_bins,
-                mel_min_hertz=self.mel_min_hertz,
-                mel_max_hertz=self.mel_max_hertz,
-                linear_frequencies=np.linspace(0.0, self.sample_rate / 2, (self.fft_window_length // 2) + 1),
-                scaling_factor=self.mel_scaling_factor,
-                break_frequency=self.mel_break_frequency,
-            )).t(),
-            requires_grad=False,
-        )
+        self.mel_filterbanks = torch.tensor(mel_filterbanks(
+            num_mel_bins=self.num_mel_bins,
+            mel_min_hertz=self.mel_min_hertz,
+            mel_max_hertz=self.mel_max_hertz,
+            linear_frequencies=np.linspace(0.0, self.sample_rate / 2, (self.fft_window_length // 2) + 1),
+            scaling_factor=self.mel_scaling_factor,
+            break_frequency=self.mel_break_frequency,
+        )).t()
 
         self.feature_encoder = init_cnn_feature_encoder(
             block_sizes=self.cnn_block_sizes,

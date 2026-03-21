@@ -1,35 +1,24 @@
 # @package _global_
 
-# python main.py +experiment=sounding_out/vae_soundscape_generator
+# python main.py +experiment=vae_soundscape_generator
 
 defaults:
   - override /model: vae_soundscape_generator
-  - override /data: vae_embeddings
   - override /trainer: gpu
   - override /logger: wandb
-
-train: true
-test: true
-seed: 42
-
-data:
-  data_path: ./models/tssi_vae.pt:v1/features_hop=32.parquet
-  seed: ${seed}
-  train_batch_size: 32
-  eval_batch_size: 32
 
 model:
   num_features: 128
   num_rnn_layers: 1
   num_samples: 1
-  num_init_frames: 60
-  sigma_dzdt: 1.0
+  num_init_frames: 10
+  sigma_dzdt: 0.2
   teach_prob_start: 0.8
   teach_prob_end: 0.0
-  teach_prob_step_start: null # 0
-  teach_prob_step_end: null # 10000
-  teach_prob_slope: 1.0
-  learning_rate: 4.e-5
+  teach_prob_step_start: 0
+  teach_prob_step_end: 10000
+  teach_prob_slope: -1.0
+  learning_rate: 1.e-4
   optimiser_cls: torch.optim.AdamW
   scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
   scheduler_config:
@@ -49,9 +38,33 @@ callbacks:
     save_top_k: -1
   vae_sequence_decoder:
     _target_: src.core.callbacks.vae_sequence_decoder.VAESequenceDecoder
+    model:
+      _target_: src.core.models.temporal_smoothing_kernel_vae.TSSIVAE
+      sigma_z_max: 0.2
+      smooth_prop: 0.5
+      delta_sigma_max: 2.0
+      sample_rate: 48000
+      fft_window_length: 512
+      fft_hop_length: 384
+      num_mel_bins: 64
+      mel_min_hertz: 150
+      mel_max_hertz: 15_000
+      mel_scaling_factor: 4581.0
+      mel_break_frequency: 1_750.0
+      frame_window_length: 192
+      latent_dim: 128
+      weight_init_std: 1.e-2
+      cnn_block_width: 4
+      cnn_block_depth: 3
+      cnn_dropout_prob: 0.2
+      cnn_padding_mode: circular
+      cnn_activation: LEAK
+      mlp_activation: LEAK
+      mlp_dropout_prob: 0.1
+      frame_padding_mode: circular
     ckpt_path: ./models/tssi_vae.pt:v1/model.ckpt
     log_every_n_train_steps: ${trainer.val_check_interval}
-    latent_hop_length: 1
+    latent_hop_length: 6
 
 logger:
   wandb:

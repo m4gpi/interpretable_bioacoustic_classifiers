@@ -107,7 +107,7 @@ class VAESoundscapeGenerator(L.LightningModule):
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         log.info(f"Calculating aggregate posterior over training samples <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        mu_agg, sigma_agg = data_module.train_data.aggregate_posterior_analytical()
+        mu_agg, sigma_agg = data_module.train_data.aggregate_posterior_analytical(data_module.train_data.q_z)
         self.mu_agg = torch.nn.Parameter(mu_agg, requires_grad=False)
         self.sigma_agg = torch.nn.Parameter(sigma_agg, requires_grad=False)
         log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
@@ -148,7 +148,9 @@ class VAESoundscapeGenerator(L.LightningModule):
         seq, bs, ld = mu.size()
 
         dt = 1
-        z = Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
+        z = mu
+        # z = (z - z.mean(dim=0, keepdims=True)) / (((z - z.mean(dim=0, keepdims=True))**2).mean(dim=0, keepdims=True) + 1e-5).sqrt()
+        # z = Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
         dz_dt = z.diff(dim=0, n=1) / dt
 
         # _, (h, c) = self.sequence_encoder()
@@ -161,6 +163,13 @@ class VAESoundscapeGenerator(L.LightningModule):
                 z_t = z[0].unsqueeze(0)
                 z_hats = [z_t]
                 dzhat_dts = []
+                # (1) layer norm applied incorrectly here, it operates over the last 2 dimensions, so we need to transpose AFTER applying layernorm
+                # OR use batch_first=True in the RNN.
+                # (2) layer norm applied over the last 2 dimensions?! Normalisation should be independent for each dimension?
+                # Effectively treat each one as an independent time-series that we're predicting all at once
+                # (3) layer norm over hidden activations?! https://arxiv.org/pdf/1607.06450
+                # this is layer norm:
+                # (z_t - z_t.mean(dim=-1, keepdims=True)) / (((z_t - z_t.mean(dim=-1, keepdims=True))**2).mean(dim=-1, keepdims=True) + 1e-5).sqrt()
                 for t in range(seq - 1):
                     # predict Δẑₜ using ẑₜ (or zₜ)
                     dzhat_dt, (h, c) = self.sequence_decoder(self.norm(self.embedding(z_t)), (h, c))
@@ -228,6 +237,8 @@ class VAESoundscapeGenerator(L.LightningModule):
     def teach_prob_current(self, current_step: int) -> torch.Tensor:
         if not self.training:
             return 0.0
+        elif not self.with_curriculum:
+            return 1.0
         elif self.teach_prob_start is None:
             return self.teach_prob_end
         return torch.tensor(self.bounded_sigmoid(current_step, **self.teach_prob_params))

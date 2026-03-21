@@ -20,6 +20,38 @@ def gaussian_kl_divergence(p: torch.Tensor, q: torch.Tensor = torch.zeros(2)) ->
     (mu_p, log_sigma_sq_p), (mu_q, log_sigma_sq_q) = p.chunk(2, dim=-1), q.chunk(2, dim=-1)
     return -1/2 * (1 + log_sigma_sq_p - log_sigma_sq_q - (log_sigma_sq_p.exp() + (mu_p - mu_q).pow(2)) / log_sigma_sq_q.exp())
 
+def autoregressive_mixture_kl_divergence(q_z: torch.Tensor, alpha: torch.Tensor, z: torch.Tensor | None = None, num_samples: int | None = None, dim: int = 0):
+    assert z is not None or num_samples > 0
+    mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+    # monte-carlo estimator of a mixture prior distribution using samples
+    if z is None:
+        num_samples = num_samples or 1
+        mu_z = mu_z.expand(num_samples, *mu_z.shape).flatten(end_dim=1)
+        log_sigma_sq_z = log_sigma_sq_z.expand(num_samples, *log_sigma_sq_z.shape).flatten(end_dim=1)
+        z = mu_z + (torch.randn_like(mu_z) * (1/2 * log_sigma_sq_z).exp())
+    sigma_z = (1/2 * log_sigma_sq_z).exp()
+    # evaluate the log density of the posterior
+    # log_q = -1/2 * ((2 * sigma_z.pow(2) * torch.pi).log() + ((z - mu_z).pow(2) / 2*sigma_z.pow(2)))
+    log_q = torch.distributions.Normal(mu_z, sigma_z).log_prob(z)
+    # log_q = -1/2 * (2 * sigma_z.log() + torch.tensor(2 * torch.pi).log() + ((z - mu_z) / sigma_z).pow(2))
+    # evaluate the log density of the prior at each timestep
+    mu_prev, sigma_prev  = torch.zeros_like(mu_z), torch.ones_like(sigma_z)
+    # t=0 is (0, 1), t>0 is q(z_t-1)
+    mu_prev[:, 1:], sigma_prev[:, 1:] = mu_z[:, :-1], sigma_z[:, :-1]
+    alpha = torch.cat([torch.zeros_like(alpha).unsqueeze(0), alpha.expand(q_z.size(-2) - 1, *alpha.shape)])
+    # calculate the log density of samples given the posterior at t-1
+    log_p_prev = torch.distributions.Normal(mu_prev, sigma_prev).log_prob(z)
+    # log_p_prev = -1/2 * (2 * sigma_prev.log() + torch.tensor(2 * torch.pi).log() + ((z - mu_prev) / sigma_prev).pow(2))
+    # calculate the log density of samples under a standard normal distribution
+    log_p_0 = torch.distributions.Normal(torch.zeros_like(mu_prev), torch.ones_like(sigma_prev)).log_prob(z)
+    # log_p_0 = -1/2 * (torch.tensor(2 * torch.pi).log() + z.pow(2))
+    # calculate the log density of a gaussian mixture weighted by alpha
+    log_p = torch.logsumexp(torch.stack([alpha.log() + log_p_prev, (1 - alpha).log() + log_p_0], dim=0), dim=0)
+    # then take expected value of the difference in log densities across samples
+    # since we're approximating the integral in the KL by an expectation, negative values are possible, so clamp to min 0
+    kl_divergence = torch.clamp((log_q - log_p).mean(dim=dim), min=0)
+    return kl_divergence
+
 def autoregressive_prior(q_z: torch.Tensor, alpha: torch.Tensor, p_z_init: torch.Tensor | None = None):
     # prior distribution is a standard normal
     p_z = torch.zeros(1, device=q_z.device).expand(*q_z.size()) if p_z_init is None else p_z_init

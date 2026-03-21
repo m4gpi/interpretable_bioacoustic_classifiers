@@ -37,16 +37,15 @@ class VAEEmbeddings(torch.utils.data.Dataset):
         self.delta = torch.tensor(self.features[self.shift_columns].values.reshape(-1, self.seq_len, 1), dtype=torch.float32)
         self.s = self.features["file_i"].unique()
 
-    def aggregate_posterior_analytical(self):
-        mu, log_sigma_sq = self.q_z.flatten(end_dim=1).chunk(2, dim=-1)
+    def aggregate_posterior_analytical(self, q_z: torch.Tensor):
+        mu, log_sigma_sq = q_z.flatten(end_dim=1).chunk(2, dim=-1)
         sigma_sq = log_sigma_sq.exp()
         mu_bar = mu.mean(dim=0)
         sigma_bar = torch.diag(sigma_sq.mean(dim=0)) + ((mu - mu_bar).t() @ (mu - mu_bar)) / mu.size(0)
         return mu_bar, sigma_bar
 
-    def aggregate_posterior_samples(self):
-        num_samples = 100
-        mu, log_sigma_sq = self.q_z.expand(num_samples, -1, -1, -1).flatten(end_dim=2).chunk(2, dim=-1)
+    def aggregate_posterior_samples(self, q_z: torch.Tensor, num_samples: int = 100):
+        mu, log_sigma_sq = q_z.expand(num_samples, -1, -1, -1).flatten(end_dim=2).chunk(2, dim=-1)
         z = Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
         mu_bar = z.mean(dim=0)
         sigma_bar = ((z - mu_bar).t() @ (z - mu_bar)) / mu.size(0)
