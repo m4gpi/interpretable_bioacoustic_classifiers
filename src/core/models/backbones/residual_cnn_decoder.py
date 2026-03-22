@@ -14,7 +14,7 @@ from src.core.models.components import NormType, Activation, ResidualConv2d
 
 __all__ = ["ResidualCNNDecoder"]
 
-@dataclass
+@dataclass(kw_only=True, unsafe_hash=True)
 class ResidualCNNDecoder(torch.nn.Module):
     block_sizes: List[int]
     block_width: int
@@ -42,7 +42,7 @@ class ResidualCNNDecoder(torch.nn.Module):
                 norm=self.norm_fn,
                 dropout_prob=self.dropout_prob,
                 padding_mode=self.padding_mode,
-            ) for j in range(block_depth)])
+            ) for j in range(self.block_depth)])
             block.append(torch.nn.ConvTranspose2d(
                 in_channels=in_channels,
                 out_channels=out_channels,

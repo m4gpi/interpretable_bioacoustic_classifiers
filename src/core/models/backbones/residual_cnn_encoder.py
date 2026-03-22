@@ -14,7 +14,7 @@ from src.core.models.components import NormType, Activation, ResidualConv2d
 
 __all__ = ["ResidualCNNEncoder"]
 
-@dataclass
+@dataclass(kw_only=True, unsafe_hash=True)
 class ResidualCNNEncoder(torch.nn.Module):
     block_sizes: List[int]
     block_width: int
@@ -59,7 +59,7 @@ class ResidualCNNEncoder(torch.nn.Module):
                 norm=self.norm_fn,
                 dropout_prob=self.dropout_prob,
                 padding_mode=self.padding_mode,
-            ) for i in range(block_depth)])
+            ) for i in range(self.block_depth)])
             self.model.append(block)
             in_channels = out_channels
 
