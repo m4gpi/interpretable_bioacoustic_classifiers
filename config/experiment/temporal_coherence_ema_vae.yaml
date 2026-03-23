@@ -30,9 +30,9 @@ trainer:
 
 callbacks:
   model_checkpoint:
-    dirpath: ${paths.root_dir}/checkpoints/tsp_vae.pt:v0/
+    dirpath: ${paths.root_dir}/checkpoints/tc_ema_vae.pt:v0/
     filename: model
-    every_n_train_steps: 50_000
+    every_n_train_steps: 25_000
     save_top_k: 1
 
 logger:

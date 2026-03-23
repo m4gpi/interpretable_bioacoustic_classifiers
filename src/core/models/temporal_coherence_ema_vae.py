@@ -70,15 +70,17 @@ class LogMelSpectrogram(torch.nn.Module):
         return obj
 
     def __post_init__(self):
-        self.mel_filterbanks = torch.nn.Parameter(torch.tensor(mel_filterbanks(
+        mel_basis = mel_filterbanks(
             num_mel_bins=self.num_mel_bins,
             mel_min_hertz=self.mel_min_hertz,
             mel_max_hertz=self.mel_max_hertz,
             linear_frequencies=torch.linspace(0.0, self.sample_rate / 2, (self.n_fft // 2) + 1),
             scaling_factor=self.mel_scaling_factor,
             break_frequency=self.mel_break_frequency,
-        ), requires_grad=False).t())
+        )
+        self.register_buffer("mel_basis", torch.tensor(mel_basis, requires_grad=False), persistent=False)
 
+    @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # remove DC offset
         x = x - x.mean(dim=-1, keepdims=True)
@@ -90,7 +92,7 @@ class LogMelSpectrogram(torch.nn.Module):
         # transpose time on inner axes
         x = x.transpose(-1, -2)
         # apply mel
-        x = x @ self.mel_filterbanks
+        x = x @ self.mel_basis.t()
         # apply log
         x = torch.clamp(x, min=1e-6).log()
         # add a channel dimension
@@ -208,7 +210,7 @@ class TCEMAVAE(L.LightningModule):
         # ------ teacher forward ------ #
         with torch.no_grad():
             q_z_i_ema, q_z_j_ema = self.encode_ema(x_i), self.encode_ema(x_j)
-            q_z_ema = torch.cat([q_z_i_ema, q_z_j_ema.view(q_z_i_ema.size())], dim=0)
+            q_z_ema = torch.stack([q_z_i_ema, q_z_j_ema.view(q_z_i_ema.size())], dim=0)
 
         return dict(
             x=x, x_hat=x_hat,
@@ -311,9 +313,15 @@ class TCEMAVAE(L.LightningModule):
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp())).sum(dim=-1).mean()
 
-        # temporal mixture kl
-        mu, log_sigma_sq = q_z_ema.expand(self.num_kl_samples, *q_z_ema.shape).chunk(2, dim=-1)
+        # distilled temporal mixture kl (for subset of features)
+        # sample from student posterior
+        mu, log_sigma_sq = q_z.expand(self.num_kl_samples, *q_z.shape).flatten(end_dim=1).chunk(2, dim=-1)
+        # (mu, _), (log_sigma_sq, _) = mu.chunk(2, dim=-1), log_sigma_sq.chunk(2, dim=-1)
         z = Normal(mu, (1/2 * log_sigma_sq).exp()).rsample()
+        # teacher-derived prior is equal mixture across neighbouring timesteps
+        mu, log_sigma_sq = q_z_ema.expand(self.num_kl_samples, *q_z_ema.shape).flatten(end_dim=1).chunk(2, dim=-1)
+        # only apply to the first of latent space
+        # (mu, _), (log_sigma_sq, _) = mu.chunk(2, dim=-1), log_sigma_sq.chunk(2, dim=-1)
         # log prob of normal at t, discounting t=0
         log_q = (-1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq[:, :, 1:] + ((z[:, :, 1:] - mu[:, :, 1:]).pow(2) / log_sigma_sq[:, :, 1:].exp())))
         # log prob of normal at t - 1
@@ -394,23 +402,12 @@ class TCEMAVAE(L.LightningModule):
             for i in range(num_samples):
                 fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(15, 12), width_ratios=[0.97, 0.03], constrained_layout=True)
 
-                mesh = plot_mel_spectrogram(
-                    specs[i].T,
-                    **self.spectrogram_params,
-                    ax=axes[0, 0],
-                    vmin=specs.min(), vmax=specs.max(),
-                )
+                mesh = plot_mel_spectrogram(specs[i].T, **self.spectrogram_params, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
+                mesh = plot_mel_spectrogram(recons[i].T, **self.spectrogram_params, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
                 axes[0, 0].set_title("Original Mel Spectrogram")
-                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
-
-                mesh = plot_mel_spectrogram(
-                    recons[i].T,
-                    **self.spectrogram_params,
-                    ax=axes[1, 0],
-                    vmin=specs.min(), vmax=specs.max(),
-                )
                 axes[1, 0].set_title("Reconstructed Mel Spectrogram")
                 fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
 
                 lc = plot_latent_time_series(
                     ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0)),
