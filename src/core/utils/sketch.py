@@ -256,7 +256,7 @@ def plot_latent_power_spectral_density_heatmap(
     audio_fft_hop_length: int = 384,
     audio_frame_length_hops: int = 192,
     ax: Axes = None,
-    cbar = True,
+    cbar = False,
     cmap = sns.color_palette("light:b", as_cmap=True),
     **kwargs: Any,
 ) -> QuadMesh:

@@ -36,6 +36,7 @@ from src.core.transforms.frame import unframe_fold as unframe, frame_fold as fra
 from src.core.transforms.translation import translation
 from src.core.utils.sketch import plot_mel_spectrogram, plot_latent_sequence_histogram, plot_latent_power_spectral_density_heatmap, plot_latent_time_series
 from src.core.utils import soft_clip, linear_decay, nth_percentile, detach_values, prefix_keys, to_snake_case
+from src.core.utils import Batch
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -199,6 +200,9 @@ class TCEMAVAE(L.LightningModule):
         q_z = torch.stack([q_z_i, q_z_j.view(q_z_i.size())], dim=0) # (k, bs, seq, ld)
         delta = torch.stack([delta_i, delta_j.view(delta_i.size())], dim=0)
         z = self.cross_decode(q_z, method=self.cross_decode_method, k=k)
+        # mask sharp features with zeros during pre-training
+        if self.mask_sharp:
+            z[:, :, :, self.sharp_feature_idx[0]] = 0
         U_hat = self.mlp_decode(z.flatten(end_dim=2)).unflatten(dim=0, sizes=(z.size(0), z.size(1), z.size(2))) # (k, bs, seq, ch, fr, fq)
         U_hat_j, U_hat_i = U_hat.chunk(k, dim=0)
         x_hat_i = self.cnn_decode(U_hat_j.flatten(end_dim=2), delta_i) # (bs, 1, fr * seq, fq)
@@ -235,6 +239,20 @@ class TCEMAVAE(L.LightningModule):
             z_j = Normal(mu_z_j, (1/2 * log_sigma_sq_z_j).exp()).rsample() # (bs, seq, ld)
             z = torch.cat([z_j, z_i], dim=0)
         return z
+
+    def k_way_cross_decode(self, q_z: torch.Tensor, method: str = "soft", k: int = 2):
+        mu_zs, log_sigma_sq_zs = q_z.chunk(2, dim=-1)
+        if method == "soft":
+            # weighted average along shift dimension
+            mu_z = (1 / k * mu_zs).sum(dim=0)
+            log_sigma_sq_z = (1 / k**2 * log_sigma_sq_zs.exp()).sum(dim=0)).log()
+            z = Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample()
+            zs = torch.cat([z for _ in range(q_z.size(0))], dim=0)
+        elif method == "hard":
+            # randomly shuffle samples along shift dimension
+            zs = Normal(mu_zs, (1/2 * log_sigma_sq_zs).exp()).rsample()
+            zs = zs[torch.randperm(k)]
+        return zs
 
     def encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
         x = self.cnn_encode(x, encoder=self.feature_encoder)
@@ -310,9 +328,12 @@ class TCEMAVAE(L.LightningModule):
         # we need diversity within each data-point, so we should incentivise diversity across the sequence?
 
         # frame-wise standard normal kl
+        # TODO: switch between priors, only apply to sharp features after changeover
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp())).sum(dim=-1).mean()
 
+        # TODO: only apply to smooth feature idx
+        # TODO: switch between priors, only apply to smooth features after changeover
         # distilled temporal mixture kl (for subset of features)
         # sample from student posterior
         mu, log_sigma_sq = q_z.expand(self.num_kl_samples, *q_z.shape).flatten(end_dim=1).chunk(2, dim=-1)
@@ -332,6 +353,7 @@ class TCEMAVAE(L.LightningModule):
         # expectation using samples
         temp_dkl = torch.clamp((log_q - log_p).sum(dim=-1).mean(dim=0), min=0).mean()
 
+        # TODO: question: after deriving mixture between neighbours, use alpha to weight mixture between standard normal for smoothness degree?
         loss = nll_x + nll_delta + dkl + self.alpha * temp_dkl
 
         return dict(
@@ -344,47 +366,101 @@ class TCEMAVAE(L.LightningModule):
             nll_delta=nll_delta.detach(),
         )
 
+    def loss_2(
+        self,
+        x: torch.Tensor,
+        x_hat: torch.Tensor,
+        q_z: torch.Tensor,
+        q_z_ema: torch.Tensor,
+        delta: torch.Tensor,
+        sigma_delta: torch.Tensor,
+        **kwargs: Any,
+    ) -> Dict[str, Tensor]:
+        # frame-wise reconstruction loss
+        sigma_x = torch.tensor(self.sigma_x)
+        nll_x = (1/2 * (2 * sigma_x.log() + ((x - x_hat) / sigma_x).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
+
+        # frame-wise shift loss
+        nll_delta = (1/2 * (2 * sigma_delta.log() + (delta / sigma_delta).pow(2))).mean()
+
+        # distilled temporal mixture kl
+        # sample from student posterior
+        mu, log_sigma_sq = q_z.expand(self.num_kl_samples, *q_z.shape).flatten(end_dim=1).chunk(2, dim=-1)
+        z = Normal(mu, (1/2 * log_sigma_sq).exp()).rsample()
+        # prior is a weighted average between teacher at previous time-step and standard normal
+        mu, log_sigma_sq = q_z_ema.expand(self.num_kl_samples, *q_z_ema.shape).flatten(end_dim=1).chunk(2, dim=-1)
+        log_q = -1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq + ((z - mu).pow(2) / log_sigma_sq.exp()))
+        # evaluate the log density of the prior at each timestep
+        mu_prev, log_sigma_sq_prev  = torch.zeros_like(mu), torch.zeros_like(log_sigma_sq)
+        # t=0 is (0, 1), t>0 is q(z_t-1)
+        mu_prev[:, 1:], log_sigma_sq_prev[:, 1:] = mu[:, :-1], log_sigma_sq[:, :-1]
+        # log prob under the posterior at t-1
+        log_p_prev = -1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq_prev + ((z - mu_prev).pow(2) / log_sigma_sq_prev.exp()))
+        # log prob under a standard normal distribution
+        log_p_0 = -1/2 * (torch.tensor(2 * torch.pi).log() + z.pow(2))
+        # log prob of mixture weighted by alpha
+        alpha = torch.cat([torch.zeros_like(alpha).unsqueeze(0), alpha.expand(q_z.size(-2) - 1, *alpha.shape)])
+        log_p = torch.logsumexp(torch.stack([alpha.log() + log_p_prev, (1 - alpha).log() + log_p_0], dim=0), dim=0)
+        # expectation using samples
+        dkl = torch.clamp((log_q - log_p).mean(dim=dim), min=0)
+
+        loss = nll_x + nll_delta + dkl
+
+        return dict(
+            loss=loss,
+            log_likelihood_x=-nll_x.detach(),
+            log_likelihood_delta=-nll_delta.detach(),
+            dkl=dkl.detach(),
+            nll_x=nll_x.detach(),
+            nll_delta=nll_delta.detach(),
+        )
+
     # ------------------------------ LIGHTNING FUNCS --------------------------------- #
 
     def on_after_backward(self):
         self.ema.update(self.feature_encoder, self.feature_encoder_ema)
         self.ema.update(self.content_encoder, self.content_encoder_ema)
 
-    def training_step(
+    def step(
         self,
         batch: Tuple[Tensor, Tensor, Tensor],
         batch_idx: int,
+        stage: str,
         **kwargs: Any,
     ) -> Dict[str, Tensor]:
         x, *_ = batch
         step_outputs = self(x, **kwargs)
         loss_outputs = self.loss(**step_outputs)
         step_outputs = detach_values(step_outputs)
-        self.training_step_outputs.append(step_outputs)
         metrics = self.metrics(**step_outputs)
-        self.log_dict(prefix_keys(loss_outputs, "train"), batch_size=x.size(0), prog_bar=True, logger=False)
-        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, "train")))
+        self.log_dict(prefix_keys(loss_outputs, stage), batch_size=x.size(0), prog_bar=True, logger=False)
+        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
+        return loss_outputs, step_outputs
+
+    def training_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx, "train")
+        self.training_step_outputs.append(step_outputs)
+        return loss_outputs
+
+    @torch.no_grad()
+    def validation_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx, "val")
+        self.validation_step_outputs.append(step_outputs)
+        return loss_outputs
+
+    @torch.no_grad()
+    def test_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx, "test")
+        self.test_step_outputs.append(step_outputs)
         return loss_outputs
 
     def on_train_batch_end(self, *args: Any, **kwargs: Any) -> None:
         self.training_step_outputs.clear()
 
-    @torch.no_grad()
-    def validation_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
-        x, *_ = batch
-        step_outputs = self(x, **kwargs)
-        loss_outputs = self.loss(**step_outputs)
-        step_outputs = detach_values(step_outputs)
-        self.validation_step_outputs.append(step_outputs)
-        metrics = self.metrics(**step_outputs)
-        self.log_dict(prefix_keys(loss_outputs, "val"), batch_size=x.size(0), prog_bar=True, logger=False)
-        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, "val")))
-        return loss_outputs
-
     def on_validation_batch_end(
         self,
         outputs: Dict[str, Tensor],
-        batch: Tuple[Tensor, Tensor, Tensor],
+        batch: Batch,
         batch_idx: int,
         **kwargs: Any,
     ) -> None:
@@ -409,32 +485,15 @@ class TCEMAVAE(L.LightningModule):
                 fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
                 fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
 
-                lc = plot_latent_time_series(
-                    ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0)),
-                    audio_sample_rate=self.sample_rate,
-                    audio_fft_hop_length=self.fft_hop_length,
-                    audio_frame_length_hops=self.frame_window_length,
-                    ax=axes[2, 0],
-                    cbar=False,
-                    cmap='jet',
-                    lw=2,
-                    alpha=0.75,
-                )
+                mu_norm = ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0))
+                lc = plot_latent_time_series(mu_norm, **time_series_params, ax=axes[2, 0], lw=2, alpha=0.75)
                 axes[2, 0].set_xlabel("Time ($t$)")
                 axes[2, 0].set_ylabel(r"$\mathbf{z}_{\text{norm}}(t)$")
                 axes[2, 0].set_title("Latent Time-series")
                 cbar = plt.colorbar(lc, cax=axes[2, 1])
                 cbar.set_label("Bandwidth ($h$)", rotation=90)
 
-                im = plot_latent_power_spectral_density_heatmap(
-                    ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0)),
-                    fft_length=mu[i].shape[0],
-                    audio_sample_rate=self.sample_rate,
-                    audio_fft_hop_length=self.fft_hop_length,
-                    audio_frame_length_hops=self.frame_window_length,
-                    ax=axes[3, 0],
-                    cbar=False,
-                )
+                im = plot_latent_power_spectral_density_heatmap(mu_norm, fft_length=mu[i].shape[0], **time_series_params, ax=axes[3, 0])
                 axes[3, 0].set_title("Latent Power Spectral Density")
                 fig.colorbar(im, cax=axes[3, 1], orientation="vertical")
                 self.logger.experiment.log({ f"val/image": wandb.Image(fig) })
@@ -442,49 +501,7 @@ class TCEMAVAE(L.LightningModule):
         self.validation_step_outputs.clear()
 
     @torch.no_grad()
-    def test_step(self, batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
-        x, *_ = batch
-        step_outputs = self(x, **kwargs)
-        self.test_step_outputs.append(step_outputs)
-        metrics = self.metrics(**step_outputs)
-        self.logger.experiment.log(prefix_keys(metrics, "test"))
-
-    @torch.no_grad()
-    def on_test_batch_end(
-        self,
-        outputs: Dict[str, Tensor],
-        batch: Tuple[Tensor, Tensor, Tensor],
-        batch_idx: int,
-        **kwargs: Any,
-    ) -> None:
-        x, *_ = batch
-        if batch_idx < 4 and len(self.test_step_outputs):
-            step_outputs = self.test_step_outputs[0]
-            specs = step_outputs["x_i"].squeeze().cpu().numpy()
-            recons = step_outputs["x_hat_i"].squeeze().cpu().numpy()
-            nrows = specs.size(0)
-            fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(15, nrows * 2))
-            for i in range(nrows):
-                mesh = plot_mel_spectrogram(specs[i].T, **self.spectrogram_params, vmin=specs.min(), vmax=specs.max(), ax=axes[i, 0])
-                mesh = plot_mel_spectrogram(recons[i].T, **self.spectrogram_params, vmin=recons.min(), vmax=recons.max(), ax=axes[i, 1])
-            self.logger.experiment.log({ f"test/spectrogram_i": wandb.Image(fig) })
-            plt.close(fig)
-            specs = step_outputs["x_j"].squeeze()
-            specs = specs.view(x.size(0), -1, *specs.size()[1:]).cpu().numpy()[:, :5]
-            recons = step_outputs["x_hat_j"].squeeze()
-            recons = recons.view(x.size(0), -1, *recons.size()[1:]).cpu().numpy()[:, :5]
-            nrows, ncols = specs.shape[0], specs.shape[1]
-            fig, axes = plt.subplots(nrows=nrows, ncols=ncols * 2, figsize=(15, nrows * 2), sharey=True, sharex=True)
-            for i in range(nrows):
-                for j in range(ncols):
-                    ax1, ax2 = axes[i, j], axes[i, j + ncols]
-                    plot_mel_spectrogram(specs[i, j].T, **self.spectrogram_params, vmin=specs.min(), vmax=specs.max(), ax=ax1)
-                    plot_mel_spectrogram(recons[i, j].T, **self.spectrogram_params, vmin=recons.min(), vmax=recons.max(), ax=ax2)
-                    for ax in [ax1, ax2]:
-                        ax.tick_params(axis="both", bottom=False, left=False, labelbottom=False, labelleft=False)
-                        ax.set_ylabel("")
-            self.logger.experiment.log({ f"test/spectrogram_j": wandb.Image(fig) })
-            plt.close(fig)
+    def on_test_batch_end(self, *args: Any, **kwargs: Any) -> None:
         self.test_step_outputs.clear()
 
     @torch.no_grad()
@@ -493,10 +510,9 @@ class TCEMAVAE(L.LightningModule):
         batch: Tuple[Tensor, Tensor, Tensor],
         batch_idx: int,
         dataloader_idx: int = 0,
-        frame_hop_length: float | None = None,
+        frame_hop_length: float | None = 192,
         **kwargs: Any
     ) -> pd.DataFrame:
-        frame_hop_length = 32 # frame_hop_length or self.frame_hop_length
         x, *_ = batch
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
         q_z, delta = self.encode(x, hop_length=frame_hop_length)
@@ -672,7 +688,32 @@ class TCEMAVAE(L.LightningModule):
 
     @property
     def latent_hop_length(self) -> int:
-        return self.frame_hop_length // 2**(self.cnn_layers) if self.frame_hop_length is not None else self.latent_window_length
+        return (
+            self.frame_hop_length // 2**(self.cnn_layers)
+            if self.frame_hop_length is not None
+            else self.latent_window_length
+        )
+
+    @property
+    def mask_sharp(self):
+        return self.trainer.global_step < 12_500
+
+    def sharp_mask(self):
+        return torch.cat([torch.ones(self.latent_dim // 2), torch.zeros(self.latent_dim // 2, self.latent_dim)])
+
+    @property
+    def smooth_feature_idx(self):
+        return (
+            torch.arange(0, self.latent_dim // 2),
+            torch.arange(self.latent_dim, self.latent_dim + latent_dim // 2),
+        )
+
+    @property
+    def sharp_feature_idx(self):
+        return (
+            torch.arange(self.latent_dim // 2, self.latent_dim),
+            torch.arange(self.latent_dim + self.latent_dim // 2, self.latent_dim * 2),
+        )
 
     @property
     def frame_params(self):
@@ -688,7 +729,7 @@ class TCEMAVAE(L.LightningModule):
             sample_rate=self.sample_rate,
             hop_length=self.fft_hop_length,
             window_length=self.fft_window_length,
-            fft_length=int(np.power(2, np.ceil(np.log(self.fft_window_length) / np.log(2.0)))),
+            fft_length=self.n_fft,,
             mel_min_hertz=self.mel_min_hertz,
             mel_max_hertz=self.mel_max_hertz,
             mel_scaling_factor=self.mel_scaling_factor,
@@ -703,6 +744,14 @@ class TCEMAVAE(L.LightningModule):
             y_min=self.delta_sigma_min,
             y_max=self.delta_sigma_max,
             k=self.delta_sigma_step_slope or 1.0,
+        )
+
+    @property
+    def time_series_params(self):
+        return dict(
+            audio_sample_rate=self.sample_rate,
+            audio_fft_hop_length=self.fft_hop_length,
+            audio_frame_length_hops=self.frame_window_length,
         )
 
     @staticmethod
