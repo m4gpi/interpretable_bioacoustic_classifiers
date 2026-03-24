@@ -701,12 +701,14 @@ class TCEMAVAE(L.LightningModule):
     def mask_sharp(self):
         return self.trainer.global_step < 12_500
 
+    @property
     def sharp_mask(self):
         return torch.cat([
             torch.ones(self.latent_dim // 2, device=self.device),
             torch.zeros(self.latent_dim // 2, device=self.device)
         ])
 
+    @property
     def smooth_mask(self):
         return torch.cat([
             torch.zeros(self.latent_dim // 2, device=self.device),
