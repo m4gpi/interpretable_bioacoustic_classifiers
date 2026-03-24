@@ -200,9 +200,9 @@ class TCEMAVAE(L.LightningModule):
         q_z = torch.stack([q_z_i, q_z_j.view(q_z_i.size())], dim=0) # (k, bs, seq, ld)
         delta = torch.stack([delta_i, delta_j.view(delta_i.size())], dim=0)
         z = self.cross_decode(q_z, method=self.cross_decode_method, k=k)
-        # mask sharp features during pre-training
-        if self.mask_sharp:
-            z = self.sharp_mask * z
+        # only train smooth features during pre-training
+        if self.should_mask:
+            z = self.smooth_mask * z
         U_hat = self.mlp_decode(z.flatten(end_dim=2)).unflatten(dim=0, sizes=(z.size(0), z.size(1), z.size(2))) # (k, bs, seq, ch, fr, fq)
         U_hat_j, U_hat_i = U_hat.chunk(k, dim=0)
         x_hat_i = self.cnn_decode(U_hat_j.flatten(end_dim=2), delta_i) # (bs, 1, fr * seq, fq)
@@ -330,9 +330,9 @@ class TCEMAVAE(L.LightningModule):
         # frame-wise standard normal kl
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp())).sum(dim=-1).mean()
-        if self.mask_sharp:
+        if self.should_mask:
             # only apply to sharp features
-            dkl = self.smooth_mask * dkl
+            dkl = self.sharp_mask * dkl
 
         # distilled temporal mixture kl
         # sample from student posterior
@@ -352,9 +352,9 @@ class TCEMAVAE(L.LightningModule):
         log_p = torch.logaddexp(log_p_prev, log_p_next) - torch.tensor(2).log()
         # expectation using samples
         temp_dkl = torch.clamp((log_q - log_p).sum(dim=-1).mean(dim=0), min=0).mean()
-        if self.mask_sharp:
+        if self.should_mask:
             # only apply to smooth features
-            temp_dkl = self.sharp_mask * dkl
+            temp_dkl = self.smooth_mask * dkl
 
         # TODO: question: after deriving mixture between neighbours, use alpha to weight mixture between standard normal for smoothness degree?
         loss = nll_x + nll_delta + dkl + self.alpha * temp_dkl
@@ -698,36 +698,28 @@ class TCEMAVAE(L.LightningModule):
         )
 
     @property
-    def mask_sharp(self):
+    def should_mask(self):
         return self.trainer.global_step < 12_500
 
     @property
-    def sharp_mask(self):
-        return torch.cat([
-            torch.ones(self.latent_dim // 2, device=self.device),
-            torch.zeros(self.latent_dim // 2, device=self.device)
-        ])
-
-    @property
-    def smooth_mask(self):
-        return torch.cat([
-            torch.zeros(self.latent_dim // 2, device=self.device),
-            torch.ones(self.latent_dim // 2, device=self.device),
-        ])
-
-    @property
     def smooth_feature_idx(self):
-        return (
-            torch.arange(0, self.latent_dim // 2),
-            torch.arange(self.latent_dim, self.latent_dim + latent_dim // 2),
-        )
+        return torch.arange(0, self.latent_dim // 2, device=self.device)
 
     @property
     def sharp_feature_idx(self):
-        return (
-            torch.arange(self.latent_dim // 2, self.latent_dim),
-            torch.arange(self.latent_dim + self.latent_dim // 2, self.latent_dim * 2),
-        )
+        return torch.arange(self.latent_dim // 2, self.latent_dim),
+
+    @property
+    def sharp_mask(self):
+        mask = torch.zeros(self.latent_dim, device=self.device)
+        mask[self.sharp_feature_idx] = 1
+        return mask
+
+    @property
+    def smooth_mask(self):
+        mask = torch.zeros(self.latent_dim, device=self.device)
+        mask[self.smooth_feature_idx] = 1
+        return mask
 
     @property
     def frame_params(self):
