@@ -144,6 +144,7 @@ class TCEMAVAE(L.LightningModule):
     scheduler_interval: str = "step"
     scheduler_frequency: int = 1
 
+    k: int = 2
     cross_decode_method: str = "soft"
     delta_sigma_step_start: int | None = None
     delta_sigma_step_end: int | None = None
@@ -188,33 +189,42 @@ class TCEMAVAE(L.LightningModule):
         # ------ pre-processing ------ #
         x_i = self.log_mel_spectrogram(x)
         x_i = T.center_crop(x_i, [(x_i.size(-2) - (x_i.size(-2) % self.frame_window_length)), x_i.size(-1)])
+
+        # ------ shifted samples------ #
         sigma_delta = torch.tensor(self.bounded_sigmoid(self.trainer.global_step, **self.sigma_delta_params))
         x_i_framed = x_i.view(x_i.size(0), -1, 1, self.frame_window_length, x_i.size(-1)).flatten(end_dim=1)
-        epsilon = torch.randn(x_i_framed.size(0), 1, 1, 1, device=x.device)
-        x_j = translation(x_i_framed, epsilon * sigma_delta, padding_mode="circular")
+        x_js = torch.stack([
+            translation(x_i_framed, torch.randn(x_i_framed.size(0), 1, 1, 1, device=x.device) * sigma_delta, padding_mode="circular")
+            for i in range(self.k - 1)
+        ], dim=0)
 
         # ------ student forward ------ #
-        k = 2 # number of cross-decoded samples
         q_z_i, delta_i = self.encode(x_i) # (bs, seq, ld)
-        q_z_j, delta_j = self.encode(x_j) # (bs * seq, 1, ld)
-        q_z = torch.stack([q_z_i, q_z_j.view(q_z_i.size())], dim=0) # (k, bs, seq, ld)
-        delta = torch.stack([delta_i, delta_j.view(delta_i.size())], dim=0)
-        z = self.cross_decode(q_z, method=self.cross_decode_method, k=k)
+        q_z_js, delta_js = self.encode(x_js.flatten(end_dim=1))
+        q_z_js = q_z_js.unflatten(dim=0, sizes=(x_js.size(0), x_js.size(1))) # (k - 1, bs * seq, 1, ld)
+        q_zs = torch.cat([q_z_i.unsqueeze(0), q_z_js.view(-1, *q_z_i.size())], dim=0) # (k, bs, seq, ld)
+        delta_js = delta_js.unflatten(dim=0, sizes=(x_js.size(0), x_js.size(1))) # (k - 1, bs * seq, 1, ld)
+        deltas = torch.cat([delta_i.unsqueeze(0), delta_js.view(-1, *delta_i.size())], dim=0)
+        zs, r = self.k_way_cross_decode(q_zs, method=self.cross_decode_method, k=self.k) # (k, bs, seq, ld)
         # mask sharp features during pre-training
         if self.mask_sharp:
-            z = self.sharp_mask * z
-        U_hat = self.mlp_decode(z.flatten(end_dim=2)).unflatten(dim=0, sizes=(z.size(0), z.size(1), z.size(2))) # (k, bs, seq, ch, fr, fq)
-        U_hat_j, U_hat_i = U_hat.chunk(k, dim=0)
-        x_hat_i = self.cnn_decode(U_hat_j.flatten(end_dim=2), delta_i) # (bs, 1, fr * seq, fq)
-        x_hat_j = self.cnn_decode(U_hat_i.flatten(end_dim=2), delta_j) # (bs * seq, 1, fr, fq)
+            zs = self.sharp_mask * zs
+        U_hats = self.mlp_decode(zs.flatten(end_dim=2)).unflatten(dim=0, sizes=(zs.size(0), zs.size(1), zs.size(2))) # (k, bs, seq, ch, fr, fq)
+        # cross-decode and frame original sequence
+        x_hat_i = self.cnn_decode(U_hats[0].flatten(end_dim=1), deltas[0])
         x_hat_i_framed = x_hat_i.view(x_hat_i.size(0), -1, 1, self.frame_window_length, x_hat_i.size(-1)).flatten(end_dim=1)
-        x = torch.cat([x_i_framed, x_j], dim=0)
-        x_hat = torch.cat([x_hat_i_framed, x_hat_j], dim=0)
+        # cross-decode translated frames
+        x_hat_js = torch.stack([
+            self.cnn_decode(U_hat.flatten(end_dim=1), delta.flatten(end_dim=1))
+            for U_hat, delta in zip(U_hats[1:], deltas[1:])
+        ])
+        x = torch.cat([x_i_framed.unsqueeze(0), x_j], dim=0)
+        x_hat = torch.cat([x_hat_i_framed.unsqueeze(0), x_hat_js], dim=0)
 
         # ------ teacher forward ------ #
         with torch.no_grad():
-            q_z_i_ema, q_z_j_ema = self.encode_ema(x_i), self.encode_ema(x_j)
-            q_z_ema = torch.stack([q_z_i_ema, q_z_j_ema.view(q_z_i_ema.size())], dim=0)
+            q_z_i_ema, q_z_js_ema = self.encode_ema(x_i), self.encode_ema(x_js.flatten(end_dim=1))
+            q_z_ema = torch.cat([q_z_i_ema.unsqueeze(0), q_z_js_ema.view(q_z_i_ema.size())], dim=0)
 
         return dict(
             x=x, x_hat=x_hat,
@@ -246,13 +256,14 @@ class TCEMAVAE(L.LightningModule):
             # weighted average along shift dimension
             mu_z = (1 / k * mu_zs).sum(dim=0)
             log_sigma_sq_z = (1 / k**2 * log_sigma_sq_zs.exp()).sum(dim=0).log()
-            z = Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample()
-            zs = torch.cat([z for _ in range(q_z.size(0))], dim=0)
+            z = Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample().expand(k, *mu_z.shape)
+            return z, None
         elif method == "hard":
-            # randomly shuffle samples along shift dimension
-            zs = Normal(mu_zs, (1/2 * log_sigma_sq_zs).exp()).rsample()
-            zs = zs[torch.randperm(k)]
-        return zs
+            # simple random derangement of sample order
+            z = Normal(mu_zs, (1/2 * log_sigma_sq_zs).exp()).rsample()
+            shift = np.random.randint(1, k)
+            z = z.roll(dims=0, shifts=shift)
+            return z, shift
 
     def encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
         x = self.cnn_encode(x, encoder=self.feature_encoder)
@@ -571,8 +582,6 @@ class TCEMAVAE(L.LightningModule):
 
     def metrics(
         self,
-        x: Tensor,
-        x_hat: Tensor,
         q_z: Tensor,
         delta: Tensor,
         **kwargs: Any
