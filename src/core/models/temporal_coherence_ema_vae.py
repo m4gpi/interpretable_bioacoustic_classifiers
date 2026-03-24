@@ -200,9 +200,9 @@ class TCEMAVAE(L.LightningModule):
         q_z = torch.stack([q_z_i, q_z_j.view(q_z_i.size())], dim=0) # (k, bs, seq, ld)
         delta = torch.stack([delta_i, delta_j.view(delta_i.size())], dim=0)
         z = self.cross_decode(q_z, method=self.cross_decode_method, k=k)
-        # mask sharp features with zeros during pre-training
+        # mask sharp features during pre-training
         if self.mask_sharp:
-            z[:, :, :, self.sharp_feature_idx[0]] = 0
+            z = self.sharp_mask * z
         U_hat = self.mlp_decode(z.flatten(end_dim=2)).unflatten(dim=0, sizes=(z.size(0), z.size(1), z.size(2))) # (k, bs, seq, ch, fr, fq)
         U_hat_j, U_hat_i = U_hat.chunk(k, dim=0)
         x_hat_i = self.cnn_decode(U_hat_j.flatten(end_dim=2), delta_i) # (bs, 1, fr * seq, fq)
@@ -245,7 +245,7 @@ class TCEMAVAE(L.LightningModule):
         if method == "soft":
             # weighted average along shift dimension
             mu_z = (1 / k * mu_zs).sum(dim=0)
-            log_sigma_sq_z = (1 / k**2 * log_sigma_sq_zs.exp()).sum(dim=0)).log()
+            log_sigma_sq_z = (1 / k**2 * log_sigma_sq_zs.exp()).sum(dim=0).log()
             z = Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample()
             zs = torch.cat([z for _ in range(q_z.size(0))], dim=0)
         elif method == "hard":
@@ -328,13 +328,13 @@ class TCEMAVAE(L.LightningModule):
         # we need diversity within each data-point, so we should incentivise diversity across the sequence?
 
         # frame-wise standard normal kl
-        # TODO: switch between priors, only apply to sharp features after changeover
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp())).sum(dim=-1).mean()
+        if self.mask_sharp:
+            # only apply to sharp features
+            dkl = self.smooth_mask * dkl
 
-        # TODO: only apply to smooth feature idx
-        # TODO: switch between priors, only apply to smooth features after changeover
-        # distilled temporal mixture kl (for subset of features)
+        # distilled temporal mixture kl
         # sample from student posterior
         mu, log_sigma_sq = q_z.expand(self.num_kl_samples, *q_z.shape).flatten(end_dim=1).chunk(2, dim=-1)
         # (mu, _), (log_sigma_sq, _) = mu.chunk(2, dim=-1), log_sigma_sq.chunk(2, dim=-1)
@@ -352,6 +352,9 @@ class TCEMAVAE(L.LightningModule):
         log_p = torch.logaddexp(log_p_prev, log_p_next) - torch.tensor(2).log()
         # expectation using samples
         temp_dkl = torch.clamp((log_q - log_p).sum(dim=-1).mean(dim=0), min=0).mean()
+        if self.mask_sharp:
+            # only apply to smooth features
+            temp_dkl = self.sharp_mask * dkl
 
         # TODO: question: after deriving mixture between neighbours, use alpha to weight mixture between standard normal for smoothness degree?
         loss = nll_x + nll_delta + dkl + self.alpha * temp_dkl
@@ -699,7 +702,16 @@ class TCEMAVAE(L.LightningModule):
         return self.trainer.global_step < 12_500
 
     def sharp_mask(self):
-        return torch.cat([torch.ones(self.latent_dim // 2), torch.zeros(self.latent_dim // 2, self.latent_dim)])
+        return torch.cat([
+            torch.ones(self.latent_dim // 2, device=self.device),
+            torch.zeros(self.latent_dim // 2, device=self.device)
+        ])
+
+    def smooth_mask(self):
+        return torch.cat([
+            torch.zeros(self.latent_dim // 2, device=self.device),
+            torch.ones(self.latent_dim // 2, device=self.device),
+        ])
 
     @property
     def smooth_feature_idx(self):
@@ -729,7 +741,7 @@ class TCEMAVAE(L.LightningModule):
             sample_rate=self.sample_rate,
             hop_length=self.fft_hop_length,
             window_length=self.fft_window_length,
-            fft_length=self.n_fft,,
+            fft_length=self.n_fft,
             mel_min_hertz=self.mel_min_hertz,
             mel_max_hertz=self.mel_max_hertz,
             mel_scaling_factor=self.mel_scaling_factor,
