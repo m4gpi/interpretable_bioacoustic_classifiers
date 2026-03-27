@@ -13,6 +13,7 @@ import wandb
 
 from dataclasses import dataclass
 from matplotlib import pyplot as plt
+from numpy.typing import NDArray
 from omegaconf import DictConfig
 from torch import Tensor, nn
 from torch.distributions.normal import Normal
@@ -31,11 +32,11 @@ from src.core.models.components import (
     init_alignment_encoder,
 )
 from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, autoregressive_mixture_kl_divergence
-from src.core.transforms.log_mel_spectrogram import mel_filterbanks
+from src.core.transforms.log_mel_spectrogram import mel_filterbanks, hz_to_mel, mel_to_hz
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
 from src.core.utils.sketch import plot_mel_spectrogram, plot_latent_sequence_histogram, plot_latent_power_spectral_density_heatmap, plot_latent_time_series
-from src.core.utils import soft_clip, linear_decay, nth_percentile, detach_values, prefix_keys, to_snake_case
+from src.core.utils import soft_clip, linear_decay, nth_percentile, detach_values, prefix_keys, to_snake_case, bounded_sigmoid
 from src.core.utils import Batch
 
 logging.basicConfig(level=logging.INFO)
@@ -71,14 +72,7 @@ class LogMelSpectrogram(torch.nn.Module):
         return obj
 
     def __post_init__(self):
-        mel_basis = mel_filterbanks(
-            num_mel_bins=self.num_mel_bins,
-            mel_min_hertz=self.mel_min_hertz,
-            mel_max_hertz=self.mel_max_hertz,
-            linear_frequencies=torch.linspace(0.0, self.sample_rate / 2, (self.n_fft // 2) + 1),
-            scaling_factor=self.mel_scaling_factor,
-            break_frequency=self.mel_break_frequency,
-        )
+        mel_basis = mel_filterbanks(**self.mel_params)
         self.register_buffer("mel_basis", torch.tensor(mel_basis, requires_grad=False), persistent=False)
 
     @torch.no_grad()
@@ -100,6 +94,33 @@ class LogMelSpectrogram(torch.nn.Module):
         x = x.unsqueeze(1)
         return x
 
+    @torch.no_grad()
+    def plot(self, z: NDArray | torch.Tensor, vmin: float | None = None, vmax: float | None = None, cmap: str = "viridis", ax: None = None, **kwargs: Any):
+        ax = ax if ax is not None else plt.gca()
+        vmin = vmin if vmin is not None and kwargs.get("norm", None) is None else z.min()
+        vmax = vmax if vmax is not None and kwargs.get("norm", None) is None else z.max()
+        imshow_params = dict(vmin=vmin, vmax=vmax, origin="lower", aspect="auto", cmap=cmap, **kwargs)
+        im = ax.imshow(z, **imshow_params)
+        # TODO: allow parametrisation of tick duration
+        duration_seconds = (z.shape[1] * self.fft_hop_length) // self.sample_rate
+        time = np.linspace(0, duration_seconds, z.shape[1])
+        x_tick_positions = np.linspace(0, duration_seconds, int(z.shape[1] // (self.sample_rate // self.fft_hop_length) / 5) + 1)
+        x_tick_labels = [f"{np.format_float_positional(t, trim='-', precision=2)}" for t in x_tick_positions]
+        x_tick_indices = [np.argmin(np.abs(time - t)) for t in x_tick_positions]
+        ax.set_xticks(x_tick_indices, labels=x_tick_labels)
+        ax.set_xlabel("Time (s)")
+        # ticks for y-axis are on a log scale, find the nearest base 2 exponents for the ticks
+        min_mel = hz_to_mel(self.mel_min_hertz, scaling_factor=self.mel_scaling_factor, break_frequency=self.mel_break_frequency)
+        max_mel = hz_to_mel(self.mel_max_hertz, scaling_factor=self.mel_scaling_factor, break_frequency=self.mel_break_frequency)
+        mels = np.linspace(min_mel, max_mel, z.shape[0])
+        frequencies = mel_to_hz(mels, scaling_factor=self.mel_scaling_factor, break_frequency=self.mel_break_frequency)
+        y_tick_positions = [2**i for i in range(max(9, int(np.ceil(np.log2(self.mel_min_hertz + 1e-8)))), int(np.floor(np.log2(self.mel_max_hertz))) + 1)]
+        y_tick_labels = [f"{int(f)}" for f in y_tick_positions]
+        y_tick_indices = [np.argmin(np.abs(frequencies - f)) for f in y_tick_positions]
+        ax.set_yticks(y_tick_indices, labels=y_tick_labels)
+        ax.set_ylabel("Frequency (Hz)")
+        return im
+
     @property
     def stft_params(self):
         return dict(
@@ -109,9 +130,22 @@ class LogMelSpectrogram(torch.nn.Module):
             pad_mode="constant",
         )
 
+    @property
+    def mel_params(self):
+        return dict(
+            num_mel_bins=self.num_mel_bins,
+            mel_min_hertz=self.mel_min_hertz,
+            mel_max_hertz=self.mel_max_hertz,
+            linear_frequencies=torch.linspace(0.0, self.sample_rate / 2, (self.n_fft // 2) + 1),
+            scaling_factor=self.mel_scaling_factor,
+            break_frequency=self.mel_break_frequency,
+        )
+
+
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
 class TCEMAVAE(L.LightningModule):
     sample_rate: int = 48_000
+    n_fft: int = 512
     fft_window_length: int = 512
     fft_hop_length: int = 384
     mel_min_hertz: float | None = 0.0
@@ -122,7 +156,7 @@ class TCEMAVAE(L.LightningModule):
     frame_hop_length: int | None = 192
     num_mel_bins: int = 64
     latent_dim: int = 128
-    sigma_z_min: float = 0.0498
+    sigma_z_min: float = 0.05
     weight_init_std: float = 1e-3
     cnn_block_width: int = 4
     cnn_block_depth: int = 3
@@ -150,8 +184,18 @@ class TCEMAVAE(L.LightningModule):
     delta_sigma_min: float | None = None
     delta_sigma_max: float = 2.0
     delta_sigma_step_slope: float = 1.0
-    alpha: float = 0.85
-    num_kl_samples: int = 50
+
+    num_prior_samples: int = 50
+    alpha_step_start: int | None = 15_000
+    alpha_step_end: int | None = 100_000
+    alpha_max: float = 0.9
+    alpha_min: float = 0.5
+    alpha_step_slope: float = 1.0
+    ema_sigma_z_step_start: int | None = 15_000
+    ema_sigma_z_step_end: int | None = 100_000
+    ema_sigma_z_max: float = 0.5
+    ema_sigma_z_min: float = 0.2
+    ema_sigma_z_step_slope: float = 1.0
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         plt.switch_backend('agg')
@@ -188,7 +232,7 @@ class TCEMAVAE(L.LightningModule):
         # ------ pre-processing ------ #
         x_i = self.log_mel_spectrogram(x)
         x_i = T.center_crop(x_i, [(x_i.size(-2) - (x_i.size(-2) % self.frame_window_length)), x_i.size(-1)])
-        sigma_delta = torch.tensor(self.bounded_sigmoid(self.trainer.global_step, **self.sigma_delta_params))
+        sigma_delta = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.sigma_delta_params))
         x_i_framed = x_i.view(x_i.size(0), -1, 1, self.frame_window_length, x_i.size(-1)).flatten(end_dim=1)
         epsilon = torch.randn(x_i_framed.size(0), 1, 1, 1, device=x.device)
         x_j = translation(x_i_framed, epsilon * sigma_delta, padding_mode="circular")
@@ -200,9 +244,9 @@ class TCEMAVAE(L.LightningModule):
         q_z = torch.stack([q_z_i, q_z_j.view(q_z_i.size())], dim=0) # (k, bs, seq, ld)
         delta = torch.stack([delta_i, delta_j.view(delta_i.size())], dim=0)
         z = self.cross_decode(q_z, method=self.cross_decode_method, k=k)
-        # only train smooth features during pre-training
-        if self.should_mask:
-            z = self.smooth_mask * z
+        # mask our sharp features during pre-training
+        if self.trainer.global_step < self.alpha_step_start:
+            z = self.smooth_features * z
         U_hat = self.mlp_decode(z.flatten(end_dim=2)).unflatten(dim=0, sizes=(z.size(0), z.size(1), z.size(2))) # (k, bs, seq, ch, fr, fq)
         U_hat_j, U_hat_i = U_hat.chunk(k, dim=0)
         x_hat_i = self.cnn_decode(U_hat_j.flatten(end_dim=2), delta_i) # (bs, 1, fr * seq, fq)
@@ -260,14 +304,16 @@ class TCEMAVAE(L.LightningModule):
         x = self.frame(x, window_length=self.latent_window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
         delta = self.offset_encode(x, encoder=self.offset_encoder)
         q_z = self.content_encode(x, encoder=self.content_encoder)
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=2*np.log(self.sigma_z_min))
+        q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         return q_z, delta
 
     def encode_ema(self, x: Tensor, hop_length: int | None = None) -> Tensor:
         x = self.cnn_encode(x, encoder=self.feature_encoder_ema)
         hop_length = (hop_length or self.frame_hop_length) // 2**(self.cnn_layers)
         x = self.frame(x, window_length=self.latent_window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
-        q_z = self.content_encode(x, encoder=self.content_encoder_ema)
-        return q_z
+        return self.content_encode(x, encoder=self.content_encoder_ema)
 
     def cnn_encode(self, x: Tensor, encoder: torch.nn.Module) -> Tensor:
         for i, block in enumerate(encoder):
@@ -276,9 +322,6 @@ class TCEMAVAE(L.LightningModule):
 
     def content_encode(self, x: Tensor, encoder: torch.nn.Module) -> Tuple[Tensor, Tensor]:
         q_z = encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
-        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
-        log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=2*np.log(self.sigma_z_min))
-        q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         return q_z
 
     def offset_encode(self, x: Tensor, encoder: torch.nn.Module) -> Tuple[Tensor, Tensor]:
@@ -327,22 +370,22 @@ class TCEMAVAE(L.LightningModule):
         # the problem was across the sequence, i.e. it predicts the same value for every data point
         # we need diversity within each data-point, so we should incentivise diversity across the sequence?
 
+        alpha = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.alpha_params), dtype=torch.float32)
         # frame-wise standard normal kl
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
-        dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp())).sum(dim=-1).mean()
-        if self.should_mask:
-            # only apply to sharp features
-            dkl = self.sharp_mask * dkl
+        dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp()))
+        sharp_dkl = (self.sharp_features * dkl).sum(dim=-1).mean()
+        smooth_dkl = (self.smooth_features * dkl).sum(dim=-1).mean()
 
-        # distilled temporal mixture kl
+        # temporal mixture prior
         # sample from student posterior
-        mu, log_sigma_sq = q_z.expand(self.num_kl_samples, *q_z.shape).flatten(end_dim=1).chunk(2, dim=-1)
-        # (mu, _), (log_sigma_sq, _) = mu.chunk(2, dim=-1), log_sigma_sq.chunk(2, dim=-1)
+        mu, log_sigma_sq = q_z.expand(self.num_prior_samples, *q_z.shape).flatten(end_dim=1).chunk(2, dim=-1)
         z = Normal(mu, (1/2 * log_sigma_sq).exp()).rsample()
-        # teacher-derived prior is equal mixture across neighbouring timesteps
-        mu, log_sigma_sq = q_z_ema.expand(self.num_kl_samples, *q_z_ema.shape).flatten(end_dim=1).chunk(2, dim=-1)
-        # only apply to the first of latent space
-        # (mu, _), (log_sigma_sq, _) = mu.chunk(2, dim=-1), log_sigma_sq.chunk(2, dim=-1)
+        # teacher-derived prior is weighted mixture across neighbouring timesteps
+        mu, log_sigma_sq = q_z_ema.expand(self.num_prior_samples, *q_z_ema.shape).flatten(end_dim=1).chunk(2, dim=-1)
+        # clip the teacher posterior variance to provide support for the student
+        ema_sigma_z = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.ema_sigma_z_params))
+        log_sigma_sq_z = soft_clip(log_sigma_sq, minimum=2*np.log(ema_sigma_z))
         # log prob of normal at t, discounting t=0
         log_q = (-1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq[:, :, 1:] + ((z[:, :, 1:] - mu[:, :, 1:]).pow(2) / log_sigma_sq[:, :, 1:].exp())))
         # log prob of normal at t - 1
@@ -350,73 +393,80 @@ class TCEMAVAE(L.LightningModule):
         # log prob of normal at t + 1
         log_p_next = (-1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq[:, :, 1:] + ((z[:, :, :-1] - mu[:, :, 1:]).pow(2) / log_sigma_sq[:, :, 1:].exp())))
         log_p = torch.logaddexp(log_p_prev, log_p_next) - torch.tensor(2).log()
-        # expectation using samples
-        temp_dkl = torch.clamp((log_q - log_p).sum(dim=-1).mean(dim=0), min=0).mean()
-        if self.should_mask:
-            # only apply to smooth features
-            temp_dkl = self.smooth_mask * dkl
-
-        # TODO: question: after deriving mixture between neighbours, use alpha to weight mixture between standard normal for smoothness degree?
-        loss = nll_x + nll_delta + dkl + self.alpha * temp_dkl
-
-        return dict(
-            loss=loss,
-            log_likelihood_x=-nll_x.detach(),
-            log_likelihood_delta=-nll_delta.detach(),
-            dkl=dkl.detach(),
-            temp_dkl=temp_dkl.detach(),
-            nll_x=nll_x.detach(),
-            nll_delta=nll_delta.detach(),
-        )
-
-    def loss_2(
-        self,
-        x: torch.Tensor,
-        x_hat: torch.Tensor,
-        q_z: torch.Tensor,
-        q_z_ema: torch.Tensor,
-        delta: torch.Tensor,
-        sigma_delta: torch.Tensor,
-        **kwargs: Any,
-    ) -> Dict[str, Tensor]:
-        # frame-wise reconstruction loss
-        sigma_x = torch.tensor(self.sigma_x)
-        nll_x = (1/2 * (2 * sigma_x.log() + ((x - x_hat) / sigma_x).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
-
-        # frame-wise shift loss
-        nll_delta = (1/2 * (2 * sigma_delta.log() + (delta / sigma_delta).pow(2))).mean()
-
-        # distilled temporal mixture kl
-        # sample from student posterior
-        mu, log_sigma_sq = q_z.expand(self.num_kl_samples, *q_z.shape).flatten(end_dim=1).chunk(2, dim=-1)
-        z = Normal(mu, (1/2 * log_sigma_sq).exp()).rsample()
-        # prior is a weighted average between teacher at previous time-step and standard normal
-        mu, log_sigma_sq = q_z_ema.expand(self.num_kl_samples, *q_z_ema.shape).flatten(end_dim=1).chunk(2, dim=-1)
-        log_q = -1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq + ((z - mu).pow(2) / log_sigma_sq.exp()))
-        # evaluate the log density of the prior at each timestep
-        mu_prev, log_sigma_sq_prev  = torch.zeros_like(mu), torch.zeros_like(log_sigma_sq)
-        # t=0 is (0, 1), t>0 is q(z_t-1)
-        mu_prev[:, 1:], log_sigma_sq_prev[:, 1:] = mu[:, :-1], log_sigma_sq[:, :-1]
-        # log prob under the posterior at t-1
-        log_p_prev = -1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq_prev + ((z - mu_prev).pow(2) / log_sigma_sq_prev.exp()))
-        # log prob under a standard normal distribution
-        log_p_0 = -1/2 * (torch.tensor(2 * torch.pi).log() + z.pow(2))
-        # log prob of mixture weighted by alpha
-        alpha = torch.cat([torch.zeros_like(alpha).unsqueeze(0), alpha.expand(q_z.size(-2) - 1, *alpha.shape)])
-        log_p = torch.logsumexp(torch.stack([alpha.log() + log_p_prev, (1 - alpha).log() + log_p_0], dim=0), dim=0)
-        # expectation using samples
-        dkl = torch.clamp((log_q - log_p).mean(dim=dim), min=0)
+        # kl expectation using samples, alpha masks sharp features and weights with N(0, 1)
+        # clamp each expectation to zero to prevent negative KLs
+        temp_dkl = (self.smooth_features * (log_q - log_p)).sum(dim=-1)
+        temp_dkl = temp_dkl.sum(dim=-1).mean(dim=0).clamp(min=0).mean()
+        # weigh and sum the KL terms
+        smooth_dkl = alpha * smooth_dkl
+        temp_dkl = (1 - alpha) * temp_dkl
+        dkl = sharp_dkl + smooth_dkl + temp_dkl
 
         loss = nll_x + nll_delta + dkl
 
         return dict(
             loss=loss,
+            dkl=dkl.detach(),
+            sharp_dkl=sharp_dkl.detach(),
+            smooth_dkl=(alpha * smooth_dkl).detach(),
+            temp_dkl=((1 - alpha) * temp_dkl).detach(),
+            nll_delta=nll_delta.detach(),
+            sigma_delta=sigma_delta,
+            ema_sigma_z=ema_sigma_z,
+            alpha=alpha,
+            nll_x=nll_x.detach(),
             log_likelihood_x=-nll_x.detach(),
             log_likelihood_delta=-nll_delta.detach(),
-            dkl=dkl.detach(),
-            nll_x=nll_x.detach(),
-            nll_delta=nll_delta.detach(),
         )
+
+    # def loss_2(
+    #     self,
+    #     x: torch.Tensor,
+    #     x_hat: torch.Tensor,
+    #     q_z: torch.Tensor,
+    #     q_z_ema: torch.Tensor,
+    #     delta: torch.Tensor,
+    #     sigma_delta: torch.Tensor,
+    #     **kwargs: Any,
+    # ) -> Dict[str, Tensor]:
+    #     # frame-wise reconstruction loss
+    #     sigma_x = torch.tensor(self.sigma_x)
+    #     nll_x = (1/2 * (2 * sigma_x.log() + ((x - x_hat) / sigma_x).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
+
+    #     # frame-wise shift loss
+    #     nll_delta = (1/2 * (2 * sigma_delta.log() + (delta / sigma_delta).pow(2))).mean()
+
+    #     # distilled temporal mixture kl
+    #     # sample from student posterior
+    #     mu, log_sigma_sq = q_z.expand(self.num_kl_samples, *q_z.shape).flatten(end_dim=1).chunk(2, dim=-1)
+    #     z = Normal(mu, (1/2 * log_sigma_sq).exp()).rsample()
+    #     # prior is a weighted average between teacher at previous time-step and standard normal
+    #     mu, log_sigma_sq = q_z_ema.expand(self.num_kl_samples, *q_z_ema.shape).flatten(end_dim=1).chunk(2, dim=-1)
+    #     log_q = -1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq + ((z - mu).pow(2) / log_sigma_sq.exp()))
+    #     # evaluate the log density of the prior at each timestep
+    #     mu_prev, log_sigma_sq_prev  = torch.zeros_like(mu), torch.zeros_like(log_sigma_sq)
+    #     # t=0 is (0, 1), t>0 is q(z_t-1)
+    #     mu_prev[:, 1:], log_sigma_sq_prev[:, 1:] = mu[:, :-1], log_sigma_sq[:, :-1]
+    #     # log prob under the posterior at t-1
+    #     log_p_prev = -1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq_prev + ((z - mu_prev).pow(2) / log_sigma_sq_prev.exp()))
+    #     # log prob under a standard normal distribution
+    #     log_p_0 = -1/2 * (torch.tensor(2 * torch.pi).log() + z.pow(2))
+    #     # log prob of mixture weighted by alpha
+    #     alpha = torch.cat([torch.zeros_like(alpha).unsqueeze(0), alpha.expand(q_z.size(-2) - 1, *alpha.shape)])
+    #     log_p = torch.logsumexp(torch.stack([alpha.log() + log_p_prev, (1 - alpha).log() + log_p_0], dim=0), dim=0)
+    #     # expectation using samples
+    #     dkl = torch.clamp((log_q - log_p).mean(dim=dim), min=0)
+
+    #     loss = nll_x + nll_delta + dkl
+
+    #     return dict(
+    #         loss=loss,
+    #         log_likelihood_x=-nll_x.detach(),
+    #         log_likelihood_delta=-nll_delta.detach(),
+    #         dkl=dkl.detach(),
+    #         nll_x=nll_x.detach(),
+    #         nll_delta=nll_delta.detach(),
+    #     )
 
     # ------------------------------ LIGHTNING FUNCS --------------------------------- #
 
@@ -477,26 +527,27 @@ class TCEMAVAE(L.LightningModule):
             q_z_i, q_z_j = q_z.chunk(2, dim=0)
             mu = q_z_i.squeeze(0).chunk(2, dim=-1)[0].cpu().numpy()
             num_samples = min(6, step_outputs["x_i"].size(0))
+            spectrogram_params = dict(**self.log_mel_spectrogram.stft_params, **self.log_mel_spectrogram.mel_params)
 
             for i in range(num_samples):
                 fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(15, 12), width_ratios=[0.97, 0.03], constrained_layout=True)
 
-                mesh = plot_mel_spectrogram(specs[i].T, **self.spectrogram_params, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
-                mesh = plot_mel_spectrogram(recons[i].T, **self.spectrogram_params, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
+                mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
+                mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
                 axes[0, 0].set_title("Original Mel Spectrogram")
                 axes[1, 0].set_title("Reconstructed Mel Spectrogram")
                 fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
                 fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
 
                 mu_norm = ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0))
-                lc = plot_latent_time_series(mu_norm, **time_series_params, ax=axes[2, 0], lw=2, alpha=0.75)
+                lc = plot_latent_time_series(mu_norm, **self.time_series_params, ax=axes[2, 0], lw=2, alpha=0.75)
                 axes[2, 0].set_xlabel("Time ($t$)")
                 axes[2, 0].set_ylabel(r"$\mathbf{z}_{\text{norm}}(t)$")
                 axes[2, 0].set_title("Latent Time-series")
                 cbar = plt.colorbar(lc, cax=axes[2, 1])
                 cbar.set_label("Bandwidth ($h$)", rotation=90)
 
-                im = plot_latent_power_spectral_density_heatmap(mu_norm, fft_length=mu[i].shape[0], **time_series_params, ax=axes[3, 0])
+                im = plot_latent_power_spectral_density_heatmap(mu_norm, fft_length=mu[i].shape[0], **self.time_series_params, ax=axes[3, 0])
                 axes[3, 0].set_title("Latent Power Spectral Density")
                 fig.colorbar(im, cax=axes[3, 1], orientation="vertical")
                 self.logger.experiment.log({ f"val/image": wandb.Image(fig) })
@@ -698,8 +749,12 @@ class TCEMAVAE(L.LightningModule):
         )
 
     @property
-    def should_mask(self):
-        return self.trainer.global_step < 12_500
+    def stage_1(self):
+        return self.trainer.global_step < 15_000
+
+    @property
+    def stage_2(self):
+        return self.trainer.global_step >= 15_000
 
     @property
     def smooth_feature_idx(self):
@@ -710,14 +765,14 @@ class TCEMAVAE(L.LightningModule):
         return torch.arange(self.latent_dim // 2, self.latent_dim),
 
     @property
-    def sharp_mask(self):
-        mask = torch.zeros(self.latent_dim, device=self.device)
+    def sharp_features(self):
+        mask = torch.zeros(self.latent_dim, device=self.device, dtype=int)
         mask[self.sharp_feature_idx] = 1
         return mask
 
     @property
-    def smooth_mask(self):
-        mask = torch.zeros(self.latent_dim, device=self.device)
+    def smooth_features(self):
+        mask = torch.zeros(self.latent_dim, device=self.device, dtype=int)
         mask[self.smooth_feature_idx] = 1
         return mask
 
@@ -730,16 +785,13 @@ class TCEMAVAE(L.LightningModule):
         )
 
     @property
-    def spectrogram_params(self):
+    def alpha_params(self):
         return dict(
-            sample_rate=self.sample_rate,
-            hop_length=self.fft_hop_length,
-            window_length=self.fft_window_length,
-            fft_length=self.n_fft,
-            mel_min_hertz=self.mel_min_hertz,
-            mel_max_hertz=self.mel_max_hertz,
-            mel_scaling_factor=self.mel_scaling_factor,
-            mel_break_frequency=self.mel_break_frequency,
+            x_min=self.alpha_step_start,
+            x_max=self.alpha_step_end,
+            y_min=self.alpha_min,
+            y_max=self.alpha_max,
+            k=self.alpha_step_slope,
         )
 
     @property
@@ -749,7 +801,17 @@ class TCEMAVAE(L.LightningModule):
             x_max=self.delta_sigma_step_end,
             y_min=self.delta_sigma_min,
             y_max=self.delta_sigma_max,
-            k=self.delta_sigma_step_slope or 1.0,
+            k=self.delta_sigma_step_slope,
+        )
+
+    @property
+    def ema_sigma_z_params(self):
+        return dict(
+            x_min=self.ema_sigma_z_step_start,
+            x_max=self.ema_sigma_z_step_end,
+            y_min=self.ema_sigma_z_min,
+            y_max=self.ema_sigma_z_max,
+            k=self.ema_sigma_z_step_slope,
         )
 
     @property
@@ -759,12 +821,6 @@ class TCEMAVAE(L.LightningModule):
             audio_fft_hop_length=self.fft_hop_length,
             audio_frame_length_hops=self.frame_window_length,
         )
-
-    @staticmethod
-    def bounded_sigmoid(x: float, x_min: float, x_max: float, y_min: float, y_max: float, k: float):
-        s = np.floor(np.log10(np.abs(x_max)))
-        z = k / 10**(s - 1)
-        return y_min + (y_max - y_min) / (1 + np.exp(-z * (x - ((x_min + x_max) / 2))))
 
     @staticmethod
     def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:

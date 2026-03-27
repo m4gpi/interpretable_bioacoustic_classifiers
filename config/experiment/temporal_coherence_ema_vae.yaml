@@ -9,12 +9,22 @@ defaults:
 
 model:
   sigma_x: 0.2
-  alpha: 0.85
+  sigma_z_min: 0.2
   delta_sigma_step_start: 0
   delta_sigma_step_end: 20_000
   delta_sigma_min: 0.1
   delta_sigma_max: 2.0
   delta_sigma_step_slope: 0.4
+  alpha_step_start: 15_000
+  alpha_step_end: 100_000
+  alpha_min: 0.5
+  alpha_max: 1.0
+  alpha_step_slope: -0.4
+  ema_sigma_z_step_start: 15_000
+  ema_sigma_z_step_end: 100_000
+  ema_sigma_z_min: 0.2
+  ema_sigma_z_max: 0.5
+  ema_sigma_z_step_slope: -0.4
   learning_rate: 4.e-5
   optimiser_cls: torch.optim.AdamW
   scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
@@ -23,7 +33,7 @@ model:
     eta_min: 4.e-7
 
 trainer:
-  max_steps: 100_000
+  max_steps: 15_000
   max_epochs: -1
   log_every_n_steps: 100
   val_check_interval: 2500
@@ -32,7 +42,7 @@ callbacks:
   model_checkpoint:
     dirpath: ${paths.root_dir}/checkpoints/tc_ema_vae.pt:v1/
     filename: model
-    every_n_train_steps: 25_000
+    every_n_train_steps: 5_000
     save_top_k: 1
 
 logger:
