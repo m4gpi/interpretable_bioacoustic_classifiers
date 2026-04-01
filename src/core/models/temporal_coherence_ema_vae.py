@@ -185,12 +185,18 @@ class TCEMAVAE(L.LightningModule):
     delta_sigma_max: float = 2.0
     delta_sigma_step_slope: float = 1.0
 
-    num_prior_samples: int = 50
-    alpha_step_start: int | None = 15_000
-    alpha_step_end: int | None = 100_000
-    alpha_max: float = 0.9
-    alpha_min: float = 0.5
-    alpha_step_slope: float = 1.0
+    num_prior_samples: int = 100
+    sharp_step_start: int = 15_000
+    gamma_1_step_start: int | None = 15_000
+    gamma_1_step_end: int | None = 100_000
+    gamma_1_max: float = 1.0
+    gamma_1_min: float = 0.5
+    gamma_1_step_slope: float = 1.0
+    gamma_2_step_start: int | None = 0
+    gamma_2_step_end: int | None = 15_000
+    gamma_2_max: float = 0.85
+    gamma_2_min: float = 1.0
+    gamma_2_step_slope: float = 1.0
     ema_sigma_z_step_start: int | None = 15_000
     ema_sigma_z_step_end: int | None = 100_000
     ema_sigma_z_max: float = 0.5
@@ -245,7 +251,7 @@ class TCEMAVAE(L.LightningModule):
         delta = torch.stack([delta_i, delta_j.view(delta_i.size())], dim=0)
         z = self.cross_decode(q_z, method=self.cross_decode_method, k=k)
         # mask our sharp features during pre-training
-        if self.trainer.global_step < self.alpha_step_start:
+        if self.trainer.global_step < self.sharp_step_start:
             z = self.smooth_features * z
         U_hat = self.mlp_decode(z.flatten(end_dim=2)).unflatten(dim=0, sizes=(z.size(0), z.size(1), z.size(2))) # (k, bs, seq, ch, fr, fq)
         U_hat_j, U_hat_i = U_hat.chunk(k, dim=0)
@@ -370,7 +376,6 @@ class TCEMAVAE(L.LightningModule):
         # the problem was across the sequence, i.e. it predicts the same value for every data point
         # we need diversity within each data-point, so we should incentivise diversity across the sequence?
 
-        alpha = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.alpha_params), dtype=torch.float32)
         # frame-wise standard normal kl
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp()))
@@ -393,13 +398,16 @@ class TCEMAVAE(L.LightningModule):
         # log prob of normal at t + 1
         log_p_next = (-1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq[:, :, 1:] + ((z[:, :, :-1] - mu[:, :, 1:]).pow(2) / log_sigma_sq[:, :, 1:].exp())))
         log_p = torch.logaddexp(log_p_prev, log_p_next) - torch.tensor(2).log()
-        # kl expectation using samples, alpha masks sharp features and weights with N(0, 1)
+        # kl expectation using samples on smooth features only
         # clamp each expectation to zero to prevent negative KLs
-        temp_dkl = (self.smooth_features * (log_q - log_p)).sum(dim=-1)
+        temp_dkl = (self.smooth_features * (log_q - log_p))
         temp_dkl = temp_dkl.sum(dim=-1).mean(dim=0).clamp(min=0).mean()
         # weigh and sum the KL terms
-        smooth_dkl = alpha * smooth_dkl
-        temp_dkl = (1 - alpha) * temp_dkl
+        gamma_1 = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.gamma_1_params), dtype=torch.float32)
+        gamma_2 = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.gamma_2_params), dtype=torch.float32)
+        smooth_dkl = gamma_1 * smooth_dkl
+        temp_dkl = gamma_2 * temp_dkl
+
         dkl = sharp_dkl + smooth_dkl + temp_dkl
 
         loss = nll_x + nll_delta + dkl
@@ -408,15 +416,16 @@ class TCEMAVAE(L.LightningModule):
             loss=loss,
             dkl=dkl.detach(),
             sharp_dkl=sharp_dkl.detach(),
-            smooth_dkl=(alpha * smooth_dkl).detach(),
-            temp_dkl=((1 - alpha) * temp_dkl).detach(),
-            nll_delta=nll_delta.detach(),
-            sigma_delta=sigma_delta,
-            ema_sigma_z=ema_sigma_z,
-            alpha=alpha,
+            smooth_dkl=smooth_dkl.detach(),
+            temp_dkl=temp_dkl.detach(),
             nll_x=nll_x.detach(),
+            nll_delta=nll_delta.detach(),
             log_likelihood_x=-nll_x.detach(),
             log_likelihood_delta=-nll_delta.detach(),
+            sigma_delta=sigma_delta,
+            ema_sigma_z=ema_sigma_z,
+            gamma_1=gamma_1,
+            gamma_2=gamma_2,
         )
 
     # def loss_2(
@@ -785,13 +794,23 @@ class TCEMAVAE(L.LightningModule):
         )
 
     @property
-    def alpha_params(self):
+    def gamma_1_params(self):
         return dict(
-            x_min=self.alpha_step_start,
-            x_max=self.alpha_step_end,
-            y_min=self.alpha_min,
-            y_max=self.alpha_max,
-            k=self.alpha_step_slope,
+            x_min=self.gamma_1_step_start,
+            x_max=self.gamma_1_step_end,
+            y_min=self.gamma_1_min,
+            y_max=self.gamma_1_max,
+            k=self.gamma_1_step_slope,
+        )
+
+    @property
+    def gamma_2_params(self):
+        return dict(
+            x_min=self.gamma_2_step_start,
+            x_max=self.gamma_2_step_end,
+            y_min=self.gamma_2_min,
+            y_max=self.gamma_2_max,
+            k=self.gamma_2_step_slope,
         )
 
     @property

@@ -15,11 +15,16 @@ model:
   delta_sigma_min: 0.1
   delta_sigma_max: 2.0
   delta_sigma_step_slope: 0.4
-  alpha_step_start: 15_000
-  alpha_step_end: 100_000
-  alpha_min: 0.5
-  alpha_max: 1.0
-  alpha_step_slope: -0.4
+  gamma_1_min: 0.2
+  gamma_1_max: 1.0
+  gamma_1_step_start: 15_000
+  gamma_1_step_end: 50_000
+  gamma_1_step_slope: -0.4
+  gamma_2_min: 1.0
+  gamma_2_max: 1.0
+  gamma_2_step_start: 0
+  gamma_2_step_end: 100_000
+  gamma_2_step_slope: 0.4
   ema_sigma_z_step_start: 15_000
   ema_sigma_z_step_end: 100_000
   ema_sigma_z_min: 0.2
