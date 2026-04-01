@@ -16,6 +16,7 @@ from matplotlib import pyplot as plt
 from numpy.typing import NDArray
 from omegaconf import DictConfig
 from torch import Tensor, nn
+from torch.nn import functional as F
 from torch.distributions.normal import Normal
 from torch.optim import Optimizer
 from torchvision.transforms import functional as T
@@ -72,8 +73,8 @@ class LogMelSpectrogram(torch.nn.Module):
         return obj
 
     def __post_init__(self):
-        mel_basis = mel_filterbanks(**self.mel_params)
-        self.register_buffer("mel_basis", torch.tensor(mel_basis, requires_grad=False), persistent=False)
+        mel_basis = torch.tensor(mel_filterbanks(**self.mel_params), requires_grad=False)
+        self.register_buffer("mel_basis", mel_basis, persistent=False)
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -141,6 +142,29 @@ class LogMelSpectrogram(torch.nn.Module):
             break_frequency=self.mel_break_frequency,
         )
 
+def gaussian_kernel(sigmas: torch.Tensor) -> torch.Tensor:
+    sigmas = sigmas.float()
+    s_max = sigmas.max()
+    c = int(s_max / 0.3 + 1)
+    k_size = 2 * c + 1
+    x = torch.arange(k_size, device=sigmas.device) - c
+    x = x.unsqueeze(0)
+    sigmas = sigmas.unsqueeze(1)
+    filt = torch.exp(-(x ** 2) / (2 * sigmas ** 2))
+    filt = filt / filt.sum(dim=1, keepdim=True)
+    return filt.unsqueeze(1)
+
+def laplace_kernel(sigmas: torch.Tensor) -> torch.Tensor:
+    sigmas = sigmas.float()
+    s_max = sigmas.max()
+    c = int(s_max / 0.3 + 1)
+    k_size = 2 * c + 1
+    x = torch.arange(k_size, device=sigmas.device) - c
+    x = x.unsqueeze(0)
+    sigmas_exp = sigmas.unsqueeze(1)
+    filt = torch.exp(-torch.abs(x) / sigmas_exp)
+    filt = filt / filt.sum(dim=1, keepdim=True)
+    return filt.unsqueeze(1)
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
 class TCEMAVAE(L.LightningModule):
@@ -187,16 +211,11 @@ class TCEMAVAE(L.LightningModule):
 
     num_prior_samples: int = 100
     sharp_step_start: int = 15_000
-    gamma_1_step_start: int | None = 15_000
-    gamma_1_step_end: int | None = 100_000
-    gamma_1_max: float = 1.0
-    gamma_1_min: float = 0.5
-    gamma_1_step_slope: float = 1.0
-    gamma_2_step_start: int | None = 0
-    gamma_2_step_end: int | None = 15_000
-    gamma_2_max: float = 0.85
-    gamma_2_min: float = 1.0
-    gamma_2_step_slope: float = 1.0
+    alpha_step_start: int | None = 15_000
+    alpha_step_end: int | None = 100_000
+    alpha_max: float = 1.0
+    alpha_min: float = 0.25
+    alpha_step_slope: float = 1.0
     ema_sigma_z_step_start: int | None = 15_000
     ema_sigma_z_step_end: int | None = 100_000
     ema_sigma_z_max: float = 0.5
@@ -250,7 +269,7 @@ class TCEMAVAE(L.LightningModule):
         q_z = torch.stack([q_z_i, q_z_j.view(q_z_i.size())], dim=0) # (k, bs, seq, ld)
         delta = torch.stack([delta_i, delta_j.view(delta_i.size())], dim=0)
         z = self.cross_decode(q_z, method=self.cross_decode_method, k=k)
-        # mask our sharp features during pre-training
+        # mask sharp features during inital training phase
         if self.trainer.global_step < self.sharp_step_start:
             z = self.smooth_features * z
         U_hat = self.mlp_decode(z.flatten(end_dim=2)).unflatten(dim=0, sizes=(z.size(0), z.size(1), z.size(2))) # (k, bs, seq, ch, fr, fq)
@@ -265,11 +284,30 @@ class TCEMAVAE(L.LightningModule):
         with torch.no_grad():
             q_z_i_ema, q_z_j_ema = self.encode_ema(x_i), self.encode_ema(x_j)
             q_z_ema = torch.stack([q_z_i_ema, q_z_j_ema.view(q_z_i_ema.size())], dim=0)
+            mu_ema, log_sigma_sq_ema = q_z_ema.flatten(end_dim=1).chunk(2, dim=-1)
+            mu_ema, sigma_sq_ema = mu_ema[:, :, self.smooth_feature_idx], log_sigma_sq_ema[:, :, self.smooth_feature_idx].exp()
+            # softclip the teacher variance
+            ema_sigma_z = bounded_sigmoid(self.trainer.global_step, **self.ema_sigma_z_params)
+            log_sigma_sq = soft_clip(log_sigma_sq_ema, minimum=2*np.log(ema_sigma_z))
+            # fit a gaussian over a window in temporal dimension, moment matching the mixture
+            # μ* = Σ wₜμₜ, σ²* = Σ wₜ(σ²ₜ+ μ²ₜ) - μ²*
+            sigmas = torch.linspace(1e-1, 3, 128, dtype=torch.float32, device=mu_ema.device)
+            # TODO: if t is an average of itself and its neighbours, then the effect of the neighbours is lessened
+            kernels = gaussian_kernel(sigmas)
+            K = (kernels.size(-1) - 1) // 2
+            mu_ema = F.pad(mu_ema.permute(0, 2, 1), (K, K), mode='circular') # TODO: should truncate weights rather than pad
+            sigma_sq_ema = F.pad(sigma_sq_ema.permute(0, 2, 1), (K, K), mode='circular')
+            # weighted sum of gaussians by convolution
+            mu_bar = F.conv1d(mu_ema, kernels, groups=sigmas.size(0))
+            log_sigma_sq_bar = (F.conv1d((sigma_sq_ema + mu_ema.pow(2)), kernels, groups=sigmas.size(0)) - mu_bar.pow(2)).log()
+            mu_bar, log_sigma_sq_bar = mu_bar.permute(0, 2, 1), log_sigma_sq_bar.permute(0, 2, 1)
+            q_z_bar = torch.cat([mu_bar, log_sigma_sq_bar], dim=-1)
+            q_z_bar = q_z_bar.unflatten(dim=0, sizes=(q_z_ema.size(0), q_z_ema.size(1)))
 
         return dict(
             x=x, x_hat=x_hat,
             x_i=x_i, x_hat_i=x_hat_i,
-            q_z=q_z, q_z_ema=q_z_ema,
+            q_z=q_z, q_z_bar=q_z_bar,
             delta=delta, sigma_delta=sigma_delta,
         )
 
@@ -356,7 +394,7 @@ class TCEMAVAE(L.LightningModule):
         x: torch.Tensor,
         x_hat: torch.Tensor,
         q_z: torch.Tensor,
-        q_z_ema: torch.Tensor,
+        q_z_bar: torch.Tensor,
         delta: torch.Tensor,
         sigma_delta: torch.Tensor,
         **kwargs: Any,
@@ -381,51 +419,32 @@ class TCEMAVAE(L.LightningModule):
         dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp()))
         sharp_dkl = (self.sharp_features * dkl).sum(dim=-1).mean()
         smooth_dkl = (self.smooth_features * dkl).sum(dim=-1).mean()
-
-        # temporal mixture prior
-        # sample from student posterior
-        mu, log_sigma_sq = q_z.expand(self.num_prior_samples, *q_z.shape).flatten(end_dim=1).chunk(2, dim=-1)
-        z = Normal(mu, (1/2 * log_sigma_sq).exp()).rsample()
-        # teacher-derived prior is weighted mixture across neighbouring timesteps
-        mu, log_sigma_sq = q_z_ema.expand(self.num_prior_samples, *q_z_ema.shape).flatten(end_dim=1).chunk(2, dim=-1)
-        # clip the teacher posterior variance to provide support for the student
-        ema_sigma_z = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.ema_sigma_z_params))
-        log_sigma_sq_z = soft_clip(log_sigma_sq, minimum=2*np.log(ema_sigma_z))
-        # log prob of normal at t, discounting t=0
-        log_q = (-1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq[:, :, 1:] + ((z[:, :, 1:] - mu[:, :, 1:]).pow(2) / log_sigma_sq[:, :, 1:].exp())))
-        # log prob of normal at t - 1
-        log_p_prev = (-1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq[:, :, :-1] + ((z[:, :, 1:] - mu[:, :, :-1]).pow(2) / log_sigma_sq[:, :, :-1].exp())))
-        # log prob of normal at t + 1
-        log_p_next = (-1/2 * (torch.tensor(2 * torch.pi).log() + log_sigma_sq[:, :, 1:] + ((z[:, :, :-1] - mu[:, :, 1:]).pow(2) / log_sigma_sq[:, :, 1:].exp())))
-        log_p = torch.logaddexp(log_p_prev, log_p_next) - torch.tensor(2).log()
-        # kl expectation using samples on smooth features only
-        # clamp each expectation to zero to prevent negative KLs
-        temp_dkl = (self.smooth_features * (log_q - log_p))
-        temp_dkl = temp_dkl.sum(dim=-1).mean(dim=0).clamp(min=0).mean()
-        # weigh and sum the KL terms
-        gamma_1 = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.gamma_1_params), dtype=torch.float32)
-        gamma_2 = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.gamma_2_params), dtype=torch.float32)
-        smooth_dkl = gamma_1 * smooth_dkl
-        temp_dkl = gamma_2 * temp_dkl
-
+        # temporal coherence kl
+        mu_smooth, log_sigma_sq_smooth = mu[:, :, :, self.smooth_feature_idx], log_sigma_sq[:, :, :, self.smooth_feature_idx]
+        mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
+        var_ratio = (log_sigma_sq_smooth - log_sigma_sq_bar).exp()
+        sq_err = (mu_smooth - mu_bar).pow(2) * (-log_sigma_sq_bar).exp()
+        temp_dkl = -1/2 * (1 + log_sigma_sq_smooth - log_sigma_sq_bar - var_ratio - sq_err)
+        temp_dkl = temp_dkl.sum(dim=-1).mean()
+        # cross-weigh the standard normal prior on the student with smoothness prior on the teacher
+        alpha = bounded_sigmoid(self.trainer.global_step, **self.alpha_params)
+        smooth_dkl = alpha * smooth_dkl
+        temp_dkl = (1 - alpha) * temp_dkl
+        # sum all KL terms
         dkl = sharp_dkl + smooth_dkl + temp_dkl
-
         loss = nll_x + nll_delta + dkl
 
         return dict(
             loss=loss,
             dkl=dkl.detach(),
-            sharp_dkl=sharp_dkl.detach(),
             smooth_dkl=smooth_dkl.detach(),
             temp_dkl=temp_dkl.detach(),
+            sharp_dkl=sharp_dkl.detach(),
             nll_x=nll_x.detach(),
             nll_delta=nll_delta.detach(),
             log_likelihood_x=-nll_x.detach(),
             log_likelihood_delta=-nll_delta.detach(),
             sigma_delta=sigma_delta,
-            ema_sigma_z=ema_sigma_z,
-            gamma_1=gamma_1,
-            gamma_2=gamma_2,
         )
 
     # def loss_2(
@@ -634,6 +653,7 @@ class TCEMAVAE(L.LightningModule):
         x: Tensor,
         x_hat: Tensor,
         q_z: Tensor,
+        q_z_bar: Tensor,
         delta: Tensor,
         **kwargs: Any
     ) -> Dict[str, Any]:
@@ -641,11 +661,21 @@ class TCEMAVAE(L.LightningModule):
         sigma_z = (0.5 * log_sigma_sq_z).exp()
         mu_hist = np.histogram(mu_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
         sigma_hist = np.histogram(sigma_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
+        mu_bar, log_sigma_sq_bar = q_z_bar.flatten(end_dim=1).chunk(2, dim=-1)
+        sigma_bar = (0.5 * log_sigma_sq_bar).exp()
+        mu_bar_hist = np.histogram(mu_bar.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
+        sigma_bar_hist = np.histogram(sigma_bar.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
         delta_hist = np.histogram(delta.flatten().cpu().numpy(), bins=64, range=[-5.0, 5.0])
+        ema_sigma_z = bounded_sigmoid(self.trainer.global_step, **self.ema_sigma_z_params)
+        alpha = bounded_sigmoid(self.trainer.global_step, **self.alpha_params)
         return dict(
             mu_z=wandb.Histogram(np_histogram=mu_hist),
             sigma_z=wandb.Histogram(np_histogram=sigma_hist),
+            mu_bar=wandb.Histogram(np_histogram=mu_bar_hist),
+            sigma_bar=wandb.Histogram(np_histogram=sigma_bar_hist),
             delta=wandb.Histogram(np_histogram=delta_hist),
+            ema_sigma_z=ema_sigma_z,
+            alpha=alpha,
         )
 
     def _reset_cache(self):
@@ -794,23 +824,13 @@ class TCEMAVAE(L.LightningModule):
         )
 
     @property
-    def gamma_1_params(self):
+    def alpha_params(self):
         return dict(
-            x_min=self.gamma_1_step_start,
-            x_max=self.gamma_1_step_end,
-            y_min=self.gamma_1_min,
-            y_max=self.gamma_1_max,
-            k=self.gamma_1_step_slope,
-        )
-
-    @property
-    def gamma_2_params(self):
-        return dict(
-            x_min=self.gamma_2_step_start,
-            x_max=self.gamma_2_step_end,
-            y_min=self.gamma_2_min,
-            y_max=self.gamma_2_max,
-            k=self.gamma_2_step_slope,
+            x_min=self.alpha_step_start,
+            x_max=self.alpha_step_end,
+            y_min=self.alpha_min,
+            y_max=self.alpha_max,
+            k=self.alpha_step_slope,
         )
 
     @property
