@@ -21,13 +21,13 @@ mlp_activation: LEAK
 mlp_dropout_prob: 0.1
 latent_dim: 128
 # tuning
-num_prior_samples: 100
 sigma_z_min: 0.2
 delta_sigma_min: 0.1
 delta_sigma_max: 2.0
 delta_sigma_step_slope: 0.4
 delta_sigma_step_start: 0
 delta_sigma_step_end: 20_000
+smooth_prop: 0.5
 alpha_max: 1.0
 alpha_min: 0.25
 alpha_step_start: 15_000

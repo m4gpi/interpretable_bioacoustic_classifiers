@@ -142,7 +142,7 @@ class LogMelSpectrogram(torch.nn.Module):
             break_frequency=self.mel_break_frequency,
         )
 
-def gaussian_kernel(sigmas: torch.Tensor) -> torch.Tensor:
+def gaussian_kernel(sigmas: torch.Tensor, mask_center: bool = False) -> torch.Tensor:
     sigmas = sigmas.float()
     s_max = sigmas.max()
     c = int(s_max / 0.3 + 1)
@@ -151,10 +151,12 @@ def gaussian_kernel(sigmas: torch.Tensor) -> torch.Tensor:
     x = x.unsqueeze(0)
     sigmas = sigmas.unsqueeze(1)
     filt = torch.exp(-(x ** 2) / (2 * sigmas ** 2))
+    if mask_center:
+        filt[:, c] = 0.0
     filt = filt / filt.sum(dim=1, keepdim=True)
     return filt.unsqueeze(1)
 
-def laplace_kernel(sigmas: torch.Tensor) -> torch.Tensor:
+def laplace_kernel(sigmas: torch.Tensor, mask_center: bool = False) -> torch.Tensor:
     sigmas = sigmas.float()
     s_max = sigmas.max()
     c = int(s_max / 0.3 + 1)
@@ -163,6 +165,8 @@ def laplace_kernel(sigmas: torch.Tensor) -> torch.Tensor:
     x = x.unsqueeze(0)
     sigmas_exp = sigmas.unsqueeze(1)
     filt = torch.exp(-torch.abs(x) / sigmas_exp)
+    if mask_center:
+        filt[:, c] = 0.0
     filt = filt / filt.sum(dim=1, keepdim=True)
     return filt.unsqueeze(1)
 
@@ -209,8 +213,8 @@ class TCEMAVAE(L.LightningModule):
     delta_sigma_max: float = 2.0
     delta_sigma_step_slope: float = 1.0
 
-    num_prior_samples: int = 100
-    sharp_step_start: int = 15_000
+    sharp_step_start: int = 0
+    smooth_prop: float = 0.75
     alpha_step_start: int | None = 15_000
     alpha_step_end: int | None = 100_000
     alpha_max: float = 1.0
@@ -256,6 +260,8 @@ class TCEMAVAE(L.LightningModule):
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
         # ------ pre-processing ------ #
         x_i = self.log_mel_spectrogram(x)
+
+        # ------ augmentations ------- #
         x_i = T.center_crop(x_i, [(x_i.size(-2) - (x_i.size(-2) % self.frame_window_length)), x_i.size(-1)])
         sigma_delta = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.sigma_delta_params))
         x_i_framed = x_i.view(x_i.size(0), -1, 1, self.frame_window_length, x_i.size(-1)).flatten(end_dim=1)
@@ -285,22 +291,31 @@ class TCEMAVAE(L.LightningModule):
             q_z_i_ema, q_z_j_ema = self.encode_ema(x_i), self.encode_ema(x_j)
             q_z_ema = torch.stack([q_z_i_ema, q_z_j_ema.view(q_z_i_ema.size())], dim=0)
             mu_ema, log_sigma_sq_ema = q_z_ema.flatten(end_dim=1).chunk(2, dim=-1)
-            mu_ema, sigma_sq_ema = mu_ema[:, :, self.smooth_feature_idx], log_sigma_sq_ema[:, :, self.smooth_feature_idx].exp()
-            # softclip the teacher variance
+            # softclip the EMA variance and drop sharp dims
+            mu_ema = mu_ema[:, :, self.smooth_feature_idx]
             ema_sigma_z = bounded_sigmoid(self.trainer.global_step, **self.ema_sigma_z_params)
-            log_sigma_sq = soft_clip(log_sigma_sq_ema, minimum=2*np.log(ema_sigma_z))
+            sigma_sq_ema = soft_clip(log_sigma_sq_ema[:, :, self.smooth_feature_idx], minimum=2*np.log(ema_sigma_z)).exp()
             # fit a gaussian over a window in temporal dimension, moment matching the mixture
-            # μ* = Σ wₜμₜ, σ²* = Σ wₜ(σ²ₜ+ μ²ₜ) - μ²*
-            sigmas = torch.linspace(1e-1, 3, 128, dtype=torch.float32, device=mu_ema.device)
-            # TODO: if t is an average of itself and its neighbours, then the effect of the neighbours is lessened
-            kernels = gaussian_kernel(sigmas)
+            log_sigma_min, log_sigma_max = -0.3, 0.5
+            latent_dim = mu_ema.size(-1)
+            num_groups = 32
+            assert latent_dim // num_groups == latent_dim / num_groups
+            sigmas = torch.stack([
+                torch.logspace(log_sigma_min, log_sigma_max, num_groups, device=mu_ema.device)
+                for i in range(latent_dim // num_groups)
+            ], dim=1).flatten().flip(dims=[0])
+            kernels = gaussian_kernel(sigmas, mask_center=True)
             K = (kernels.size(-1) - 1) // 2
             mu_ema = F.pad(mu_ema.permute(0, 2, 1), (K, K), mode='circular') # TODO: should truncate weights rather than pad
             sigma_sq_ema = F.pad(sigma_sq_ema.permute(0, 2, 1), (K, K), mode='circular')
-            # weighted sum of gaussians by convolution
+            # weighted sum of gaussians by convolution, rearranged for stability
+            # μ* = Σ wₜμₜ, σ²* = Σ wₜ(σ²ₜ+ μ²ₜ) - μ²* = Σ wₜσ²ₜ + Σ wₜ(μₜ - μ*)²
             mu_bar = F.conv1d(mu_ema, kernels, groups=sigmas.size(0))
-            log_sigma_sq_bar = (F.conv1d((sigma_sq_ema + mu_ema.pow(2)), kernels, groups=sigmas.size(0)) - mu_bar.pow(2)).log()
+            sigma_sq_within = F.conv1d((sigma_sq_ema), kernels, groups=sigmas.size(0))
+            sigma_sq_between = (kernels * (mu_ema.unfold(dimension=-1, size=2*K+1, step=1) - mu_bar.unsqueeze(-1)).pow(2)).sum(dim=-1)
+            log_sigma_sq_bar = (sigma_sq_within + sigma_sq_between).log()
             mu_bar, log_sigma_sq_bar = mu_bar.permute(0, 2, 1), log_sigma_sq_bar.permute(0, 2, 1)
+            log_sigma_sq_bar = soft_clip(log_sigma_sq_bar, minimum=2*np.log(self.sigma_z_min))
             q_z_bar = torch.cat([mu_bar, log_sigma_sq_bar], dim=-1)
             q_z_bar = q_z_bar.unflatten(dim=0, sizes=(q_z_ema.size(0), q_z_ema.size(1)))
 
@@ -567,8 +582,12 @@ class TCEMAVAE(L.LightningModule):
                 fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
                 fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
 
+                log_sigma_min, log_sigma_max, num_groups = -0.3, 0.5, 32
+                smooth_sigmas = torch.stack([torch.logspace(log_sigma_min, log_sigma_max, num_groups) for i in range(int(self.latent_dim * self.smooth_prop) // num_groups)], dim=1).flatten().flip(dims=[0])
+                sharp_sigmas = torch.zeros(self.latent_dim - int(self.latent_dim * self.smooth_prop))
+                sigmas = torch.cat([smooth_sigmas, sharp_sigmas], dim=0)
                 mu_norm = ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0))
-                lc = plot_latent_time_series(mu_norm, **self.time_series_params, ax=axes[2, 0], lw=2, alpha=0.75)
+                lc = plot_latent_time_series(mu_norm, sigmas, **self.time_series_params, ax=axes[2, 0], lw=2, alpha=0.75)
                 axes[2, 0].set_xlabel("Time ($t$)")
                 axes[2, 0].set_ylabel(r"$\mathbf{z}_{\text{norm}}(t)$")
                 axes[2, 0].set_title("Latent Time-series")
@@ -788,20 +807,12 @@ class TCEMAVAE(L.LightningModule):
         )
 
     @property
-    def stage_1(self):
-        return self.trainer.global_step < 15_000
-
-    @property
-    def stage_2(self):
-        return self.trainer.global_step >= 15_000
-
-    @property
     def smooth_feature_idx(self):
-        return torch.arange(0, self.latent_dim // 2, device=self.device)
+        return torch.arange(0, int(self.latent_dim * self.smooth_prop), device=self.device)
 
     @property
     def sharp_feature_idx(self):
-        return torch.arange(self.latent_dim // 2, self.latent_dim),
+        return torch.arange(int(self.latent_dim * self.smooth_prop), self.latent_dim),
 
     @property
     def sharp_features(self):
