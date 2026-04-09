@@ -1,5 +1,5 @@
 _target_: src.core.data.rainforest_connection.RainforestConnectionDataModule
-root:
+root: ${oc.env:HOME}/data/rainforest_connection
 scope:
 training_mode: step
 train_batch_size: 6

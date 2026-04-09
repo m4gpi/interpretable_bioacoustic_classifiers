@@ -1,5 +1,5 @@
 _target_: src.core.data.sounding_out_chorus.SoundingOutChorusDataModule
-root:
+root: ${oc.env:HOME}/data/sounding_out
 scope:
 training_mode: step
 train_batch_size: 6

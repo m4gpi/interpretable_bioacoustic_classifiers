@@ -1,3 +1,13 @@
+import librosa
+import contextlib
+import os
+import sys
+import attrs
+import functools
+import multiprocessing as mp
+import tqdm
+import birdnetlib
+
 import attrs
 import birdnet
 import pandas as pd
@@ -16,7 +26,26 @@ BIRDNET_LABEL_TXT_FILE = (
     "BirdNET_GLOBAL_6K_V2.4_Labels.txt"
 )
 
-__all__ = ["BirdNET"]
+__all__ = ["BirdNET", "BirdNETEmbeddings"]
+
+_analyzer = None
+
+@contextlib.contextmanager
+def suppress_output():
+    with open(os.devnull, 'w') as devnull:
+        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+            yield
+
+@suppress_output()
+def _fetch_analyzer():
+    global _analyzer
+    if _analyzer is None:
+        _analyzer = birdnetlib.analyzer.Analyzer()
+    return _analyzer
+
+def chunked(items: List[Any], batch_size: int):
+    for i in range(0, len(items), batch_size):
+        yield items[i:i + batch_size]
 
 @attrs.define()
 class BirdNET:
@@ -100,3 +129,70 @@ class BirdNET:
 
         results.to_parquet(results_dir / f"run_id={run_id}.parquet")
         scores.to_parquet(scores_dir / f"run_id={run_id}.parquet")
+
+@attrs.define()
+class BirdNETEmbeddings:
+    save_dir: str = attrs.field()
+    version: str = attrs.field(default="v2.4")
+    num_workers: int = attrs.field(default=32)
+    batch_size: int = attrs.field(default=6)
+
+    @property
+    def model_params(self):
+        return dict()
+
+    def embed_file(self, file_i: int, file_path: str) -> pd.DataFrame:
+        try:
+            with suppress_output():
+                analyzer = _fetch_analyzer()
+                recording = birdnetlib.Recording(analyzer, str(file_path))
+                recording.extract_embeddings()
+                df = pd.DataFrame([
+                    pd.concat([
+                        pd.Series({str(dim): value for dim, value in enumerate(embedding_info["embeddings"])}),
+                        pd.Series({k: v for k, v in embedding_info.items() if k != "embeddings"}),
+                    ])
+                    for embedding_info in recording.embeddings
+                ])
+                df = df.drop(["start_time", "end_time"], axis=1)
+                df["file_i"] = file_i
+                df = df.reset_index(names="timestep")
+                df = df.set_index(["file_i", "timestep"])
+                return df, None
+        except:
+            return pd.DataFrame(), file_path
+
+    def embed_batch(self, inputs: List[Tuple[int, str]]) -> pd.DataFrame:
+        batched, failed = [], []
+        for input in inputs:
+            df, file_path = self.embed_file(*input)
+            batched.append(df)
+            failed.append(file_path)
+        return pd.concat(batched, axis=0), list(filter(None, failed))
+
+    def evaluate(self, trainer: None, data_module: L.LightningDataModule, config: DictConfig, **kwargs: Any):
+        run_id = config.get("run_id")
+        data_module.setup(stage="eval")
+        data = data_module.data
+
+        inputs = chunked(list(zip(data.metadata.index, data.metadata.file_path)), self.batch_size)
+        dfs, failed = [], []
+        with tqdm.tqdm(total=len(data.metadata)) as pbar:
+            with mp.Pool(processes=self.num_workers, initializer=_fetch_analyzer) as pool:
+                for df, fps in pool.imap(self.embed_batch, inputs):
+                    dfs.append(df)
+                    failed.extend(fps)
+                    pbar.update(self.batch_size)
+        df = pd.concat(dfs, axis=0)
+
+        train_dir = pathlib.Path(self.save_dir) / "train"
+        train_dir.mkdir(exist_ok=True, parents=True)
+        train_features, train_labels = df[df.index.get_level_values("file_i").isin(data.train_idx.file_i)], data.train_labels
+        train_features.to_parquet(train_dir / "features.parquet")
+        train_labels.to_parquet(train_dir / "labels.parquet")
+
+        test_dir = pathlib.Path(self.save_dir) / "test"
+        test_dir.mkdir(exist_ok=True, parents=True)
+        test_features, test_labels = df[df.index.get_level_values("file_i").isin(data.test_idx.file_i)], data.test_labels
+        test_labels.to_parquet(test_dir / "features.parquet")
+        test_labels.to_parquet(test_dir / "labels.parquet")

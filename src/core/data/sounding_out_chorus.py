@@ -75,16 +75,17 @@ class SoundingOutChorus(torch.utils.data.Dataset):
             .astype(int)
         )
         # scope by train / test
-        train_idx = pd.read_parquet(self.base_dir / "train_indices.parquet")
-        test_idx = pd.read_parquet(self.base_dir / "test_indices.parquet")
-        self.train_metadata = self.metadata.loc[train_idx.file_i]
-        self.train_labels = self.labels.loc[train_idx.file_i]
-        self.test_metadata = self.metadata.loc[test_idx.file_i]
-        self.test_labels = self.labels.loc[test_idx.file_i]
+        self.train_idx = pd.read_parquet(self.base_dir / "train_indices.parquet")
+        self.test_idx = pd.read_parquet(self.base_dir / "test_indices.parquet")
+        self.train_metadata = self.metadata.loc[self.train_idx.file_i]
+        self.train_labels = self.labels.loc[self.train_idx.file_i]
+        self.test_metadata = self.metadata.loc[self.test_idx.file_i]
+        self.test_labels = self.labels.loc[self.test_idx.file_i]
         # scope by country
         if scope is not None:
-            idx, = np.where(self.metadata.country == scope.split("_")[-1])
+            idx, = np.where(self.metadata.country == scope)
             scope_idx = self.metadata.iloc[idx].index
+            assert len(self.scope_idx), f"{scope} is not a valid scope for country"
             self.metadata = self.metadata.loc[scope_idx]
             self.train_metadata = self.train_metadata[self.train_metadata.index.isin(scope_idx)]
             self.test_metadata = self.test_metadata[self.test_metadata.index.isin(scope_idx)]

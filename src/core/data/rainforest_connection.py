@@ -86,10 +86,13 @@ class RainforestConnection(torch.utils.data.Dataset):
         self.train_metadata.index.name = "file_i"
         self.train_labels = pd.read_parquet(self.base_dir / f"train_labels.parquet")
         self.train_labels.drop("species_id", axis=1, inplace=True)
+        self.test_idx = self.test_metadata
+        self.train_idx = self.train_metadata
         # scope by taxa
         if scope is not None:
-            self.train_labels = self.train_labels[self.train_labels.taxa == scope.split("_")[-1]]
-            self.test_labels = self.test_labels[self.test_labels.taxa == scope.split("_")[-1]]
+            self.train_labels = self.train_labels[self.train_labels.taxa == scope]
+            self.test_labels = self.test_labels[self.test_labels.taxa == scope]
+        assert len(self.train_labels) and len(self.test_labels), f"{scope} is not a valid scope for taxa"
 
         self.train_labels = self.format_labels(self.train_metadata, self.train_labels)
         self.test_labels = self.format_labels(self.test_metadata, self.test_labels)
@@ -148,13 +151,16 @@ class RainforestConnection(torch.utils.data.Dataset):
     def _check_files(self) -> None:
         """assert files exist and zip unpacked"""
         assert self.data_dir.exists(), \
-            f"data not found at location {path.resolve()}. have you downloaded it?"
-        assert (self.data_dir / "metadata.parquet").exists(), \
-            f"metadata.parquet not found at location {path.resolve()}. have you downloaded it?"
-        assert (self.data_dir / "labels.parquet").exists(), \
-            f"labels.parquet not found at location {path.resolve()}. have you downloaded it?"
-        assert (self.data_dir / "train_labels.parquet").exists() and (self.data_dir / "test_labels.parquet").exists() \
-            f"'train_labels.parquet' or 'test_labels.parquet' not found at location {path.resolve()}. Pass 'reset_index=True seed=42' to rebuild the data split"
+            f"audio not found at location {self.data_dir.resolve()}. Have you downloaded it?"
+
+        assert (self.base_dir / "metadata.parquet").exists(), \
+            f"'metadata.parquet' not found at location {self.base_dir.resolve()}. Have you downloaded it?"
+
+        assert (self.base_dir / "labels.parquet").exists(), \
+            f"'labels.parquet' not found at location {self.base_dir.resolve()}. Have you downloaded it?"
+
+        assert (self.base_dir / "train_labels.parquet").exists() and (self.base_dir / "test_labels.parquet").exists(), \
+            f"'train_labels.parquet' or 'test_labels.parquet' not found at location {self.base_dir.resolve()}. Pass 'reset_index=True seed=42' to rebuild the data split"
 
     def _reset_index(self):
         for dataset in ["train", "test"]:
