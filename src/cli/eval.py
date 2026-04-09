@@ -13,7 +13,7 @@ from typing import Any, List, Dict, Tuple
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
-from src.cli.utils.instantiators import instantiate_callbacks, instantiate_loggers
+from src.cli.utils.instantiators import instantiate_callbacks, instantiate_loggers, instantiate_transforms
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -21,8 +21,13 @@ log = logging.getLogger(__name__)
 def evaluate(cfg):
     OmegaConf.update(cfg, "run_id", os.urandom(16).hex(), force_add=True)
 
+    transforms = None
+    if cfg.get("transforms") is not None:
+        log.info("Instantiating transforms...")
+        transforms: List[L.Callback] = instantiate_transforms(cfg.get("transforms"))
+
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
-    data_module = hydra.utils.instantiate(cfg.data)
+    data_module = hydra.utils.instantiate(cfg.data, transforms=transforms)
     data_module.setup(stage="eval")
 
     log.info(f"Instantiating model <{cfg.model._target_}>")

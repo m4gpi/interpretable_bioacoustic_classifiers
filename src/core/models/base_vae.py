@@ -95,7 +95,11 @@ class BaseVAE(L.LightningModule):
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.fit(self, train_dataloaders=data_module.train_dataloader(), val_dataloaders=data_module.val_dataloader())
+        trainer.fit(self, train_dataloaders=data_module.train_dataloader(), val_dataloaders=data_module.val_dataloader(), ckpt_path=config.get("ckpt_path"))
+
+    def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+        log.info(f"Beginning evaluation <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        trainer.test(self, dataloaders=data_module.test_dataloader(), ckpt_path=config.get("ckpt_path"))
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
@@ -351,7 +355,9 @@ class BaseVAE(L.LightningModule):
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
-        return detach_values(self(*batch, **kwargs))
+        x, *_ = batch
+        step_outputs = self.step(x, **kwargs)
+        return step_outputs
 
     @torch.no_grad()
     def predict_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> None:

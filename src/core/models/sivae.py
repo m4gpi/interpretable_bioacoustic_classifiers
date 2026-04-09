@@ -30,11 +30,7 @@ plt.switch_backend('agg')
 __all__ = ["SmoothNiftiVAE"]
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
-class SmoothNiftiVAE(BaseVAE):
-    smooth_prop: float | None = None
-    smooth_alpha_min: float | None = 0.5
-    smooth_alpha_max: float | None = 1.0
-    non_smooth_alpha: float | None = 0.0
+class SIVAE(BaseVAE):
     p_dt_step_start: int | None = None
     p_dt_step_end: int | None = None
     p_dt_sigma_min: float | None = None
@@ -64,33 +60,6 @@ class SmoothNiftiVAE(BaseVAE):
             y_max=self.p_dt_sigma_max,
             k=self.p_dt_step_slope or 1.0,
         )
-
-    @property
-    def latent_splits(self) -> Tuple[Tensor, Tensor]:
-        return self.smooth_idx, self.non_smooth_idx
-
-    @property
-    def num_non_smooth(self):
-        return self.latent_dim - self.num_smooth
-
-    @property
-    def num_smooth(self):
-        return int(self.latent_dim * (self.smooth_prop or 0))
-
-    @property
-    def non_smooth_idx(self):
-        return torch.arange(0, self.num_non_smooth)
-
-    @property
-    def smooth_idx(self):
-        return torch.arange(self.num_non_smooth, self.num_non_smooth + self.num_smooth)
-
-    @property
-    def alpha(self) -> Tensor:
-        return torch.cat([
-            torch.ones(len(self.non_smooth_idx)) * self.non_smooth_alpha,
-            torch.linspace(self.smooth_alpha_min, self.smooth_alpha_max, len(self.smooth_idx))
-        ])[torch.cat([self.non_smooth_idx, self.smooth_idx])].to(list(self.parameters())[0].device)
 
     def step(self, x_i: Tensor, **kwargs: Any) -> Dict[str, Tensor]:
         # ensure x_i is a full sequence that can be divided into equal length frames
@@ -217,36 +186,21 @@ class SmoothNiftiVAE(BaseVAE):
         # MAP estimate of the alignment factor p(x|dt)p(dt)
         # dt = torch.cat([dt_i.flatten(end_dim=1).unsqueeze(1), dt_j], dim=0)
         dt = torch.cat([dt_i, dt_j.view(dt_i.size())], dim=0).squeeze(-1)
-        # dt = (dt + 1) - torch.floor((dt + 1) / 2.0) * 2.0 - 1.0
         mu_dt_wrt_x = torch.zeros(1).to(dt.device)
         log_sigma_sq_dt_wrt_x = self.p_dt_sigma_current(self.trainer.global_step).pow(2).log()
         intra_frame_nll = negative_log_likelihood(dt, mu_dt_wrt_x, log_sigma_sq_dt_wrt_x)
         losses.append(intra_frame_nll.mean())
         outputs |= dict(log_likelihood_dt=-intra_frame_nll.detach().mean())
-        dt_var = (dt - dt.mean(dim=-1, keepdims=True)).pow(2)
-        dt_diversity = self.gamma * -dt_var.mean()
-        losses.append(dt_diversity.mean())
-        outputs |= dict(dt_diversity=dt_diversity.detach())
-        # when applying the smoothness loss
-        if self.smooth_prop is not None:
-            # anchor q_z using an autoregressive prior, a mixture of gaussians between previous timestep and standard normal
-            prior_dkl = torch.cat([
-                gaussian_kl_divergence(q_z[:, t, :], p_z_t).unsqueeze(1)
-                for t, p_z_t in autoregressive_prior(q_z[:, :, :], self.alpha)
-            ], dim=1)
-            smooth_dkl = prior_dkl[:, :, self.smooth_idx].sum(dim=-1)
-            non_smooth_dkl = prior_dkl[:, :, self.non_smooth_idx].sum(dim=-1)
-            prior_dkl = prior_dkl.sum(dim=-1)
-            losses.append(prior_dkl.mean())
-            outputs |= dict(
-                prior_dkl=prior_dkl.detach().mean(),
-                smooth_dkl=smooth_dkl.detach().mean(),
-                non_smooth_dkl=non_smooth_dkl.detach().mean(),
-            )
-        else:
-            prior_dkl = gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
-            losses.append(prior_dkl.mean())
-            outputs |= dict(prior_dkl=prior_dkl.detach().mean())
+        # delta diversity within sequence (not necessary?)
+        # dt = (dt + 1) - torch.floor((dt + 1) / 2.0) * 2.0 - 1.0
+        # dt_var = (dt - dt.mean(dim=-1, keepdims=True)).pow(2)
+        # dt_diversity = self.gamma * -dt_var.mean()
+        # losses.append(dt_diversity.mean())
+        # outputs |= dict(dt_diversity=dt_diversity.detach())
+        # standard normal prior
+        prior_dkl = gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
+        losses.append(prior_dkl.mean())
+        outputs |= dict(prior_dkl=prior_dkl.detach().mean())
         # sum the loss components
         outputs |= dict(loss=sum(losses))
         return outputs
@@ -311,18 +265,37 @@ class SmoothNiftiVAE(BaseVAE):
         self.validation_step_outputs.clear()
 
     @torch.no_grad()
+    def test_step(self, batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
+        # frame-wise error
+        x, *_ = batch
+        q_z, dt = self.encode(x)
+        mu, log_sigma_sq = q_z.chunk(2, dim=-1)
+        z = Normal(mu, (0.5 * log_sigma_sq).exp()).rsample()
+        x_hat = self.decode(z, dt)
+        x = frame(x, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
+        x_hat = frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
+        mae_frame = (x_hat - x).abs().flatten(start_dim=-3).sum(dim=-1)
+        mse_frame = (x_hat - x).pow(2).flatten(start_dim=-3).sum(dim=-1)
+        # derivative of z w.r.t. translation
+        return step_outputs
+
+    # def on_test_batch_end(self, )
+        # build shifted feature plots
+
+    # def on_test_epoch_end(self, )
+
+    @torch.no_grad()
     def predict_step(
         self,
         batch: Tuple[Tensor, Tensor, Tensor],
         batch_idx: int,
         stage: Stage | int,
-        frame_hop_length: float | None = None,
+        frame_hop_length: int | None = None,
         **kwargs: Any
     ) -> pd.DataFrame:
         if isinstance(stage, int):
             stage = Stage(stage)
-        if not frame_hop_length:
-            frame_hop_length = self.frame_hop_length
+        frame_hop_length = frame_hop_length or self.frame_hop_length
         x, *_ = batch
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % frame_hop_length)), self.num_mel_bins])
         q_z, _, dt = self.encode(x, hop_length=frame_hop_length)

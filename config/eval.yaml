@@ -4,6 +4,7 @@ defaults:
   - data: null
   - model: null
   - callbacks: null
+  - transforms: null
   - logger: null
   - trainer: null
   - paths: default

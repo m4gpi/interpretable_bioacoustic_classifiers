@@ -1,13 +1,13 @@
 # @package _global_
 
-# python main.py +experiment=smooth_nifti_vae
+# python main.py +experiment=sivae
 
 defaults:
-  - override /model: smooth_nifti_vae
+  - override /model: sivae
   - override /data: sounding_out_chorus
   - override /transforms: cropped_log_mel_spectrogram
   - override /trainer: gpu
-  - override /logger: null
+  - override /logger: wandb
 
 train: true
 test: true
@@ -33,7 +33,6 @@ transforms:
 model:
   sigma_z_max: 0.2
   sigma_z_mode: FIXED
-  smooth_prop: 0.5
   p_dt_step_start: 0
   p_dt_step_end: 20_000
   p_dt_sigma_min: 0.1
@@ -46,20 +45,19 @@ model:
     eta_min: 4.e-7
 
 trainer:
-  max_steps: 180_000
+  max_steps: 500_000
   max_epochs: -1
   log_every_n_steps: 100
   val_check_interval: 2500
 
 callbacks:
   model_checkpoint:
-    dirpath: ${paths.model_dir}/checkpoints/intra_frame_shift_invariant_temporally_smooth
-    filename: 'ds=chorus_{step}'
-    every_n_train_steps: 60_000
+    dirpath: ${paths.model_dir}/checkpoints/sivae.pt:v1
+    filename: model
+    every_n_train_steps: 25_000
     save_top_k: -1
 
 logger:
   wandb:
     id: ${run_id}
-    project: species_detector_pretraining
-    group: intra_frame_shift_invariant_temporally_smooth_vae
+    project: delta_diversity
