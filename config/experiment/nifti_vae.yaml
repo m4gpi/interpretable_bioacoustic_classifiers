@@ -46,20 +46,19 @@ model:
     eta_min: 4.e-7
 
 trainer:
-  max_steps: 180_000
+  max_steps: 25_000
   max_epochs: -1
   log_every_n_steps: 100
   val_check_interval: 2500
 
 callbacks:
   model_checkpoint:
-    dirpath: ${paths.model_dir}/checkpoints/intra_frame_shift_invariant_vae
-    filename: 'ds=chorus_{step}'
-    every_n_train_steps: 60_000
+    dirpath: ${paths.model_dir}/checkpoints/sivae.pt:v0
+    filename: model
+    every_n_train_steps: 25_000
     save_top_k: -1
 
 logger:
   wandb:
     id: ${run_id}
-    project: species_detector_pretraining
-    group: intra_frame_shift_invariant_vae
+    project: delta_diversity

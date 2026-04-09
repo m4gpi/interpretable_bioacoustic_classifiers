@@ -40,6 +40,7 @@ class SmoothNiftiVAE(BaseVAE):
     p_dt_sigma_min: float | None = None
     p_dt_sigma_max: float = 2.0
     p_dt_step_slope: float = 1.0
+    gamma: float = 0.05
 
     def __post_init__(self):
         super().__post_init__()
@@ -214,12 +215,18 @@ class SmoothNiftiVAE(BaseVAE):
         mae_frame = (x_hat - x).flatten(start_dim=-3).abs().sum(dim=-1)
         outputs |= dict(log_likelihood_x=-nll.detach().mean(), sigma_z=(0.5 * log_sigma_sq_z).exp().detach(), mae_frame=mae_frame.detach().mean())
         # MAP estimate of the alignment factor p(x|dt)p(dt)
-        dt = torch.cat([dt_i.flatten(end_dim=1).unsqueeze(1), dt_j], dim=0)
+        # dt = torch.cat([dt_i.flatten(end_dim=1).unsqueeze(1), dt_j], dim=0)
+        dt = torch.cat([dt_i, dt_j.view(dt_i.size())], dim=0).squeeze(-1)
+        # dt = (dt + 1) - torch.floor((dt + 1) / 2.0) * 2.0 - 1.0
         mu_dt_wrt_x = torch.zeros(1).to(dt.device)
-        log_sigma_sq_dt_wrt_x= self.p_dt_sigma_current(self.trainer.global_step).pow(2).log()
+        log_sigma_sq_dt_wrt_x = self.p_dt_sigma_current(self.trainer.global_step).pow(2).log()
         intra_frame_nll = negative_log_likelihood(dt, mu_dt_wrt_x, log_sigma_sq_dt_wrt_x)
         losses.append(intra_frame_nll.mean())
         outputs |= dict(log_likelihood_dt=-intra_frame_nll.detach().mean())
+        dt_var = (dt - dt.mean(dim=-1, keepdims=True)).pow(2)
+        dt_diversity = self.gamma * -dt_var.mean()
+        losses.append(dt_diversity.mean())
+        outputs |= dict(dt_diversity=dt_diversity.detach())
         # when applying the smoothness loss
         if self.smooth_prop is not None:
             # anchor q_z using an autoregressive prior, a mixture of gaussians between previous timestep and standard normal
