@@ -290,6 +290,7 @@ class SpeciesDetector(L.LightningModule):
         l1_2 = metrics.weight_regularisation([weights[:, 64:128] for weights in list(self.classifiers.parameters())[::2]], self.l1_penalty * self.penalty_multiplier)
         l1_penalty = torch.stack([l1_1, l1_2], dim=-1).sum(dim=-1)
         # per logistic regression model, add the CEL and L1 together and then sum to get the total loss
+        # TODO: should be mean across species otherwise the loss is not scale invariant to number of targets
         loss = (cel + l1_penalty).sum()
         return dict(
             loss=loss,

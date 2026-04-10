@@ -194,5 +194,5 @@ class BirdNETEmbeddings:
         test_dir = pathlib.Path(self.save_dir) / "test"
         test_dir.mkdir(exist_ok=True, parents=True)
         test_features, test_labels = df[df.index.get_level_values("file_i").isin(data.test_idx.file_i)], data.test_labels
-        test_labels.to_parquet(test_dir / "features.parquet")
+        test_features.to_parquet(test_dir / "features.parquet")
         test_labels.to_parquet(test_dir / "labels.parquet")

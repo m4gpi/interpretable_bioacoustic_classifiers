@@ -85,7 +85,7 @@ class SoundingOutChorus(torch.utils.data.Dataset):
         if scope is not None:
             idx, = np.where(self.metadata.country == scope)
             scope_idx = self.metadata.iloc[idx].index
-            assert len(self.scope_idx), f"{scope} is not a valid scope for country"
+            assert scope_idx.any(), f"{scope} is not a valid scope for country"
             self.metadata = self.metadata.loc[scope_idx]
             self.train_metadata = self.train_metadata[self.train_metadata.index.isin(scope_idx)]
             self.test_metadata = self.test_metadata[self.test_metadata.index.isin(scope_idx)]
