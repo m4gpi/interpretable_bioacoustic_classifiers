@@ -284,20 +284,18 @@ class SpeciesDetector(L.LightningModule):
             samples_per_class=torch.tensor(self.target_counts, dtype=torch.int64).to(y.device),
             label_smoothing=self.label_smoothing,
         ).mean(dim=0)
-        # L1 regularisation with split for smooth latents (if applicable), sum the L1 penalties for each model
-        # TODO: parameterise these indices
-        l1_1 = metrics.weight_regularisation([weights[:, 0:64] for weights in list(self.classifiers.parameters())[::2]], self.l1_penalty)
-        l1_2 = metrics.weight_regularisation([weights[:, 64:128] for weights in list(self.classifiers.parameters())[::2]], self.l1_penalty * self.penalty_multiplier)
-        l1_penalty = torch.stack([l1_1, l1_2], dim=-1).sum(dim=-1)
+        # sparse penalty for clf weights
+        l1 = self.l1_penalty * torch.stack([
+            torch.linalg.norm(layer, 1)
+            for layer in list(self.classifiers.parameters())[::2]
+        ])
         # per logistic regression model, add the CEL and L1 together and then sum to get the total loss
         # TODO: should be mean across species otherwise the loss is not scale invariant to number of targets
-        loss = (cel + l1_penalty).sum()
+        loss = (cel + l1).sum()
         return dict(
             loss=loss,
             cel=cel.detach().sum(),
-            l1_penalty=l1_penalty.detach().sum(),
-            l1_penalty_1=l1_1.detach().sum(),
-            l1_penalty_2=l1_2.detach().sum(),
+            l1_penalty=l1.detach().sum(),
         )
 
     def model_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]], num_samples: int | None = None) -> Tuple[torch.Tensor, ...]:
