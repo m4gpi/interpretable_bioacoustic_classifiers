@@ -1,0 +1,26 @@
+# @package _global_
+
+# python main.py +experiment=base_vae
+
+defaults:
+  - override /model: vae
+  - override /trainer: gpu
+  - override /logger: wandb
+
+trainer:
+  max_steps: 180_000
+  max_epochs: -1
+  log_every_n_steps: 100
+  val_check_interval: 2500
+
+callbacks:
+  model_checkpoint:
+    dirpath: ./checkpoints/vae.pt:v0
+    filename: model
+    every_n_train_steps: 60_000
+    save_top_k: -1
+
+logger:
+  id: ${run_id}
+  project: species_detector_pretraining
+  group: base

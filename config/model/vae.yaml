@@ -1,11 +1,7 @@
-_target_: src.core.models.smooth_nifti_vae.SmoothNiftiVAE
-sigma_z_max: 0.2
-sigma_z_mode: FIXED
-p_dt_step_start: 0
-p_dt_step_end: 20_000
-p_dt_sigma_min: 0.1
-p_dt_sigma_max: 2.0
+_target_: src.core.models.vae.VAE
+sigma_x: 0.2
 sample_rate: 48000
+num_fft: 512
 fft_window_length: 512
 fft_hop_length: 384
 num_mel_bins: 64

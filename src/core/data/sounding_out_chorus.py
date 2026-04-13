@@ -32,7 +32,10 @@ class SoundingOutChorus(torch.utils.data.Dataset):
     _BIT_RATE: int = 16
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return self.transforms(self.load_sample(self.x[idx])), self.y[idx], self.s[idx]
+        x, y, s = self.load_sample(self.x[idx]), self.y[idx], self.s[idx]
+        if callable(self.transforms):
+            x = self.transforms(x)
+        return x, y, s
 
     def __len__(self):
         return len(self.x)

@@ -62,10 +62,10 @@ def exponential_decay(t_current: int, t_start: int, t_end: int, maximum: int, mi
     decay_rate = decay_rate or -np.log((minimum - maximum) / (maximum - minimum)) / (t_end - t_start)
     return minimum + (maximum - minimum) * np.exp(decay_rate * (t_start - t_clamped))
 
-def bounded_sigmoid(x, x_min, x_max, y_min, y_max, k=1):
-    x_rescaled = 12 * (x - x_min) / (x_max - x_min) - 6
-    sigmoid = 1 / (1 + np.exp(-k * x_rescaled))
-    return y_min + (y_max - y_min) * sigmoid
+def bounded_sigmoid(x: float, x_min: float, x_max: float, y_min: float, y_max: float, k: float):
+    s = np.floor(np.log10(np.abs(x_max)))
+    z = k / 10**(s - 1)
+    return y_min + (y_max - y_min) / (1 + np.exp(-z * (x - ((x_min + x_max) / 2))))
 
 def soft_clip(x: torch.Tensor, minimum: int = -6.0) -> torch.Tensor:
     return minimum + F.softplus(x - minimum)

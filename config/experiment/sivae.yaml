@@ -1,0 +1,34 @@
+# @package _global_
+
+# python main.py +experiment=sivae
+
+defaults:
+  - override /model: sivae
+  - override /trainer: gpu
+  - override /logger: wandb
+
+model:
+  delta_sigma_min: 0.1
+  delta_sigma_max: 2.0
+  delta_sigma_step_slope: 0.4
+  delta_sigma_step_start: 0
+  delta_sigma_step_end: 20_000
+
+trainer:
+  max_steps: 180_000
+  max_epochs: -1
+  log_every_n_steps: 100
+  val_check_interval: 2500
+
+callbacks:
+  model_checkpoint:
+    dirpath: ./checkpoints/sivae.pt:v1
+    filename: model
+    every_n_train_steps: 60_000
+    save_top_k: -1
+
+logger:
+  wandb:
+    id: ${run_id}
+    project: species_detector_pretraining
+    group: sivae
