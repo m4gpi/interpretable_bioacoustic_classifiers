@@ -130,7 +130,7 @@ class LogMelSpectrogram(torch.nn.Module):
 
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
-class BaseVAE(L.LightningModule):
+class VAE(L.LightningModule):
     sample_rate: int = 48_000
     num_fft: int = 512
     fft_window_length: int = 512

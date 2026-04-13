@@ -1,6 +1,6 @@
 # @package _global_
 
-# python main.py +experiment=base_vae
+# python main.py +experiment=vae
 
 defaults:
   - override /model: vae
@@ -21,6 +21,7 @@ callbacks:
     save_top_k: -1
 
 logger:
-  id: ${run_id}
-  project: species_detector_pretraining
-  group: base
+  wandb:
+    id: ${run_id}
+    project: species_detector_pretraining
+    group: base
