@@ -7,3 +7,6 @@ defaults:
   - override /logger: null
 
 project: birdnet
+
+model:
+  num_workers: 8
