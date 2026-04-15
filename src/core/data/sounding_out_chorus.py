@@ -1,5 +1,6 @@
 import attrs
 import lightning as L
+import logging
 import numpy as np
 import os
 import pandas as pd
@@ -17,6 +18,9 @@ from torchvision import transforms as T
 from typing import Any, Callable, ClassVar, Dict, Final, List, Tuple
 
 from src.core.utils import Batch
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 __all__ = [
     "SoundingOutChorus",
@@ -48,7 +52,6 @@ class SoundingOutChorus(torch.utils.data.Dataset):
         transforms: Callable = lambda x: x,
         segment_len: float = 60.0,
         sample_rate: int = 48_000,
-        download: bool = False,
         reset_index: bool = False,
         test: bool | None = None,
         seed: int = 42,
@@ -59,46 +62,35 @@ class SoundingOutChorus(torch.utils.data.Dataset):
         self.num_frames_in_segment = int(self.segment_len * self.sample_rate)
         self.transforms = transforms
         # fetch from remote and perform initial data split
-        if download:
+        try:
+            self._check_files()
+        except AssertionError as e:
+            log.info(f"{self.__class__.__name__} files not found, downloading from remote...")
             self._download_files()
-            self._split_testset()
+            reset_index = True
         # rebuild the data split if specified
         if reset_index:
+            log.info(f"{self.__class__.__name__} building test split...")
             self._split_testset()
+        assert scope in [None, "UK", "EC"], f"{scope} is not a valid scope for country"
         # load file info
         self.metadata = pd.read_parquet(self.base_dir / "metadata.parquet")
         self.metadata.index.name = "file_i"
+        if scope is not None:
+            self.metadata = self.metadata[self.metadata["country"] == scope]
+        self.metadata["file_path"] = self.base_dir / self.metadata["stage"] / "data" / self.metadata["file_name"]
         # load the labels, pivot so species are on columns, collapse point counts to presence/absence
-        self.labels = (
-            pd.read_parquet(self.base_dir / "birds.parquet")
-            .reset_index()
-            .pivot(index=["file_i", "file_name", "country"], columns="species_name", values="counts")
-            .fillna(0.0)
-            .astype(bool)
-            .astype(int)
-        )
+        labels = pd.read_parquet(self.base_dir / "birds.parquet")
+        if scope is not None:
+            labels = labels[labels["country"] == scope]
+        self.labels = labels.reset_index().pivot(index="file_i", columns="species_name", values="counts").fillna(0.0).astype(bool).astype(int)
         # scope by train / test
         self.train_idx = pd.read_parquet(self.base_dir / "train_indices.parquet")
         self.test_idx = pd.read_parquet(self.base_dir / "test_indices.parquet")
-        self.train_metadata = self.metadata.loc[self.train_idx.file_i]
-        self.train_labels = self.labels.loc[self.train_idx.file_i]
-        self.test_metadata = self.metadata.loc[self.test_idx.file_i]
-        self.test_labels = self.labels.loc[self.test_idx.file_i]
-        # scope by country
-        if scope is not None:
-            idx, = np.where(self.metadata.country == scope)
-            scope_idx = self.metadata.iloc[idx].index
-            assert scope_idx.any(), f"{scope} is not a valid scope for country"
-            self.metadata = self.metadata.loc[scope_idx]
-            self.train_metadata = self.train_metadata[self.train_metadata.index.isin(scope_idx)]
-            self.test_metadata = self.test_metadata[self.test_metadata.index.isin(scope_idx)]
-            self.labels = self.labels.loc[scope_idx]
-            self.train_labels = self.train_labels[self.train_labels.index.get_level_values("file_i").isin(scope_idx)]
-            self.test_labels = self.test_labels[self.test_labels.index.get_level_values("file_i").isin(scope_idx)]
-
-        self.metadata["file_path"] = self.base_dir / self.metadata["stage"] / "data" / self.metadata["file_name"]
-        self.train_metadata["file_path"] = self.base_dir / "train" / "data" / self.train_metadata["file_name"]
-        self.test_metadata["file_path"] = self.base_dir / "test" / "data" / self.test_metadata["file_name"]
+        self.train_metadata = self.metadata[self.metadata.index.isin(self.train_idx.file_i)]
+        self.train_labels = self.labels.loc[self.labels.index.isin(self.train_idx.file_i)]
+        self.test_metadata = self.metadata[self.metadata.index.isin(self.test_idx.file_i)]
+        self.test_labels = self.labels.loc[self.labels.index.isin(self.test_idx.file_i)]
 
         if test == True:
             self.x = self.test_metadata.file_path.to_numpy()
@@ -114,12 +106,19 @@ class SoundingOutChorus(torch.utils.data.Dataset):
             self.s = self.metadata.index
 
     @property
-    def target_names(self):
+    def target_names(self) -> List[str]:
         return self.labels.columns.tolist()
 
     @property
-    def model_params(self) -> Dict:
-        return {}
+    def target_counts(self) -> List[int]:
+        return self.labels.sum(axis=0).tolist()
+
+    @property
+    def model_params(self):
+        return dict(
+            target_names=self.target_names,
+            target_counts=self.target_counts,
+        )
 
     def load_sample(self, file_path: str) -> torch.Tensor:
         metadata = torchaudio.info(file_path)
@@ -128,6 +127,20 @@ class SoundingOutChorus(torch.utils.data.Dataset):
         frame_offset = torch.randint(low=0, high=high, size=(1,))
         waveform, _ = torchaudio.load(file_path, num_frames=num_frames_segment)
         return torchaudio.functional.resample(waveform, orig_freq=metadata.sample_rate, new_freq=self.sample_rate).squeeze()
+
+    def _check_files(self) -> None:
+        """assert files exist and zip unpacked"""
+        assert (self.base_dir / "train").exists() and (self.base_dir / "test").exists(), \
+            f"audio not found at location {(self.base_dir / 'train').resolve()} or {(self.base_dir / 'test').resolve()}. Have you downloaded it?"
+
+        assert (self.base_dir / "metadata.parquet").exists(), \
+            f"'metadata.parquet' not found at location {self.base_dir.resolve()}. Have you downloaded it?"
+
+        assert (self.base_dir / "birds.parquet").exists(), \
+            f"'labels.parquet' not found at location {self.base_dir.resolve()}. Have you downloaded it?"
+
+        assert (self.base_dir / "train_indices.parquet").exists() and (self.base_dir / "test_indices.parquet").exists(), \
+            f"'train_indices.parquet' or 'test_indices.parquet' not found at location {self.base_dir.resolve()}. Pass 'reset_index=True seed=42' to rebuild the data split"
 
     def _download_files(self):
         import requests
@@ -186,13 +199,13 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
         self.training_mode = ranzen.torch.TrainingMode[self.training_mode]
 
     def prepare_data(self):
-        SoundingOutChorus(root=self.root, download=True)
+        SoundingOutChorus(root=self.root)
         return self
 
     def setup(self, stage: str):
-        self.data = SoundingOutChorus(self.root, test=False, download=False, **self.dataset_params)
+        self.data = SoundingOutChorus(self.root, test=False, **self.dataset_params)
         self.val_data, self.train_data = torch.utils.data.random_split(self.data, (self.val_prop, 1 - self.val_prop), generator=self.generator)
-        self.test_data = SoundingOutChorus(self.root, test=True, download=False, **self.dataset_params)
+        self.test_data = SoundingOutChorus(self.root, test=True, **self.dataset_params)
         return self
 
     @property
@@ -215,13 +228,20 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
             return dict(batch_size=batch_size, shuffle=True, generator=self.generator, drop_last=False)
 
     def train_dataloader(self, batch_size: int | None = None, batch_sampler: torch.utils.data.Sampler | None = None) -> torch.utils.data.DataLoader:
-        return self._build_dataloader(self.train_data, **self.train_dataloader_params(batch_size))
+        return self._build_dataloader(self.train_data, **self.train_dataloader_params(self.train_batch_size))
 
     def val_dataloader(self) -> torch.utils.data.DataLoader:
         return self._build_dataloader(self.val_data, batch_size=self.eval_batch_size)
 
     def test_dataloader(self) -> torch.utils.data.DataLoader:
         return self._build_dataloader(self.test_data, batch_size=self.eval_batch_size)
+
+    def predict_dataloader(self) -> List[torch.utils.data.DataLoader]:
+        return [
+            self._build_dataloader(self.train_data, batch_size=self.eval_batch_size),
+            self.val_dataloader(),
+            self.test_dataloader(),
+        ]
 
     @property
     def dataloader_params(self) -> Dict[str, Any]:

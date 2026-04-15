@@ -40,8 +40,10 @@ def class_balanced_binary_cross_entropy(
     label_smoothing: float = 0.0,
     epsilon: float = 1e-6,
 ) -> torch.Tensor:
+    samples_per_class = samples_per_class.to(y.device)
     weights = (torch.ones_like(beta) - beta) / (torch.ones_like(samples_per_class) - torch.pow(beta, samples_per_class.clip(min=1)))
     weights = weights / weights.sum() * weights.shape[0]
+    y = y.float()
     y_probs = y_probs.clamp(epsilon, 1 - epsilon)
     for values in [y, y_probs, weights]:
         assert torch.isfinite(values).all()

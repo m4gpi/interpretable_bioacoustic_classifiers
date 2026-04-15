@@ -115,12 +115,19 @@ class RainforestConnection(torch.utils.data.Dataset):
             self.s = self.metadata.index
 
     @property
-    def target_names(self):
+    def target_names(self) -> List[str]:
         return self.labels.columns.tolist()
 
     @property
-    def model_params(self) -> Dict:
-        return {}
+    def target_counts(self) -> List[int]:
+        return self.labels.sum(axis=0).tolist()
+
+    @property
+    def model_params(self):
+        return dict(
+            target_names=self.target_names,
+            target_counts=self.target_counts,
+        )
 
     def format_labels(self, metadata, labels):
         # count occurrences and drop duplicates

@@ -14,6 +14,7 @@ from typing import Any, List, Dict, Tuple
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.cli.utils.instantiators import instantiate_callbacks, instantiate_loggers
+from src.cli.utils import filter_kwargs_for_callable
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -26,6 +27,8 @@ def evaluate(cfg):
     data_module.setup(stage="eval")
 
     log.info(f"Instantiating model <{cfg.model._target_}>")
+    model_cls = hydra.utils.get_class(cfg.model._target_)
+    filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.data.model_params)
     model = hydra.utils.instantiate(cfg.model, **data_module.data.model_params)
 
     log.info("Instantiating callbacks...")

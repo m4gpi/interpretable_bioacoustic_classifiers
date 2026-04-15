@@ -175,12 +175,26 @@ class SIVAE(L.LightningModule):
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         plt.switch_backend('agg')
         log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.fit(
-            self,
-            train_dataloaders=data_module.train_dataloader(),
-            val_dataloaders=data_module.val_dataloader(),
-            ckpt_path=config.get("ckpt_path")
-        )
+        trainer.fit(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
+
+    def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+        save_dir = pathlib.Path(config["save_dir"])
+        data = data_module.data
+
+        predict_dfs = trainer.predict(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"), return_predictions=True)
+        df = pd.concat(list(itertools.chain(*predict_dfs)), axis=0)
+
+        train_dir = pathlib.Path(save_dir) / "train"
+        train_dir.mkdir(exist_ok=True, parents=True)
+        train_features, train_labels = df[df.index.get_level_values("file_i").isin(data.train_idx.file_i)], data.train_labels
+        train_features.to_parquet(train_dir / "features.parquet")
+        train_labels.to_parquet(train_dir / "labels.parquet")
+
+        test_dir = pathlib.Path(save_dir) / "test"
+        test_dir.mkdir(exist_ok=True, parents=True)
+        test_features, test_labels = df[df.index.get_level_values("file_i").isin(data.test_idx.file_i)], data.test_labels
+        test_features.to_parquet(test_dir / "features.parquet")
+        test_labels.to_parquet(test_dir / "labels.parquet")
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
@@ -199,7 +213,6 @@ class SIVAE(L.LightningModule):
         self._reset_cache()
 
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
-        # ------ pre-processing ------ #
         x_i = self.log_mel_spectrogram(x)
         x_i = T.center_crop(x_i, [(x_i.size(-2) - (x_i.size(-2) % self.frame_window_length)), x_i.size(-1)])
         sigma_delta = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.sigma_delta_params))
@@ -418,6 +431,7 @@ class SIVAE(L.LightningModule):
         **kwargs: Any
     ) -> pd.DataFrame:
         x, *_ = batch
+        x = self.log_mel_spectrogram(x)
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
         q_z, delta = self.encode(x, hop_length=frame_hop_length)
         bs, seq, *_ = q_z.size()

@@ -15,6 +15,7 @@ from typing import Any, List, Dict, Tuple
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.cli.utils.instantiators import instantiate_callbacks, instantiate_loggers, instantiate_transforms
+from src.cli.utils import filter_kwargs_for_callable
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -33,7 +34,9 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     data_module.setup(stage="fit")
 
     log.info(f"Instantiating model <{cfg.model._target_}>")
-    model: L.LightningModule = hydra.utils.instantiate(cfg.model, **data_module.data.model_params)
+    model_cls = hydra.utils.get_class(cfg.model._target_)
+    filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.data.model_params)
+    model: L.LightningModule = hydra.utils.instantiate(cfg.model, **filtered_params)
 
     log.info("Instantiating callbacks...")
     callbacks: List[L.Callback] = instantiate_callbacks(cfg.get("callbacks"))
