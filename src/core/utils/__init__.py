@@ -41,7 +41,10 @@ def prefix_keys(d: Dict, prefix: str, separator: str = '/') -> Dict[str, Any]:
     return { f"{prefix}{separator}{key}": value for key, value in d.items() }
 
 def detach_values(d: Dict) -> Dict:
-    return { k: v.detach() for k, v in d.items() if isinstance(v, torch.Tensor) }
+    return {
+        k: (v.detach() if isinstance(v, torch.Tensor) else v)
+        for k, v in d.items()
+    }
 
 def nth_percentile(x: torch.Tensor, z_score: float) -> Tuple[torch.Tensor, torch.Tensor]:
     return x.mean() - z_score * x.std(), x.mean() + z_score * x.std()

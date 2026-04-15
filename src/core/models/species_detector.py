@@ -15,6 +15,7 @@ from torch.nn import functional as F
 from typing import Any, Dict, List, Tuple
 
 from src.core.utils import metrics
+from src.core.utils import detach_values, prefix_keys
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -323,25 +324,29 @@ class SpeciesDetector(L.LightningModule):
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
         y, y_probs, _, s = self.model_step(batch, num_samples=self.train_sample_size)
         loss_outputs = self.loss(y.float(), y_probs)
-        self.log_dict({f"train/{key}": value for key, value in loss_outputs.items()}, prog_bar=True, batch_size=s.size(0))
-        return {**loss_outputs, "y_probs": y_probs, "y": y, "s": s, "target_names": self.target_names}
+        step_outputs = detach_values(dict(y=y.detach().cpu(), y_probs=y_probs.detach().cpu(), s=s.detach().cpu(), target_names=self.target_names))
+        self.log_dict(prefix_keys(loss_outputs, "train"), batch_size=s.size(0), prog_bar=True, logger=False)
+        return {**loss_outputs, **step_outputs}
 
     @torch.no_grad()
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> Dict[str, torch.Tensor]:
         y, y_probs, _, s = self.model_step(batch, num_samples=self.eval_sample_size)
         loss_outputs = self.loss(y.float(), y_probs)
-        self.log_dict({f"val/{key}": value for key, value in loss_outputs.items()}, prog_bar=True, batch_size=s.size(0))
-        return {**loss_outputs, "y_probs": y_probs, "y": y, "s": s, "target_names": self.target_names}
+        step_outputs = detach_values(dict(y=y, y_probs=y_probs, s=s, target_names=self.target_names))
+        self.log_dict(prefix_keys(loss_outputs, "val"), batch_size=s.size(0), prog_bar=True, logger=False)
+        return {**loss_outputs, **step_outputs}
 
     @torch.no_grad()
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> pd.DataFrame:
         y, y_probs, _, s = self.model_step(batch, num_samples=self.eval_sample_size)
-        return {"y_probs": y_probs, "y": y, "s": s, "target_names": self.target_names}
+        step_outputs = detach_values(dict(y=y, y_probs=y_probs, s=s, target_names=self.target_names))
+        return step_outputs
 
     @torch.no_grad()
     def predict_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> pd.DataFrame:
         y, y_probs, _, s = self.model_step(batch)
-        return {"y_probs": y_probs, "y": y, "s": s, "target_names": self.target_counts}
+        step_outputs = detach_values(dict(y=y, y_probs=y_probs, s=s, target_names=self.target_names))
+        return step_outputs
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         params = []

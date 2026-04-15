@@ -62,7 +62,7 @@ class SpeciesScores(L.Callback):
                 f"train/{metric}": value
                 for metric, value in scores[["auROC", "AP"]].mean(axis=0).to_dict().items()
             }, prog_bar=True, on_epoch=True)
-        self.train_predictions = []
+        self.train_predictions.clear()
 
     def on_validation_batch_end(
         self,
@@ -92,7 +92,7 @@ class SpeciesScores(L.Callback):
             # if pl_module.logger is not None and hasattr(pl_module.logger, "experiment"):
                 # pl_module.logger.experiment.log({"val_scores": self._update_table(self.val_table, scores)})
             scores.to_parquet(self.save_dir / "val_scores.parquet" / f"run_id={self.run_id}_epoch={pl_module.current_epoch}.parquet")
-        self.val_predictions = []
+        self.val_predictions.clear()
 
     def on_test_batch_end(
         self,
@@ -137,7 +137,7 @@ class SpeciesScores(L.Callback):
             # if pl_module.logger is not None and hasattr(pl_module.logger, "experiment") and callable(pl_module.logger.experiment.log):
                 # pl_module.logger.experiment.log({"test_scores_summary": wandb.Table(dataframe=summary_stats.T)})
             print(summary_stats.T.to_markdown())
-        self.test_predictions = []
+        self.test_predictions.clear()
 
     def _on_batch_end(self, outputs: List[Dict[str, Any]]) -> pd.DataFrame:
         y, y_probs, s, target_names = outputs["y"], outputs["y_probs"], outputs["s"], outputs["target_names"]

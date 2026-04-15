@@ -132,7 +132,6 @@ class BirdNET:
 
 @attrs.define()
 class BirdNETEmbeddings:
-    save_dir: str = attrs.field()
     version: str = attrs.field(default="v2.4")
     num_workers: int = attrs.field(default=32)
     batch_size: int = attrs.field(default=6)
@@ -172,6 +171,8 @@ class BirdNETEmbeddings:
 
     def evaluate(self, trainer: None, data_module: L.LightningDataModule, config: DictConfig, **kwargs: Any):
         run_id = config.get("run_id")
+        save_dir = pathlib.Path(config["save_dir"])
+
         data_module.setup(stage="eval")
         data = data_module.data
 

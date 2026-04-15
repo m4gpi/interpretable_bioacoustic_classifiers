@@ -181,6 +181,8 @@ class SpeciesVAE(L.LightningModule):
         plt.switch_backend('agg')
         log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.fit(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
+        ckpt_path = trainer.checkpoint_callback.best_model_path
+        trainer.test(self, datamodule=data_module, ckpt_path=ckpt_path)
 
     def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         save_dir = pathlib.Path(config["save_dir"])
@@ -263,10 +265,9 @@ class SpeciesVAE(L.LightningModule):
         y_probs, attn_w = [], []
         A_V = torch.tanh(self.attention_V(z)) # (bs, seq, ld)
         for target_name in self.target_names:
-            clf, attention_w, attention_U = self.classifiers[target_name], self.attention_w[target_name], self.attention_U[target_name]
-            A_U = torch.sigmoid(attention_U(z))
-            A = F.softmax(attention_w(A_V * A_U), dim=-2) # (bs, seq, 1)
-            y_probs.append((torch.sigmoid(clf(z)) * A).sum(dim=-2))
+            A_U = torch.sigmoid(self.attention_U[target_name](z))
+            A = F.softmax(self.attention_w[target_name](A_V * A_U), dim=-2) # (bs, seq, 1)
+            y_probs.append((torch.sigmoid(self.classifiers[target_name](z)) * A).sum(dim=-2))
             attn_w.append(A)
         return torch.cat(y_probs, dim=-1), torch.cat(attn_w, dim=-1)
 

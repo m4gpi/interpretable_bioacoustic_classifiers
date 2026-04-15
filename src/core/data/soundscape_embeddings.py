@@ -134,10 +134,6 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
             persistent_workers=self.persist_workers,
         )
 
-    # FIXME
-    # def prepare_data(self):
-        # MODELS[self.model].load_from_checkpoint(self.root / "model.pt")
-
     def setup(self, stage: str | None = None) -> None:
         self.index = pd.read_parquet(self.root / "index.parquet")
         query = (self.index["model_name"] == self.model) & (self.index["version"] == self.version) & (self.index["scope"] == self.scope)
