@@ -1,0 +1,636 @@
+import os
+import enum
+import functools
+import itertools
+import lightning as L
+import logging
+import numpy as np
+import pandas as pd
+import pathlib
+import torch
+import hydra
+import wandb
+
+from dataclasses import dataclass, field
+from numpy.typing import NDArray
+from matplotlib import pyplot as plt
+from pathlib import Path
+from omegaconf import DictConfig
+from torch import Tensor, nn
+from torch.functional import F
+from torchvision.transforms import functional as T
+from torch.distributions.normal import Normal
+from torch.optim import Optimizer
+from typing import Any, Dict, List, Tuple
+
+from src.core.models.components import (
+    Activation,
+    NormType,
+    init_cnn_feature_encoder,
+    init_cnn_feature_decoder,
+    init_mlp_content_encoder,
+    init_mlp_content_decoder,
+    init_alignment_encoder,
+)
+from src.core.utils import soft_clip
+from src.core.utils import metrics
+from src.core.transforms.log_mel_spectrogram import mel_filterbanks, hz_to_mel, mel_to_hz
+from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
+from src.core.utils import detach_values, prefix_keys, try_or
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+__all__ = ["SpeciesVAE"]
+
+@dataclass(kw_only=True, unsafe_hash=True)
+class LogMelSpectrogram(torch.nn.Module):
+    sample_rate: int = 48_000
+    n_fft: int = 512
+    fft_window_length: int = 512
+    fft_hop_length: int = 384
+    num_mel_bins: int = 64
+    mel_min_hertz: float | None = 0.0
+    mel_max_hertz: float | None = None
+    mel_scaling_factor: float | None = 4581.0
+    mel_break_frequency: float | None = 1750.0
+
+    def __new__(cls, *args: Any, **kwargs: Any):
+        obj = object.__new__(cls)
+        torch.nn.Module.__init__(obj)
+        return obj
+
+    def __post_init__(self):
+        mel_basis = mel_filterbanks(**self.mel_params)
+        self.register_buffer("mel_basis", torch.tensor(mel_basis, requires_grad=False), persistent=False)
+
+    @torch.no_grad()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # remove DC offset
+        x = x - x.mean(dim=-1, keepdims=True)
+        # apply fourier transform
+        window = torch.hann_window(self.fft_window_length).to(x.device)
+        x = torch.stft(x, self.n_fft, window=window, **self.stft_params)
+        # discard phase
+        x = x.abs()
+        # transpose time on inner axes
+        x = x.transpose(-1, -2)
+        # apply mel
+        x = x @ self.mel_basis.t()
+        # apply log
+        x = torch.clamp(x, min=1e-6).log()
+        # add a channel dimension
+        x = x.unsqueeze(1)
+        return x
+
+    @torch.no_grad()
+    def plot(self, z: NDArray | torch.Tensor, vmin: float | None = None, vmax: float | None = None, cmap: str = "viridis", ax: None = None, **kwargs: Any):
+        ax = ax if ax is not None else plt.gca()
+        vmin = vmin if vmin is not None and kwargs.get("norm", None) is None else z.min()
+        vmax = vmax if vmax is not None and kwargs.get("norm", None) is None else z.max()
+        imshow_params = dict(vmin=vmin, vmax=vmax, origin="lower", aspect="auto", cmap=cmap, **kwargs)
+        im = ax.imshow(z, **imshow_params)
+        # TODO: allow parametrisation of tick duration
+        duration_seconds = (z.shape[1] * self.fft_hop_length) // self.sample_rate
+        time = np.linspace(0, duration_seconds, z.shape[1])
+        x_tick_positions = np.linspace(0, duration_seconds, int(z.shape[1] // (self.sample_rate // self.fft_hop_length) / 5) + 1)
+        x_tick_labels = [f"{np.format_float_positional(t, trim='-', precision=2)}" for t in x_tick_positions]
+        x_tick_indices = [np.argmin(np.abs(time - t)) for t in x_tick_positions]
+        ax.set_xticks(x_tick_indices, labels=x_tick_labels)
+        ax.set_xlabel("Time (s)")
+        # ticks for y-axis are on a log scale, find the nearest base 2 exponents for the ticks
+        min_mel = hz_to_mel(self.mel_min_hertz, scaling_factor=self.mel_scaling_factor, break_frequency=self.mel_break_frequency)
+        max_mel = hz_to_mel(self.mel_max_hertz, scaling_factor=self.mel_scaling_factor, break_frequency=self.mel_break_frequency)
+        mels = np.linspace(min_mel, max_mel, z.shape[0])
+        frequencies = mel_to_hz(mels, scaling_factor=self.mel_scaling_factor, break_frequency=self.mel_break_frequency)
+        y_tick_positions = [2**i for i in range(max(9, int(np.ceil(np.log2(self.mel_min_hertz + 1e-8)))), int(np.floor(np.log2(self.mel_max_hertz))) + 1)]
+        y_tick_labels = [f"{int(f)}" for f in y_tick_positions]
+        y_tick_indices = [np.argmin(np.abs(frequencies - f)) for f in y_tick_positions]
+        ax.set_yticks(y_tick_indices, labels=y_tick_labels)
+        ax.set_ylabel("Frequency (Hz)")
+        return im
+
+    @property
+    def stft_params(self):
+        return dict(
+            win_length=self.fft_window_length,
+            hop_length=self.fft_hop_length,
+            return_complex=True,
+            pad_mode="constant",
+        )
+
+    @property
+    def mel_params(self):
+        return dict(
+            num_mel_bins=self.num_mel_bins,
+            mel_min_hertz=self.mel_min_hertz,
+            mel_max_hertz=self.mel_max_hertz,
+            linear_frequencies=torch.linspace(0.0, self.sample_rate / 2, (self.n_fft // 2) + 1),
+            scaling_factor=self.mel_scaling_factor,
+            break_frequency=self.mel_break_frequency,
+        )
+
+
+@dataclass(unsafe_hash=True, kw_only=True, eq=False)
+class SpeciesVAE(L.LightningModule):
+    sample_rate: int = 48_000
+    num_fft: int = 512
+    fft_window_length: int = 512
+    fft_hop_length: int = 384
+    mel_min_hertz: float | None = 0.0
+    mel_max_hertz: float | None = None
+    mel_scaling_factor: float | None = 4581.0
+    mel_break_frequency: float | None = 1750.0
+    frame_window_length: int = 192
+    frame_hop_length: int | None = 192
+    num_mel_bins: int = 64
+    latent_dim: int = 128
+    sigma_z_min: float = 0.0498
+    weight_init_std: float = 1e-3
+    cnn_block_width: int = 4
+    cnn_block_depth: int = 3
+    cnn_dropout_prob: float = 0.2
+    cnn_padding_mode: str = "circular"
+    cnn_activation: str = "LEAK"
+    cnn_feature_reduction_factor: int = 4
+    norm_type: str = "LN"
+    mlp_activation: str = "LEAK"
+    mlp_dropout_prob: float = 0.1
+    mlp_reduction_factor: int = 4
+    frame_padding_mode: str = "circular"
+    sigma_x: float = 1.0
+    learning_rate: float = 4e-5
+    optimiser_cls: str = "torch.optim.AdamW"
+    optimiser_config: DictConfig | None = None
+    scheduler_cls: str | None = None
+    scheduler_config: DictConfig | None = None
+    scheduler_interval: str = "step"
+    scheduler_frequency: int = 1
+
+    target_names: List[str] | None
+    target_counts: List[int] | None
+    beta: float | None
+    clf_learning_rate: float | None
+    l1_penalty: float | None = 1e-1
+    label_smoothing: float = 0.0
+    attn_dim: int | None = None
+    attn_learning_rate: float | None
+    attn_weight_decay: float | None = 5e-4
+
+    def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+        plt.switch_backend('agg')
+        log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        trainer.fit(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
+
+    def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+        save_dir = pathlib.Path(config["save_dir"])
+        data = data_module.data
+
+        predict_dfs = trainer.predict(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"), return_predictions=True)
+        df = pd.concat(list(itertools.chain(*predict_dfs)), axis=0)
+
+        train_dir = pathlib.Path(save_dir) / "train"
+        train_dir.mkdir(exist_ok=True, parents=True)
+        train_features, train_labels = df[df.index.get_level_values("file_i").isin(data.train_idx.file_i)], data.train_labels
+        train_features.to_parquet(train_dir / "features.parquet")
+        train_labels.to_parquet(train_dir / "labels.parquet")
+
+        test_dir = pathlib.Path(save_dir) / "test"
+        test_dir.mkdir(exist_ok=True, parents=True)
+        test_features, test_labels = df[df.index.get_level_values("file_i").isin(data.test_idx.file_i)], data.test_labels
+        test_features.to_parquet(test_dir / "features.parquet")
+        test_labels.to_parquet(test_dir / "labels.parquet")
+
+    def __new__(cls, *args: Any, **kwargs: Any):
+        obj = object.__new__(cls)
+        L.LightningModule.__init__(obj)
+        return obj
+
+    def __post_init__(self):
+        self.save_hyperparameters()
+        self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
+        self.sigma_z_min = self.sigma_z_min or self.sigma_z_max
+        self.log_mel_spectrogram = LogMelSpectrogram(**self.log_mel_spectrogram_params)
+        self.feature_encoder = init_cnn_feature_encoder(**self.cnn_encoder_params)
+        self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
+        self.feature_decoder = init_cnn_feature_decoder(**self.cnn_decoder_params)
+        self.content_decoder = init_mlp_content_decoder(**self.content_mlp_decoder_params)
+        self.strict_loading = False
+        self.beta = torch.nn.Parameter(torch.tensor(self.beta, dtype=torch.float32), requires_grad=False)
+        self.classifiers = self._init_classifiers()
+        self.attention_V, self.attention_U, self.attention_w = self._init_attention_network()
+        self._reset_cache()
+
+    # ------------------------------- MODEL -------------------------------- #
+
+    def forward(self, x: Tensor, y: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
+        x = self.log_mel_spectrogram(x)
+        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins]).float()
+        q_z = self.encode(x)
+        mu_x, log_sigma_sq_x = q_z.chunk(2, dim=-1)
+        z = Normal(mu_x, (0.5 * log_sigma_sq_x).exp()).rsample()
+        x_hat = self.decode(z).view(*x.size())
+        x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_hop_length)
+        x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_hop_length)
+        y_probs, attn_w = self.clf(z) # (bs, sp)
+        return dict(
+            x=x, x_framed=x_framed,
+            x_hat=x_hat, x_hat_framed=x_hat_framed,
+            q_z=q_z,
+            y=y, y_probs=y_probs,
+        )
+
+    def encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
+        for i, block in enumerate(self.feature_encoder):
+            x = block(x)
+        hop_length = (hop_length or self.frame_hop_length) // 2**(self.cnn_layers)
+        x = self.frame(x, window_length=self.latent_window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
+        q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=2*np.log(self.sigma_z_min))
+        return torch.cat([mu_z, log_sigma_sq_z], dim=-1)
+
+    def decode(self, z: torch.Tensor) -> torch.Tensor:
+        bs, seq, *other_dims = z.size()
+        U = self.content_decoder(z.flatten(end_dim=1))
+        for i, block in enumerate(self.feature_decoder):
+            if i == len(self.feature_decoder) - 1:
+                U = U.unflatten(0, (bs, seq)).transpose(1, 2).flatten(start_dim=2, end_dim=3)
+            U = block(U)
+        return U
+
+    def clf(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        y_probs, attn_w = [], []
+        A_V = torch.tanh(self.attention_V(z)) # (bs, seq, ld)
+        for target_name in self.target_names:
+            clf, attention_w, attention_U = self.classifiers[target_name], self.attention_w[target_name], self.attention_U[target_name]
+            A_U = torch.sigmoid(attention_U(z))
+            A = F.softmax(attention_w(A_V * A_U), dim=-2) # (bs, seq, 1)
+            y_probs.append((torch.sigmoid(clf(z)) * A).sum(dim=-2))
+            attn_w.append(A)
+        return torch.cat(y_probs, dim=-1), torch.cat(attn_w, dim=-1)
+
+    @staticmethod
+    def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:
+        if hop_length != window_length:
+            return frame(x, window_length=window_length, hop_length=hop_length) if x.size(-2) > window_length else x.unsqueeze(1)
+        return x.view(x.size(0), x.size(1), x.size(2) // window_length, window_length, x.size(3)).transpose(1, 2)
+
+    def loss(
+        self,
+        x: Tensor,
+        x_framed: Tensor,
+        x_hat: Tensor,
+        x_hat_framed: Tensor,
+        q_z: Tensor,
+        y: torch.Tensor,
+        y_probs: torch.Tensor,
+        **kwargs: Any
+    ) -> Dict[str, Tensor]:
+        outputs = dict()
+        losses = []
+        # frame-wise reconstruction loss
+        sigma_x = torch.tensor(self.sigma_x)
+        nll = (1/2 * (2 * sigma_x.log() + ((x_framed - x_hat_framed) / sigma_x).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
+        mae = (x_hat_framed - x_framed).abs().flatten(start_dim=-3).sum(dim=-1).mean()
+        losses.append(nll)
+        outputs |= dict(log_likelihood_x=-nll.detach().mean(), mae=mae.detach())
+        # frame-wise mean of the KL between posterior and prior
+        mu, log_sigma_sq = q_z.chunk(2, dim=-1)
+        dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp())).sum(dim=-1).mean()
+        losses.append(dkl)
+        outputs |= dict(dkl=dkl.detach())
+        # fine-tune embeddings based on species targets with sparse classifier weights
+        cel = metrics.class_balanced_binary_cross_entropy(y, y_probs, **self.cel_params).mean(dim=0)
+        weights = list(self.classifiers.parameters())[::2]
+        l1 = self.l1_penalty * torch.stack([torch.linalg.norm(w, 1) for w in weights])
+        clf_loss = (cel + l1).sum()
+        losses.append(clf_loss)
+        outputs |= dict(clf_loss=clf_loss.detach(), cel=cel.detach().sum(), l1=l1.detach().sum())
+        # sum the loss components
+        outputs |= dict(loss=sum(losses))
+        return outputs
+
+    # ------------------------------- LIGHTNING TRAINING -------------------------------- #
+
+    def step(
+        self,
+        batch: Tuple[Tensor, Tensor, Tensor],
+        batch_idx: int,
+        stage: str,
+        **kwargs: Any,
+    ) -> Dict[str, Tensor]:
+        x, y, s = batch
+        step_outputs = self.forward(x, y)
+        loss_outputs = self.loss(**step_outputs)
+        step_outputs = detach_values(step_outputs)
+        metrics = self.metrics(**step_outputs)
+        self.log_dict(prefix_keys(loss_outputs, stage), batch_size=x.size(0), prog_bar=True, logger=False)
+        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
+        return {**loss_outputs, **step_outputs, "s": s, "target_names": self.target_names}
+
+    def training_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
+        outputs = self.step(batch, batch_idx, "train")
+        self.training_step_outputs.append(outputs)
+        return outputs
+
+    @torch.no_grad()
+    def validation_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
+        outputs = self.step(batch, batch_idx, "val")
+        self.validation_step_outputs.append(outputs)
+        return outputs
+
+    @torch.no_grad()
+    def test_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
+        outputs = self.step(batch, batch_idx, "test")
+        self.test_step_outputs.append(outputs)
+        return outputs
+
+    def on_train_batch_end(self, *args: Any, **kwargs: Any) -> None:
+        self.training_step_outputs.clear()
+
+    def on_validation_batch_end(self, outputs: Dict[str, Tensor], batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> None:
+        if batch_idx < 4 and len(self.validation_step_outputs):
+            step_outputs = self.validation_step_outputs[0]
+            specs = step_outputs["x"].squeeze().cpu().numpy()
+            recons = step_outputs["x_hat"].squeeze().cpu().numpy()
+            nrows = step_outputs["x"].size(0)
+            fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(15, nrows * 3))
+            for i in range(nrows):
+                mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[i, 0], vmin=specs.min(), vmax=specs.max())
+                mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[i, 1], vmin=specs.min(), vmax=specs.max())
+                plt.colorbar(mesh, ax=axes[i, 0], orientation="vertical")
+                plt.colorbar(mesh, ax=axes[i, 1], orientation="vertical")
+            self.logger.experiment.log({ f"val/spectrogram": wandb.Image(fig) })
+            plt.close(fig)
+        self.validation_step_outputs.clear()
+
+    @torch.no_grad()
+    def on_test_batch_end(self, *args: Any, **kwargs: Any) -> None:
+        self.test_step_outputs.clear()
+
+    @torch.no_grad()
+    def predict_step(
+        self,
+        batch: Tuple[Tensor, Tensor, Tensor],
+        batch_idx: int,
+        dataloader_idx: int = 0,
+        frame_hop_length: float | None = None,
+        **kwargs: Any
+    ) -> pd.DataFrame:
+        if not frame_hop_length:
+            frame_hop_length = self.frame_window_length // 2
+        x, *_ = batch
+        x = self.log_mel_spectrogram(x)
+        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
+        # encode with a half-frame overlap
+        q_z = self.encode(x, hop_length=frame_hop_length)
+        bs, seq, *_ = q_z.size()
+        sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
+        seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
+        dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
+        # seq start accounts for hop
+        frame_hop_samples = self.fft_hop_length * frame_hop_length
+        seq_start_samples = seq_idx * frame_hop_samples
+        # seq end accounts for receptive field
+        frame_duration_samples = self.fft_hop_length * self.frame_window_length
+        seq_end_samples = seq_start_samples + frame_duration_samples
+        # map to time in seconds
+        seq_start_seconds = seq_start_samples / self.sample_rate
+        seq_end_seconds = seq_end_samples / self.sample_rate
+        ref_column_types = dict(
+            file_i=int, dataloader_idx=int, timestep=int,
+            t_start_samples=int, t_end_samples=int,
+            t_start_seconds=float, t_end_seconds=float,
+        )
+        feat_column_types = dict(
+            **{ f"z_mean_{d}": float  for d in range(q_z.size(-1)//2) },
+            **{ f"z_log_var_{d}": float  for d in range(q_z.size(-1)//2) },
+        )
+        column_types = (ref_column_types | feat_column_types)
+        df = pd.DataFrame(
+            data=dict(zip(column_types.keys(), [
+                sample_idx, dl_idx, seq_idx,
+                seq_start_samples, seq_end_samples,
+                seq_start_seconds, seq_end_seconds,
+                *q_z.flatten(end_dim=1).cpu().t(),
+            ])),
+            columns=column_types.keys(),
+        ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
+        self.predict_step_outputs.append(df)
+        return df
+
+    def on_load_checkpoint(self, checkpoint):
+        checkpoint["optimizer_states"] = []
+
+    def configure_optimizers(self) -> Optimizer:
+        vae_params = list(self.feature_encoder.parameters()) + list(self.content_encoder.parameters()) + list(self.feature_decoder.parameters()) + list(self.content_decoder.parameters())
+        clf_params = list(self.classifiers.parameters())
+        attn_params = list(self.attention_V.parameters()) + list(self.attention_U.parameters()) + list(self.attention_w.parameters())
+        return torch.optim.AdamW([
+            {"params": vae_params, "lr": self.learning_rate},
+            {"params": clf_params, "lr": self.clf_learning_rate},
+            {"params": attn_params, "lr": self.attn_learning_rate, "weight_decay": self.attn_weight_decay},
+        ])
+        # optimiser_config = DictConfig(dict(_target_=self.optimiser_cls, **(self.optimiser_config or {})))
+        # vae_optimiser = hydra.utils.instantiate(optimiser_config, params=self.parameters(), lr=self.learning_rate)
+        # scheduler_config = DictConfig(dict(_target_=self.scheduler_cls, **(self.scheduler_config or {})))
+        # vae_scheduler = dict(
+        #     scheduler=hydra.utils.instantiate(scheduler_config, optimizer=vae_optimiser),
+        #     interval=self.scheduler_interval,
+        #     frequency=self.scheduler_frequency
+        # )
+        # optimisers.append(dict(optimizer=vae_optimiser, lr_scheduler=vae_scheduler))
+        # # configure classification pipeline optimiser
+        # params = []
+        # params.append(dict(params=self.classifiers.parameters(), lr=self.clf_learning_rate))
+        # attn_params = list(self.attention_V.parameters()) + list(self.attention_U.parameters()) + list(self.attention_w.parameters())
+        # params.append(dict(params=attn_params, lr=self.attn_learning_rate, weight_decay=self.attn_weight_decay))
+        # clf_optimiser = torch.optim.Adam(params)
+        # optimisers.append(dict(optimizer=clf_optimiser))
+        # return optimisers
+
+    @torch.no_grad()
+    def metrics(
+        self,
+        x: Tensor,
+        x_hat: Tensor,
+        q_z: Tensor,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        sigma_z = (0.5 * log_sigma_sq_z).exp()
+        mu_hist = np.histogram(mu_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
+        sigma_hist = np.histogram(sigma_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
+        return dict(
+            mu_z=wandb.Histogram(np_histogram=mu_hist),
+            sigma_z=wandb.Histogram(np_histogram=sigma_hist),
+        )
+
+    def _reset_cache(self):
+        self.training_step_outputs = []
+        self.validation_step_outputs = []
+        self.test_step_outputs = []
+        self.predict_step_outputs = []
+
+    # ------------------------------- SETUP -------------------------------- #
+
+    def _init_classifiers(self):
+        return torch.nn.ModuleDict({
+            target_name: torch.nn.Linear(in_features=self.latent_dim, out_features=1, bias=True)
+            for target_name in self.target_names
+        })
+
+    def _init_attention_network(self):
+        attention_V = torch.nn.Linear(in_features=self.latent_dim, out_features=self.attn_dim)
+        attention_U = torch.nn.ModuleDict({})
+        torch.nn.init.xavier_uniform_(attention_V.weight)
+        torch.nn.init.zeros_(attention_V.bias)
+        for target_name in self.target_names:
+            layer = torch.nn.Linear(in_features=self.latent_dim, out_features=self.attn_dim)
+            torch.nn.init.xavier_uniform_(layer.weight)
+            torch.nn.init.zeros_(layer.bias)
+            attention_U[target_name] = layer
+        attention_w = torch.nn.ModuleDict({})
+        for target_name in self.target_names:
+            layer = torch.nn.Linear(in_features=self.attn_dim, out_features=1, bias=False)
+            torch.nn.init.xavier_uniform_(layer.weight)
+            attention_w[target_name] = layer
+        return attention_V, attention_U, attention_w
+
+    # ------------------------------- GROUPED PROPS -------------------------------- #
+
+    @property
+    def cnn_block_sizes(self):
+        return [8, 16, 32, 64, 128]
+
+    @property
+    def cnn_layers(self):
+        return len(self.cnn_block_sizes)
+
+    @property
+    def latent_frequency_dim(self) -> int:
+        return self.num_mel_bins // 2**(self.cnn_layers - 1)
+
+    @property
+    def latent_window_length(self) -> int:
+        return self.frame_window_length // 2**(self.cnn_layers)
+
+    @property
+    def latent_hop_length(self) -> int:
+        return self.frame_hop_length // 2**(self.cnn_layers) if self.frame_hop_length is not None else self.latent_window_length
+
+    @property
+    def frame_params(self):
+        return dict(
+            hop_length=self.frame_hop_length,
+            window_length=self.frame_window_length,
+            padding_mode=self.frame_padding_mode
+        )
+
+    @property
+    def latent_frame_params(self):
+        return dict(
+            hop_length=self.latent_hop_length,
+            window_length=self.latent_window_length,
+            padding_mode=self.frame_padding_mode
+        )
+
+    @property
+    def spectrogram_params(self):
+        return dict(
+            sample_rate=self.sample_rate,
+            hop_length=self.fft_hop_length,
+            window_length=self.fft_window_length,
+            fft_length=int(np.power(2, np.ceil(np.log(self.fft_window_length) / np.log(2.0)))),
+            mel_min_hertz=self.mel_min_hertz,
+            mel_max_hertz=self.mel_max_hertz,
+            mel_scaling_factor=self.mel_scaling_factor,
+            mel_break_frequency=self.mel_break_frequency,
+        )
+
+
+    @property
+    def log_mel_spectrogram_params(self):
+        return dict(
+            sample_rate=self.sample_rate,
+            fft_window_length=self.fft_window_length,
+            fft_hop_length=self.fft_hop_length,
+            num_mel_bins=self.num_mel_bins,
+            mel_min_hertz=self.mel_min_hertz,
+            mel_max_hertz=self.mel_max_hertz,
+            mel_scaling_factor=self.mel_scaling_factor,
+            mel_break_frequency=self.mel_break_frequency,
+        )
+
+    @property
+    def cnn_encoder_params(self):
+        return dict(
+            block_sizes=self.cnn_block_sizes,
+            block_width=self.cnn_block_width,
+            block_depth=self.cnn_block_depth,
+            dropout_prob=self.cnn_dropout_prob,
+            padding_mode=self.cnn_padding_mode,
+            norm_fn=NormType[self.norm_type],
+            activation_fn=Activation[self.cnn_activation],
+            weight_init_std=self.weight_init_std,
+    )
+
+    @property
+    def content_mlp_encoder_params(self):
+        return dict(
+            in_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
+            out_channels=self.cnn_block_sizes[-1] * self.cnn_block_width // self.cnn_feature_reduction_factor,
+            feature_height=self.latent_window_length,
+            feature_width=self.latent_frequency_dim,
+            mlp_reduction_factor=self.mlp_reduction_factor,
+            activation_fn=Activation[self.mlp_activation],
+            dropout_prob=self.mlp_dropout_prob,
+            out_features=self.latent_dim * 2,
+        )
+
+    @property
+    def offset_mlp_params(self):
+        return dict(
+            in_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
+            out_channels=self.cnn_block_sizes[-1] * self.cnn_block_width // 4,
+            in_features=self.cnn_block_sizes[-1] * self.cnn_block_width // 4 * self.latent_window_length,
+            cnn_kernel_size=(1, self.latent_frequency_dim),
+            mlp_reduction_factor=2,
+            flatten_start_dim=1,
+            activation_fn=Activation[self.mlp_activation],
+            out_features=1,
+        )
+
+    @property
+    def cnn_decoder_params(self):
+        return dict(
+            block_sizes=list(reversed(self.cnn_block_sizes)),
+            block_width=self.cnn_block_width,
+            block_depth=self.cnn_block_depth,
+            dropout_prob=self.cnn_dropout_prob,
+            padding_mode=self.cnn_padding_mode,
+            norm_fn=NormType[self.norm_type],
+            activation_fn=Activation[self.cnn_activation],
+        )
+
+    @property
+    def content_mlp_decoder_params(self):
+        return dict(
+            in_features=self.latent_dim,
+            in_channels=self.cnn_block_sizes[-1] * self.cnn_block_width // self.cnn_feature_reduction_factor,
+            out_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
+            feature_height=self.latent_window_length,
+            feature_width=self.latent_frequency_dim,
+            mlp_reduction_factor=self.mlp_reduction_factor,
+            activation_fn=Activation[self.mlp_activation],
+            dropout_prob=self.mlp_dropout_prob,
+        )
+
+    @property
+    def cel_params(self):
+        return dict(
+            beta=self.beta,
+            samples_per_class=torch.tensor(self.target_counts, dtype=torch.int64),
+            label_smoothing=self.label_smoothing,
+        )
