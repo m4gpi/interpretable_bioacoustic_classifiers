@@ -29,7 +29,7 @@ def evaluate(cfg):
     log.info(f"Instantiating model <{cfg.model._target_}>")
     model_cls = hydra.utils.get_class(cfg.model._target_)
     filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.data.model_params)
-    model = hydra.utils.instantiate(cfg.model, **data_module.data.model_params)
+    model = hydra.utils.instantiate(cfg.model, **filtered_params)
 
     log.info("Instantiating callbacks...")
     callbacks: List[L.Callback] = instantiate_callbacks(cfg.get("callbacks"))
