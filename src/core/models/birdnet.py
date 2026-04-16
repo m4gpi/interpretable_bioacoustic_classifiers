@@ -185,6 +185,7 @@ class BirdNETEmbeddings:
                     failed.extend(fps)
                     pbar.update(self.batch_size)
         df = pd.concat(dfs, axis=0)
+        import code; code.interact(local=locals())
 
         train_dir = pathlib.Path(self.save_dir) / "train"
         train_dir.mkdir(exist_ok=True, parents=True)

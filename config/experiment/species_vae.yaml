@@ -23,8 +23,11 @@ callbacks:
     model: species_vae
     version: v2
     scope: UK
-    save_dir: ${paths.results_dir}
+    save_dir: ${paths.output_dir}
     run_id: ${run_id}
+  vae_metrics:
+    _target_: src.core.callbacks.vae_metrics.VAEMetrics
+    save_path: ${paths.output_dir}/metrics.parquet
 
 logger:
   wandb:

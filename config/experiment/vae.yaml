@@ -19,6 +19,9 @@ callbacks:
     filename: model
     every_n_train_steps: 60_000
     save_top_k: -1
+  vae_metrics:
+    _target_: src.core.callbacks.vae_metrics.VAEMetrics
+    save_path: ${paths.results_dir}/metrics.parquet
 
 logger:
   wandb:

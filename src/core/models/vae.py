@@ -168,16 +168,19 @@ class VAE(L.LightningModule):
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         plt.switch_backend('agg')
-        log.info(f"Beginning training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        log.info(f"Training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.fit(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
+        log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        trainer.test(self, dataloaders=data_module.predict_dataloader(), ckpt_path=config.get("ckpt_path"))
 
     def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
-        save_dir = pathlib.Path(config["save_dir"])
-        data = data_module.data
+        save_dir = pathlib.Path(config.get("paths").get("results_dir"))
+        assert save_dir is not None, "Provide a target directory to save embeddings with 'paths.results_dir=/path/to/embeddings.parquet'"
 
         predict_dfs = trainer.predict(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"), return_predictions=True)
         df = pd.concat(list(itertools.chain(*predict_dfs)), axis=0)
 
+        data = data_module.data
         train_dir = pathlib.Path(save_dir) / "train"
         train_dir.mkdir(exist_ok=True, parents=True)
         train_features, train_labels = df[df.index.get_level_values("file_i").isin(data.train_idx.file_i)], data.train_labels
@@ -217,7 +220,7 @@ class VAE(L.LightningModule):
         x_hat = self.decode(z).view(*x.size())
         x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_hop_length)
         x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_hop_length)
-        return dict(x=x, x_framed=x_framed, x_hat=x_hat, x_hat_framed=x_hat_framed, q_z=q_z)
+        return dict(x=x, x_framed=x_framed, x_hat=x_hat, x_hat_framed=x_hat_framed, q_z=q_z, **kwargs)
 
     def encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
         for i, block in enumerate(self.feature_encoder):
@@ -258,9 +261,8 @@ class VAE(L.LightningModule):
         # frame-wise reconstruction loss
         sigma_x = torch.tensor(self.sigma_x)
         nll = (1/2 * (2 * sigma_x.log() + ((x_framed - x_hat_framed) / sigma_x).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
-        mae = (x_hat_framed - x_framed).abs().flatten(start_dim=-3).sum(dim=-1).mean()
         losses.append(nll)
-        outputs |= dict(log_likelihood_x=-nll.detach().mean(), mae=mae.detach())
+        outputs |= dict(log_likelihood_x=-nll.detach().mean())
         # frame-wise mean of the KL between posterior and prior
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp())).sum(dim=-1).mean()
@@ -279,31 +281,28 @@ class VAE(L.LightningModule):
         stage: str,
         **kwargs: Any,
     ) -> Dict[str, Tensor]:
-        x, *_ = batch
-        step_outputs = self(x, **kwargs)
+        step_outputs = self(**batch, **kwargs)
         loss_outputs = self.loss(**step_outputs)
         step_outputs = detach_values(step_outputs)
         metrics = self.metrics(**step_outputs)
         self.log_dict(prefix_keys(loss_outputs, stage), batch_size=x.size(0), prog_bar=True, logger=False)
         self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
-        return loss_outputs, step_outputs
+        return {**loss_outputs, **step_outputs}
 
     def training_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
-        loss_outputs, step_outputs = self.step(batch, batch_idx, "train")
-        self.training_step_outputs.append(step_outputs)
-        return loss_outputs
+        outputs = self.step(batch, batch_idx, "train")
+        self.training_step_outputs.append(outputs)
+        return outputs
 
     @torch.no_grad()
     def validation_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
-        loss_outputs, step_outputs = self.step(batch, batch_idx, "val")
-        self.validation_step_outputs.append(step_outputs)
-        return loss_outputs
+        outputs = self.step(batch, batch_idx, "val")
+        self.validation_step_outputs.append(outputs)
+        return outputs
 
     @torch.no_grad()
-    def test_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
-        loss_outputs, step_outputs = self.step(batch, batch_idx, "test")
-        self.test_step_outputs.append(step_outputs)
-        return loss_outputs
+    def test_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
+        return self(**batch, **kwargs)
 
     def on_train_batch_end(self, *args: Any, **kwargs: Any) -> None:
         self.training_step_outputs.clear()
@@ -396,7 +395,9 @@ class VAE(L.LightningModule):
     def metrics(
         self,
         x: Tensor,
+        x_framed: Tensor,
         x_hat: Tensor,
+        x_hat_framed: Tensor,
         q_z: Tensor,
         **kwargs: Any
     ) -> Dict[str, Any]:
@@ -404,7 +405,9 @@ class VAE(L.LightningModule):
         sigma_z = (0.5 * log_sigma_sq_z).exp()
         mu_hist = np.histogram(mu_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
         sigma_hist = np.histogram(sigma_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
+        mae = (x_hat_framed - x_framed).abs().flatten(start_dim=-3).sum(dim=-1).mean().cpu().numpy()
         return dict(
+            mae=mae,
             mu_z=wandb.Histogram(np_histogram=mu_hist),
             sigma_z=wandb.Histogram(np_histogram=sigma_hist),
         )

@@ -13,7 +13,5 @@ defaults:
 
 task_name: train
 tags: ["dev"]
-train: True
-test: True
 ckpt_path: null
 seed: null

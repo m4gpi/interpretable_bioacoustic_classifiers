@@ -292,16 +292,16 @@ class SpeciesVAE(L.LightningModule):
         losses = []
         # frame-wise reconstruction loss
         sigma_x = torch.tensor(self.sigma_x)
-        nll = (1/2 * (2 * sigma_x.log() + ((x_framed - x_hat_framed) / sigma_x).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
-        mae = (x_hat_framed - x_framed).abs().flatten(start_dim=-3).sum(dim=-1).mean()
+        nll = (1/2 * (2 * sigma_x.log() + ((x_framed - x_hat_framed) / sigma_x).pow(2)))
+        nll = nll.flatten(start_dim=-3).sum(dim=-1).mean()
         losses.append(nll)
-        outputs |= dict(log_likelihood_x=-nll.detach().mean(), mae=mae.detach())
+        outputs |= dict(log_likelihood_x=-nll.detach().mean())
         # frame-wise mean of the KL between posterior and prior
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp())).sum(dim=-1).mean()
         losses.append(dkl)
         outputs |= dict(dkl=dkl.detach())
-        # fine-tune embeddings based on species targets with sparse classifier weights
+        # fine-tune embeddings to predict species with sparse weights
         cel = metrics.class_balanced_binary_cross_entropy(y, y_probs, **self.cel_params).mean(dim=0)
         weights = list(self.classifiers.parameters())[::2]
         l1 = self.l1_penalty * torch.stack([torch.linalg.norm(w, 1) for w in weights])
@@ -455,7 +455,9 @@ class SpeciesVAE(L.LightningModule):
     def metrics(
         self,
         x: Tensor,
+        x_framed: Tensor,
         x_hat: Tensor,
+        x_hat_framed: Tensor,
         q_z: Tensor,
         **kwargs: Any
     ) -> Dict[str, Any]:
@@ -463,9 +465,11 @@ class SpeciesVAE(L.LightningModule):
         sigma_z = (0.5 * log_sigma_sq_z).exp()
         mu_hist = np.histogram(mu_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
         sigma_hist = np.histogram(sigma_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
+        mae = (x_hat_framed - x_framed).abs().flatten(start_dim=-3).sum(dim=-1).mean().cpu().numpy()
         return dict(
             mu_z=wandb.Histogram(np_histogram=mu_hist),
             sigma_z=wandb.Histogram(np_histogram=sigma_hist),
+            mae=mae,
         )
 
     def _reset_cache(self):

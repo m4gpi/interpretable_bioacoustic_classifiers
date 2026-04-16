@@ -303,13 +303,20 @@ class RainforestConnectionDataModule(L.LightningDataModule):
             return dict(batch_size=batch_size, shuffle=True, generator=self.generator, drop_last=False)
 
     def train_dataloader(self, batch_size: int | None = None, batch_sampler: torch.utils.data.Sampler | None = None) -> torch.utils.data.DataLoader:
-        return self._build_dataloader(self.train_data, **self.train_dataloader_params(batch_size))
+        return self._build_dataloader(self.train_data, **self.train_dataloader_params(batch_size or self.train_batch_size))
 
     def val_dataloader(self) -> torch.utils.data.DataLoader:
         return self._build_dataloader(self.val_data, batch_size=self.eval_batch_size, shuffle=False)
 
     def test_dataloader(self) -> torch.utils.data.DataLoader:
         return self._build_dataloader(self.test_data, batch_size=self.eval_batch_size, shuffle=False)
+
+    def predict_dataloader(self) -> List[torch.utils.data.DataLoader]:
+        return [
+            self._build_dataloader(self.train_data, batch_size=self.eval_batch_size),
+            self.val_dataloader(),
+            self.test_dataloader(),
+        ]
 
     @property
     def dataloader_params(self) -> Dict[str, Any]:
@@ -338,7 +345,7 @@ class RainforestConnectionDataModule(L.LightningDataModule):
     def _default_train_sampler(self, batch_size: int | None = None) -> torch.utils.data.Sampler:
         return ranzen.torch.SequentialBatchSampler(
             data_source=self.train_data,
-            batch_size=batch_size or self.train_batch_size,
+            batch_size=batch_size,
             shuffle=False,
             training_mode=self.training_mode,
             drop_last=False,

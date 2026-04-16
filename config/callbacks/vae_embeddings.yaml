@@ -1,0 +1,5 @@
+vae_embeddings:
+  _target_: src.core.callbacks.vae_embeddings.VAEEmbeddings
+  save_path: ${paths.output_dir}/features.parquet
+
+
