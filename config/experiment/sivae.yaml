@@ -7,13 +7,6 @@ defaults:
   - override /trainer: gpu
   - override /logger: wandb
 
-model:
-  delta_sigma_min: 0.1
-  delta_sigma_max: 2.0
-  delta_sigma_step_slope: 0.4
-  delta_sigma_step_start: 0
-  delta_sigma_step_end: 20_000
-
 trainer:
   max_steps: 180_000
   max_epochs: -1
@@ -28,7 +21,7 @@ callbacks:
     save_top_k: -1
   vae_metrics:
     _target_: src.core.callbacks.vae_metrics.VAEMetrics
-    save_path: ${paths.output_dir}/metrics.parquet
+    save_path: ${paths.results_dir}/metrics.parquet
 
 logger:
   wandb:

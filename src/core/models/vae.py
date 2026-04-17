@@ -4,6 +4,7 @@ import functools
 import itertools
 import lightning as L
 import logging
+import math
 import numpy as np
 import pandas as pd
 import pathlib
@@ -33,7 +34,7 @@ from src.core.models.components import (
     init_alignment_encoder,
 )
 from src.core.utils import soft_clip
-from src.core.transforms.log_mel_spectrogram import mel_filterbanks, hz_to_mel, mel_to_hz
+from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.utils import detach_values, prefix_keys, try_or
 
@@ -41,94 +42,6 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 __all__ = ["VAE"]
-
-@dataclass(kw_only=True, unsafe_hash=True)
-class LogMelSpectrogram(torch.nn.Module):
-    sample_rate: int = 48_000
-    n_fft: int = 512
-    fft_window_length: int = 512
-    fft_hop_length: int = 384
-    num_mel_bins: int = 64
-    mel_min_hertz: float | None = 0.0
-    mel_max_hertz: float | None = None
-    mel_scaling_factor: float | None = 4581.0
-    mel_break_frequency: float | None = 1750.0
-
-    def __new__(cls, *args: Any, **kwargs: Any):
-        obj = object.__new__(cls)
-        torch.nn.Module.__init__(obj)
-        return obj
-
-    def __post_init__(self):
-        mel_basis = mel_filterbanks(**self.mel_params)
-        self.register_buffer("mel_basis", torch.tensor(mel_basis, requires_grad=False), persistent=False)
-
-    @torch.no_grad()
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # remove DC offset
-        x = x - x.mean(dim=-1, keepdims=True)
-        # apply fourier transform
-        window = torch.hann_window(self.fft_window_length).to(x.device)
-        x = torch.stft(x, self.n_fft, window=window, **self.stft_params)
-        # discard phase
-        x = x.abs()
-        # transpose time on inner axes
-        x = x.transpose(-1, -2)
-        # apply mel
-        x = x @ self.mel_basis.t()
-        # apply log
-        x = torch.clamp(x, min=1e-6).log()
-        # add a channel dimension
-        x = x.unsqueeze(1)
-        return x
-
-    @torch.no_grad()
-    def plot(self, z: NDArray | torch.Tensor, vmin: float | None = None, vmax: float | None = None, cmap: str = "viridis", ax: None = None, **kwargs: Any):
-        ax = ax if ax is not None else plt.gca()
-        vmin = vmin if vmin is not None and kwargs.get("norm", None) is None else z.min()
-        vmax = vmax if vmax is not None and kwargs.get("norm", None) is None else z.max()
-        imshow_params = dict(vmin=vmin, vmax=vmax, origin="lower", aspect="auto", cmap=cmap, **kwargs)
-        im = ax.imshow(z, **imshow_params)
-        # TODO: allow parametrisation of tick duration
-        duration_seconds = (z.shape[1] * self.fft_hop_length) // self.sample_rate
-        time = np.linspace(0, duration_seconds, z.shape[1])
-        x_tick_positions = np.linspace(0, duration_seconds, int(z.shape[1] // (self.sample_rate // self.fft_hop_length) / 5) + 1)
-        x_tick_labels = [f"{np.format_float_positional(t, trim='-', precision=2)}" for t in x_tick_positions]
-        x_tick_indices = [np.argmin(np.abs(time - t)) for t in x_tick_positions]
-        ax.set_xticks(x_tick_indices, labels=x_tick_labels)
-        ax.set_xlabel("Time (s)")
-        # ticks for y-axis are on a log scale, find the nearest base 2 exponents for the ticks
-        min_mel = hz_to_mel(self.mel_min_hertz, scaling_factor=self.mel_scaling_factor, break_frequency=self.mel_break_frequency)
-        max_mel = hz_to_mel(self.mel_max_hertz, scaling_factor=self.mel_scaling_factor, break_frequency=self.mel_break_frequency)
-        mels = np.linspace(min_mel, max_mel, z.shape[0])
-        frequencies = mel_to_hz(mels, scaling_factor=self.mel_scaling_factor, break_frequency=self.mel_break_frequency)
-        y_tick_positions = [2**i for i in range(max(9, int(np.ceil(np.log2(self.mel_min_hertz + 1e-8)))), int(np.floor(np.log2(self.mel_max_hertz))) + 1)]
-        y_tick_labels = [f"{int(f)}" for f in y_tick_positions]
-        y_tick_indices = [np.argmin(np.abs(frequencies - f)) for f in y_tick_positions]
-        ax.set_yticks(y_tick_indices, labels=y_tick_labels)
-        ax.set_ylabel("Frequency (Hz)")
-        return im
-
-    @property
-    def stft_params(self):
-        return dict(
-            win_length=self.fft_window_length,
-            hop_length=self.fft_hop_length,
-            return_complex=True,
-            pad_mode="constant",
-        )
-
-    @property
-    def mel_params(self):
-        return dict(
-            num_mel_bins=self.num_mel_bins,
-            mel_min_hertz=self.mel_min_hertz,
-            mel_max_hertz=self.mel_max_hertz,
-            linear_frequencies=torch.linspace(0.0, self.sample_rate / 2, (self.n_fft // 2) + 1),
-            scaling_factor=self.mel_scaling_factor,
-            break_frequency=self.mel_break_frequency,
-        )
-
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
 class VAE(L.LightningModule):
@@ -171,7 +84,7 @@ class VAE(L.LightningModule):
         log.info(f"Training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.fit(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
         log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.test(self, dataloaders=data_module.predict_dataloader(), ckpt_path=config.get("ckpt_path"))
+        trainer.test(self, dataloaders=data_module.predict_dataloader())
 
     def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         save_dir = pathlib.Path(config.get("paths").get("results_dir"))
@@ -201,19 +114,21 @@ class VAE(L.LightningModule):
     def __post_init__(self):
         self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
-        self.sigma_z_min = self.sigma_z_min or self.sigma_z_max
+        self.sigma_recon = torch.nn.Parameter(torch.tensor(self.sigma_x, dtype=torch.float32), requires_grad=False)
+        self.sigma_latent = torch.nn.Parameter(torch.tensor(self.sigma_z_min, dtype=torch.float32), requires_grad=False)
         self.log_mel_spectrogram = LogMelSpectrogram(**self.log_mel_spectrogram_params)
         self.feature_encoder = init_cnn_feature_encoder(**self.cnn_encoder_params)
         self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
         self.feature_decoder = init_cnn_feature_decoder(**self.cnn_decoder_params)
         self.content_decoder = init_mlp_content_decoder(**self.content_mlp_decoder_params)
+        self.strict_loading = False
         self._reset_cache()
 
     # ------------------------------- MODEL -------------------------------- #
 
     def forward(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
         x = self.log_mel_spectrogram(x)
-        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins]).float()
+        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)]).float()
         q_z = self.encode(x)
         mu_x, log_sigma_sq_x = q_z.chunk(2, dim=-1)
         z = Normal(mu_x, (0.5 * log_sigma_sq_x).exp()).rsample()
@@ -222,6 +137,9 @@ class VAE(L.LightningModule):
         x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_hop_length)
         return dict(x=x, x_framed=x_framed, x_hat=x_hat, x_hat_framed=x_hat_framed, q_z=q_z, **kwargs)
 
+    def predict(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
+        return self.forward(x, *args, **kwargs)
+
     def encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
         for i, block in enumerate(self.feature_encoder):
             x = block(x)
@@ -229,7 +147,7 @@ class VAE(L.LightningModule):
         x = self.frame(x, window_length=self.latent_window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
         q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
-        log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=2*np.log(self.sigma_z_min))
+        log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=2*self.sigma_latent.log())
         return torch.cat([mu_z, log_sigma_sq_z], dim=-1)
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
@@ -249,21 +167,21 @@ class VAE(L.LightningModule):
 
     def loss(
         self,
-        x: Tensor,
         x_framed: Tensor,
-        x_hat: Tensor,
         x_hat_framed: Tensor,
         q_z: Tensor,
         **kwargs: Any
     ) -> Dict[str, Tensor]:
         outputs = dict()
         losses = []
-        # frame-wise reconstruction loss
-        sigma_x = torch.tensor(self.sigma_x)
-        nll = (1/2 * (2 * sigma_x.log() + ((x_framed - x_hat_framed) / sigma_x).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
+        # batch/sequence mean frame-wise sum reconstruction loss
+        err = (x_framed - x_hat_framed).pow(2)
+        var = self.sigma_recon.pow(2)
+        nll = (1/2 * (var.log() + (err / var)))
+        nll = nll.flatten(start_dim=-3).sum(dim=-1).mean()
         losses.append(nll)
         outputs |= dict(log_likelihood_x=-nll.detach().mean())
-        # frame-wise mean of the KL between posterior and prior
+        # batch/sequence mean frame-wise sum standard normal kl
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp())).sum(dim=-1).mean()
         losses.append(dkl)
@@ -285,7 +203,7 @@ class VAE(L.LightningModule):
         loss_outputs = self.loss(**step_outputs)
         step_outputs = detach_values(step_outputs)
         metrics = self.metrics(**step_outputs)
-        self.log_dict(prefix_keys(loss_outputs, stage), batch_size=x.size(0), prog_bar=True, logger=False)
+        self.log_dict(prefix_keys(loss_outputs, stage), prog_bar=True, logger=False)
         self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
         return {**loss_outputs, **step_outputs}
 
@@ -302,7 +220,7 @@ class VAE(L.LightningModule):
 
     @torch.no_grad()
     def test_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
-        return self(**batch, **kwargs)
+        return self.predict(**batch, **kwargs)
 
     def on_train_batch_end(self, *args: Any, **kwargs: Any) -> None:
         self.training_step_outputs.clear()
@@ -312,15 +230,17 @@ class VAE(L.LightningModule):
             step_outputs = self.validation_step_outputs[0]
             specs = step_outputs["x"].squeeze().cpu().numpy()
             recons = step_outputs["x_hat"].squeeze().cpu().numpy()
-            nrows = step_outputs["x"].size(0)
-            fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(15, nrows * 3))
-            for i in range(nrows):
+            num_samples = min(6, step_outputs["x"].size(0))
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), width_ratios=[0.97, 0.03], constrained_layout=True)
                 mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[i, 0], vmin=specs.min(), vmax=specs.max())
                 mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[i, 1], vmin=specs.min(), vmax=specs.max())
-                plt.colorbar(mesh, ax=axes[i, 0], orientation="vertical")
-                plt.colorbar(mesh, ax=axes[i, 1], orientation="vertical")
-            self.logger.experiment.log({ f"val/spectrogram": wandb.Image(fig) })
-            plt.close(fig)
+                axes[0, 0].set_title("Original Mel Spectrogram")
+                axes[1, 0].set_title("Reconstructed Mel Spectrogram")
+                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+                self.logger.experiment.log({ f"val/spectrogram": wandb.Image(fig) })
+                plt.close(fig)
         self.validation_step_outputs.clear()
 
     @torch.no_grad()
@@ -394,9 +314,7 @@ class VAE(L.LightningModule):
     @torch.no_grad()
     def metrics(
         self,
-        x: Tensor,
         x_framed: Tensor,
-        x_hat: Tensor,
         x_hat_framed: Tensor,
         q_z: Tensor,
         **kwargs: Any
@@ -405,11 +323,15 @@ class VAE(L.LightningModule):
         sigma_z = (0.5 * log_sigma_sq_z).exp()
         mu_hist = np.histogram(mu_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
         sigma_hist = np.histogram(sigma_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
-        mae = (x_hat_framed - x_framed).abs().flatten(start_dim=-3).sum(dim=-1).mean().cpu().numpy()
+        mae = (x_hat_framed - x_framed).abs().flatten(start_dim=-3).mean(dim=-1).mean()
+        mse = (x_hat_framed - x_framed).pow(2).flatten(start_dim=-3).mean(dim=-1).mean()
+        dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / self.latent_dim).mean()
         return dict(
             mae=mae,
+            mse=mse,
             mu_z=wandb.Histogram(np_histogram=mu_hist),
             sigma_z=wandb.Histogram(np_histogram=sigma_hist),
+            dkl_norm=dkl_norm,
         )
 
     def _reset_cache(self):
