@@ -202,7 +202,7 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
         SoundingOutChorus(root=self.root)
         return self
 
-    def setup(self, stage: str):
+    def setup(self, *args: Any, **kwargs: Any):
         self.data = SoundingOutChorus(self.root, test=False, **self.dataset_params)
         self.val_data, self.train_data = torch.utils.data.random_split(self.data, (self.val_prop, 1 - self.val_prop), generator=self.generator)
         self.test_data = SoundingOutChorus(self.root, test=True, **self.dataset_params)
