@@ -1,2 +1,1 @@
 _target_: src.core.models.birdnet.BirdNETEmbeddings
-save_dir:
