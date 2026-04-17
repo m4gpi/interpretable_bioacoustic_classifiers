@@ -79,6 +79,7 @@ class SIVAE(L.LightningModule):
     scheduler_frequency: int = 1
 
     cross_decode_method: str = "soft"
+    translation_layer_idx: int = 3
     delta_sigma_step_start: int | None = None
     delta_sigma_step_end: int | None = None
     delta_sigma_min: float | None = None
@@ -117,6 +118,7 @@ class SIVAE(L.LightningModule):
         return obj
 
     def __post_init__(self):
+        assert self.translation_layer_idx < self.cnn_layers
         self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.sigma_recon = torch.nn.Parameter(torch.tensor(self.sigma_x, dtype=torch.float32), requires_grad=False)
@@ -248,7 +250,7 @@ class SIVAE(L.LightningModule):
 
     def cnn_decode(self, U: Tensor, delta: Tensor) -> Tensor:
         for i, block in enumerate(self.feature_decoder):
-            if i == len(self.feature_decoder) - 2:
+            if i == self.translation_layer_idx:
                 U = translation(U, delta.view(delta.size(0) * delta.size(1), 1, 1, 1), padding_mode="circular")
             if i == len(self.feature_decoder) - 1:
                 U = U.unflatten(0, (delta.size(0), delta.size(1))).transpose(1, 2).flatten(start_dim=2, end_dim=3)

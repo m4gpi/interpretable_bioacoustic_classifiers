@@ -16,7 +16,7 @@ trainer:
 callbacks:
   model_checkpoint:
     dirpath: ./checkpoints/vae.pt:v0
-    filename: model
+    filename: model_{step}
     every_n_train_steps: 60_000
     save_top_k: -1
   vae_metrics:

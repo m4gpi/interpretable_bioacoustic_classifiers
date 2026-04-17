@@ -23,7 +23,7 @@ mlp_dropout_prob: 0.1
 latent_dim: 128
 # tuning
 sigma_x: 0.2
-sigma_z_min: 0.05
+sigma_z_min: 0.0498
 # optimiser
 learning_rate: 4.e-5
 optimiser_cls: torch.optim.AdamW
