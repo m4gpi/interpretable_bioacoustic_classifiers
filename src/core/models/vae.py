@@ -233,8 +233,8 @@ class VAE(L.LightningModule):
             num_samples = min(6, step_outputs["x"].size(0))
             for i in range(num_samples):
                 fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), width_ratios=[0.97, 0.03], constrained_layout=True)
-                mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[i, 0], vmin=specs.min(), vmax=specs.max())
-                mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[i, 1], vmin=specs.min(), vmax=specs.max())
+                mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
+                mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
                 axes[0, 0].set_title("Original Mel Spectrogram")
                 axes[1, 0].set_title("Reconstructed Mel Spectrogram")
                 fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
