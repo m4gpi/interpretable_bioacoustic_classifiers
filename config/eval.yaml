@@ -4,7 +4,7 @@ defaults:
   - data: null
   - model: null
   - transforms: default
-  - evaluator: test
+  - evaluator: lightning_test
   - callbacks: null
   - logger: null
   - trainer: null

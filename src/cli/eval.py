@@ -24,7 +24,7 @@ def evaluate(cfg):
 
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     data_module = hydra.utils.instantiate(cfg.data)
-    data_module.setup(stage="eval")
+    data_module.setup()
 
     log.info(f"Instantiating model <{cfg.model._target_}>")
     model_cls = hydra.utils.get_class(cfg.model._target_)
