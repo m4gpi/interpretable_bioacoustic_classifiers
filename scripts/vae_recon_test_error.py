@@ -48,13 +48,16 @@ FROM read_parquet('{results_dir}', filename=true);
     """)
     df = con.execute("SELECT * FROM mae").fetchdf()
     df["stage"] = df["dataloader_idx"].map({0: "Train", 1: "Validation", 2: "Test"})
-    df["dkl_norm"] = df["dkl"] / df["latent_dim"]
+    df = df.sort_values(by=["sigma_x", "latent_dim"])
+    df["group"] = "sigma_x=" + df["sigma_x"].map(str) + " latent_dim=" + df["latent_dim"].map(str) + " version=" + df["version"].map(str)
+    df["dkl_norm"] = df["dkl"]
 
-    summary_stats = df.groupby(["dataset_name", "model_name", "stage", "latent_dim"])[["mae", "mse", "dkl_norm", "elbo"]].agg(["mean", "std"])
+    summary_stats = df.groupby(["dataset_name", "model_name", "stage", "latent_dim", "sigma_x"])[["mae", "mse", "dkl_norm", "elbo"]].agg(["mean", "std"])
     print(summary_stats)
 
+    palette = list(sns.color_palette("colorblind", len(df["version"].unique())))
+
     fig = plt.figure(figsize=(10, 4), constrained_layout=True)
-    palette = list(sns.color_palette("colorblind", 3))
     g = sns.catplot(
         data=df,
         kind="box",
@@ -62,7 +65,7 @@ FROM read_parquet('{results_dir}', filename=true);
         y="mae",
         col="stage",
         row="dataset_name",
-        hue="latent_dim",
+        hue="group",
         sharey="row",
         palette=palette,
         legend=True,
@@ -86,7 +89,6 @@ FROM read_parquet('{results_dir}', filename=true);
         log.info(f"Saved: {file_name}")
 
     fig = plt.figure(figsize=(10, 4), constrained_layout=True)
-    palette = list(sns.color_palette("colorblind", 3))
     g = sns.catplot(
         data=df,
         kind="box",
@@ -94,7 +96,7 @@ FROM read_parquet('{results_dir}', filename=true);
         y="mse",
         col="stage",
         row="dataset_name",
-        hue="latent_dim",
+        hue="group",
         sharey="row",
         palette=palette,
         legend=True,
@@ -118,25 +120,23 @@ FROM read_parquet('{results_dir}', filename=true);
         log.info(f"Saved: {file_name}")
 
     fig = plt.figure(figsize=(10, 4), constrained_layout=True)
-    palette = list(sns.color_palette("colorblind", 3))
     g = sns.catplot(
         data=df,
-        kind="violin",
+        kind="box",
         x="model_name",
         y="dkl_norm",
         col="stage",
         row="dataset_name",
-        hue="latent_dim",
+        hue="group",
         sharey="row",
         palette=palette,
-        common_norm=True,
-        density_norm="area",
-        gap=.1,
-        bw_adjust=0.75,
         legend=True,
+        gap=.1,
         width=0.9,
+        showfliers=False,
+        whis=2.0,
     )
-    g.set_axis_labels("Model", "DKL")
+    g.set_axis_labels("Model", "DKL / d")
     if save_dir:
         file_name = (save_dir / "dkl.pdf").expanduser()
         plt.savefig(file_name, format="pdf", bbox_inches="tight")
