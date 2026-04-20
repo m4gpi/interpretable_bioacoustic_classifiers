@@ -79,6 +79,7 @@ class SIVAE(L.LightningModule):
     scheduler_frequency: int = 1
 
     cross_decode_method: str = "soft"
+    k: int = 2
     translation_layer_idx: int = 3
     delta_sigma_step_start: int | None = None
     delta_sigma_step_end: int | None = None
@@ -92,25 +93,6 @@ class SIVAE(L.LightningModule):
         trainer.fit(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
         log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.test(self, dataloaders=data_module.predict_dataloader())
-
-    def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
-        save_dir = pathlib.Path(config["save_dir"])
-        data = data_module.data
-
-        predict_dfs = trainer.predict(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"), return_predictions=True)
-        df = pd.concat(list(itertools.chain(*predict_dfs)), axis=0)
-
-        train_dir = pathlib.Path(save_dir) / "train"
-        train_dir.mkdir(exist_ok=True, parents=True)
-        train_features, train_labels = df[df.index.get_level_values("file_i").isin(data.train_idx.file_i)], data.train_labels
-        train_features.to_parquet(train_dir / "features.parquet")
-        train_labels.to_parquet(train_dir / "labels.parquet")
-
-        test_dir = pathlib.Path(save_dir) / "test"
-        test_dir.mkdir(exist_ok=True, parents=True)
-        test_features, test_labels = df[df.index.get_level_values("file_i").isin(data.test_idx.file_i)], data.test_labels
-        test_features.to_parquet(test_dir / "features.parquet")
-        test_labels.to_parquet(test_dir / "labels.parquet")
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
@@ -133,31 +115,36 @@ class SIVAE(L.LightningModule):
         self._reset_cache()
 
     def forward(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
+        # ------ pre-processing ------ #
         x = self.log_mel_spectrogram(x)
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
+
+        # ------ shifted samples------ #
         sigma_delta = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.sigma_delta_params))
         x_framed = x.view(x.size(0), -1, 1, self.frame_window_length, x.size(-1))
-        epsilon = torch.randn(x_framed.size(0), x_framed.size(1), 1, 1, 1, device=x.device)
-        x_trans = translation(x_framed.flatten(end_dim=1), epsilon.flatten(end_dim=1) * sigma_delta, padding_mode="circular").unflatten(0, (x_framed.size(0), x_framed.size(1)))
+        x_trans = torch.stack([
+            translation(x_framed.flatten(end_dim=1), torch.randn(x_framed.size(0), x_framed.size(1), 1, 1, 1, device=x.device).flatten(end_dim=1) * sigma_delta, padding_mode="circular")
+            for i in range(self.k - 1)
+        ], dim=0) # (k-1, bs * seq, 1, fr, fq)
 
-        k = 2 # number of cross-decoded samples
         q_z, delta = self.encode(x) # (bs, seq, ld)
-        q_z_trans, delta_trans = self.encode(x_trans.flatten(end_dim=1)) # (bs * seq, 1, ld)
-        q_z_trans = q_z_trans.view(q_z.size()) # (bs, seq, ld)
-        delta_trans = delta_trans.view(delta.size()) # (bs, seq, 1)
-        q_z_stacked = torch.stack([q_z, q_z_trans], dim=0) # (k, bs, seq, ld)
-        delta_stacked = torch.stack([delta, delta_trans], dim=0) # (k, bs, seq, 1)
-        z_stacked = self.cross_decode(q_z_stacked, method=self.cross_decode_method, k=k) # (k, bs, seq, ld)
+        q_z_trans, delta_trans = self.encode(x_trans.flatten(end_dim=1)) # (k-1 * bs * seq, 1, ld)
+        q_z_trans = q_z_trans.view(-1, *q_z.size()) # (k-1, bs, seq, ld)
+        delta_trans = delta_trans.view(-1, *delta.size()) # (k-1, bs, seq, 1)
+        q_z_stacked = torch.cat([q_z.unsqueeze(0), q_z_trans], dim=0) # (k, bs, seq, ld)
+        delta_stacked = torch.cat([delta.unsqueeze(0), delta_trans], dim=0) # (k, bs, seq, 1)
+        z_stacked = self.k_way_cross_decode(q_z_stacked, method=self.cross_decode_method, k=self.k) # (k, bs, seq, ld)
 
         U_hat = self.mlp_decode(z_stacked.flatten(end_dim=2))
         U_hat = U_hat.unflatten(dim=0, sizes=(z_stacked.size(0), z_stacked.size(1), z_stacked.size(2))) # (k, bs, seq, ch, fr, fq)
-        U_hat, U_hat_trans = U_hat.chunk(k, dim=0)
-        x_hat = self.cnn_decode(U_hat_trans.flatten(end_dim=2), delta) # (bs, 1, fr * seq, fq)
-        x_hat_trans = self.cnn_decode(U_hat.flatten(end_dim=2), delta_trans) # (bs * seq, 1, fr, fq)
-        x_hat_trans = x_hat_trans.view(*x_framed.size()) # (bs, seq, 1, fr, fq)
+        U_hat, U_hat_trans = U_hat[0], U_hat[1:]
+        x_hat = self.cnn_decode(U_hat.flatten(end_dim=1), delta) # (bs, 1, fr * seq, fq)
+        x_hat_framed = x_hat.view(*x_framed.size())
+        x_hat_trans = self.cnn_decode(U_hat_trans.flatten(end_dim=2), delta_trans.flatten(end_dim=2).unsqueeze(1)) # (bs * seq, 1, fr, fq)
+        x_hat_trans = x_hat_trans.unflatten(0, (U_hat_trans.size(0), U_hat_trans.size(1), U_hat_trans.size(2))) # (k, bs, seq, 1, fr, fq)
 
-        x_framed_stacked = torch.stack([x_framed, x_trans], dim=0)
-        x_hat_framed_stacked = torch.stack([x_hat.view(*x_framed.size()), x_hat_trans], dim=0)
+        x_framed_stacked = torch.cat([x_framed.unsqueeze(0), x_trans.view(*x_hat_trans.size())], dim=0)
+        x_hat_framed_stacked = torch.cat([x_hat_framed.unsqueeze(0), x_hat_trans], dim=0)
 
         return dict(
             x=x, x_framed=x_framed, x_framed_stacked=x_framed_stacked,
@@ -185,31 +172,62 @@ class SIVAE(L.LightningModule):
             delta=delta,
         )
 
-    def cross_decode(self, q_z: torch.Tensor, method: str = "soft", k: int = 2):
-        q_z_i, q_z_j = q_z.chunk(k, dim=0)
-        mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
-        mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
-        if method == "soft":
-            # weighted sum of gaussians
-            mu_z = 1/2 * mu_z_i + 1/2 * mu_z_j
-            log_sigma_sq_z = (1/4 * log_sigma_sq_z_i.exp() + 1/4 * log_sigma_sq_z_j.exp()).log()
-            z = Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample() # (bs, seq, ld)
-            z = torch.cat([z, z], dim=0)
-        elif method == "hard":
-            # swapped samples
-            z_i = Normal(mu_z_i, (1/2 * log_sigma_sq_z_i).exp()).rsample() # (bs, seq, ld)
-            z_j = Normal(mu_z_j, (1/2 * log_sigma_sq_z_j).exp()).rsample() # (bs, seq, ld)
-            z = torch.cat([z_i, z_j], dim=0)
-        return z
+    @torch.no_grad()
+    def embed(
+        self,
+        batch: Tuple[Tensor, Tensor, Tensor],
+        batch_idx: int,
+        dataloader_idx: int = 0,
+        frame_hop_length: float | None = None,
+        **kwargs: Any
+    ) -> pd.DataFrame:
+        x, *_ = batch
+        x = self.log_mel_spectrogram(x)
+        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
+        q_z, delta = self.encode(x, hop_length=frame_hop_length)
+        bs, seq, *_ = q_z.size()
+        sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
+        seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
+        dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
+        # seq start accounts for hop
+        frame_hop_samples = self.fft_hop_length * frame_hop_length
+        seq_start_samples = seq_idx * frame_hop_samples
+        # seq end accounts for receptive field
+        frame_duration_samples = self.fft_hop_length * self.frame_window_length
+        seq_end_samples = seq_start_samples + frame_duration_samples
+        # map to time in seconds
+        seq_start_seconds = seq_start_samples / self.sample_rate
+        seq_end_seconds = seq_end_samples / self.sample_rate
+        ref_column_types = dict(
+            file_i=int, dataloader_idx=int, timestep=int,
+            t_start_samples=int, t_end_samples=int,
+            t_start_seconds=float, t_end_seconds=float,
+        )
+        feat_column_types = dict(
+            **{ f"z_mean_{d}": float  for d in range(q_z.size(-1)//2) },
+            **{ f"z_log_var_{d}": float  for d in range(q_z.size(-1)//2) },
+            **{ "delta": float },
+        )
+        column_types = (ref_column_types | feat_column_types)
+        df = pd.DataFrame(
+            data=dict(zip(column_types.keys(), [
+                sample_idx, dl_idx, seq_idx,
+                seq_start_samples, seq_end_samples,
+                seq_start_seconds, seq_end_seconds,
+                *q_z.flatten(end_dim=1).cpu().t(),
+                *delta.flatten(end_dim=1).cpu().squeeze(-1),
+            ])),
+            columns=column_types.keys(),
+        ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
+        return df
 
     def k_way_cross_decode(self, q_z: torch.Tensor, method: str = "soft", k: int = 2):
         mu_zs, log_sigma_sq_zs = q_z.chunk(2, dim=-1)
         if method == "soft":
             # weighted average along shift dimension
-            mu_z = (1 / k * mu_zs).sum(dim=0)
-            log_sigma_sq_z = (1 / k**2 * log_sigma_sq_zs.exp()).sum(dim=0).log()
-            z = Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample()
-            zs = torch.cat([z for _ in range(q_z.size(0))], dim=0)
+            mu_z = (1 / k * mu_zs).sum(dim=0, keepdims=True)
+            log_sigma_sq_z = (1 / k**2 * log_sigma_sq_zs.exp()).sum(dim=0, keepdims=True).log()
+            zs = Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample().expand(k, -1, -1, -1)
         elif method == "hard":
             # randomly shuffle samples along shift dimension
             zs = Normal(mu_zs, (1/2 * log_sigma_sq_zs).exp()).rsample()
@@ -306,7 +324,7 @@ class SIVAE(L.LightningModule):
         loss_outputs = self.loss(**step_outputs)
         step_outputs = detach_values(step_outputs)
         metrics = self.metrics(**step_outputs)
-        self.log_dict(prefix_keys(loss_outputs, stage), prog_bar=True, logger=False)
+        self.log_dict(prefix_keys(loss_outputs, stage), batch_size=batch.x.size(0) * self.k, prog_bar=True, logger=False)
         self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
         return {**loss_outputs, **step_outputs}
 
@@ -324,6 +342,10 @@ class SIVAE(L.LightningModule):
     @torch.no_grad()
     def test_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
         return self.predict(**batch, **kwargs)
+
+    @torch.no_grad()
+    def predict_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
+        pass
 
     def on_train_batch_end(self, *args: Any, **kwargs: Any) -> None:
         self.training_step_outputs.clear()
@@ -345,9 +367,10 @@ class SIVAE(L.LightningModule):
                 fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
                 self.logger.experiment.log({ f"val/spectrogram": wandb.Image(fig) })
                 plt.close(fig)
-            # plot translated frames
+            # plot kth translated frames
+            kth = 0
             specs = step_outputs["x_framed"].squeeze().cpu().numpy()
-            recons = step_outputs["x_hat_framed"].squeeze().cpu().numpy()
+            recons = step_outputs["x_hat_framed"][kth].squeeze().cpu().numpy()
             num_frames = 6
             for i in range(num_samples):
                 fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=(10, 6), width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True)
@@ -356,8 +379,8 @@ class SIVAE(L.LightningModule):
                     mesh = self.log_mel_spectrogram.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max())
                 axes[0, 0].set_title("Original")
                 axes[1, 0].set_title("Reconstruction")
-                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
-                fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
                 self.logger.experiment.log({ f"val/frames": wandb.Image(fig) })
                 plt.close(fig)
         self.validation_step_outputs.clear()
@@ -366,55 +389,8 @@ class SIVAE(L.LightningModule):
     def on_test_batch_end(self, *args: Any, **kwargs: Any) -> None:
         self.test_step_outputs.clear()
 
-    @torch.no_grad()
-    def predict_step(
-        self,
-        batch: Tuple[Tensor, Tensor, Tensor],
-        batch_idx: int,
-        dataloader_idx: int = 0,
-        frame_hop_length: float | None = 192,
-        **kwargs: Any
-    ) -> pd.DataFrame:
-        x, *_ = batch
-        x = self.log_mel_spectrogram(x)
-        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
-        q_z, delta = self.encode(x, hop_length=frame_hop_length)
-        bs, seq, *_ = q_z.size()
-        sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
-        seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
-        dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
-        # seq start accounts for hop
-        frame_hop_samples = self.fft_hop_length * frame_hop_length
-        seq_start_samples = seq_idx * frame_hop_samples
-        # seq end accounts for receptive field
-        frame_duration_samples = self.fft_hop_length * self.frame_window_length
-        seq_end_samples = seq_start_samples + frame_duration_samples
-        # map to time in seconds
-        seq_start_seconds = seq_start_samples / self.sample_rate
-        seq_end_seconds = seq_end_samples / self.sample_rate
-        ref_column_types = dict(
-            file_i=int, dataloader_idx=int, timestep=int,
-            t_start_samples=int, t_end_samples=int,
-            t_start_seconds=float, t_end_seconds=float,
-        )
-        feat_column_types = dict(
-            **{ f"z_mean_{d}": float  for d in range(q_z.size(-1)//2) },
-            **{ f"z_log_var_{d}": float  for d in range(q_z.size(-1)//2) },
-            **{ "delta": float },
-        )
-        column_types = (ref_column_types | feat_column_types)
-        df = pd.DataFrame(
-            data=dict(zip(column_types.keys(), [
-                sample_idx, dl_idx, seq_idx,
-                seq_start_samples, seq_end_samples,
-                seq_start_seconds, seq_end_seconds,
-                *q_z.flatten(end_dim=1).cpu().t(),
-                *delta.flatten(end_dim=1).cpu().squeeze(-1),
-            ])),
-            columns=column_types.keys(),
-        ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
-        self.predict_step_outputs.append(df)
-        return df
+    def on_load_checkpoint(self, checkpoint):
+        checkpoint["optimizer_states"] = []
 
     def configure_optimizers(self) -> Optimizer:
         optimiser_config = DictConfig(dict(_target_=self.optimiser_cls, **(self.optimiser_config or {})))

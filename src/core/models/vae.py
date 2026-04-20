@@ -86,26 +86,6 @@ class VAE(L.LightningModule):
         log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.test(self, dataloaders=data_module.predict_dataloader())
 
-    def evaluate(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
-        save_dir = pathlib.Path(config.get("paths").get("results_dir"))
-        assert save_dir is not None, "Provide a target directory to save embeddings with 'paths.results_dir=/path/to/embeddings.parquet'"
-
-        predict_dfs = trainer.predict(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"), return_predictions=True)
-        df = pd.concat(list(itertools.chain(*predict_dfs)), axis=0)
-
-        data = data_module.data
-        train_dir = pathlib.Path(save_dir) / "train"
-        train_dir.mkdir(exist_ok=True, parents=True)
-        train_features, train_labels = df[df.index.get_level_values("file_i").isin(data.train_idx.file_i)], data.train_labels
-        train_features.to_parquet(train_dir / "features.parquet")
-        train_labels.to_parquet(train_dir / "labels.parquet")
-
-        test_dir = pathlib.Path(save_dir) / "test"
-        test_dir.mkdir(exist_ok=True, parents=True)
-        test_features, test_labels = df[df.index.get_level_values("file_i").isin(data.test_idx.file_i)], data.test_labels
-        test_features.to_parquet(test_dir / "features.parquet")
-        test_labels.to_parquet(test_dir / "labels.parquet")
-
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
         L.LightningModule.__init__(obj)
@@ -140,6 +120,56 @@ class VAE(L.LightningModule):
     def predict(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
         return self.forward(x, *args, **kwargs)
 
+    @torch.no_grad()
+    def embed(
+        self,
+        batch: Tuple[Tensor, Tensor, Tensor],
+        batch_idx: int,
+        dataloader_idx: int = 0,
+        frame_hop_length: float | None = None,
+        **kwargs: Any
+    ) -> pd.DataFrame:
+        frame_hop_length = frame_hop_length or self.frame_window_length // 2
+        x, *_ = batch
+        x = self.log_mel_spectrogram(x)
+        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
+        # encode with a half-frame overlap
+        q_z = self.encode(x, hop_length=frame_hop_length)
+        bs, seq, *_ = q_z.size()
+        sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
+        seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
+        dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
+        # seq start accounts for hop
+        frame_hop_samples = self.fft_hop_length * frame_hop_length
+        seq_start_samples = seq_idx * frame_hop_samples
+        # seq end accounts for receptive field
+        frame_duration_samples = self.fft_hop_length * self.frame_window_length
+        seq_end_samples = seq_start_samples + frame_duration_samples
+        # map to time in seconds
+        seq_start_seconds = seq_start_samples / self.sample_rate
+        seq_end_seconds = seq_end_samples / self.sample_rate
+        ref_column_types = dict(
+            file_i=int, dataloader_idx=int, timestep=int,
+            t_start_samples=int, t_end_samples=int,
+            t_start_seconds=float, t_end_seconds=float,
+        )
+        feat_column_types = dict(
+            **{ f"z_mean_{d}": float  for d in range(q_z.size(-1)//2) },
+            **{ f"z_log_var_{d}": float  for d in range(q_z.size(-1)//2) },
+        )
+        column_types = (ref_column_types | feat_column_types)
+        df = pd.DataFrame(
+            data=dict(zip(column_types.keys(), [
+                sample_idx, dl_idx, seq_idx,
+                seq_start_samples, seq_end_samples,
+                seq_start_seconds, seq_end_seconds,
+                *q_z.flatten(end_dim=1).cpu().t(),
+            ])),
+            columns=column_types.keys(),
+        ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
+        return df
+
+
     def encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
         for i, block in enumerate(self.feature_encoder):
             x = block(x)
@@ -147,7 +177,7 @@ class VAE(L.LightningModule):
         x = self.frame(x, window_length=self.latent_window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
         q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
-        log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=2*self.sigma_latent.log())
+        log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*self.sigma_latent.log())
         return torch.cat([mu_z, log_sigma_sq_z], dim=-1)
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
@@ -204,7 +234,8 @@ class VAE(L.LightningModule):
         step_outputs = detach_values(step_outputs)
         metrics = self.metrics(**step_outputs)
         self.log_dict(prefix_keys(loss_outputs, stage), prog_bar=True, logger=False)
-        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
+        if self.logger and logger.get("experiment") is not None:
+            self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
         return {**loss_outputs, **step_outputs}
 
     def training_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
@@ -222,81 +253,34 @@ class VAE(L.LightningModule):
     def test_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
         return self.predict(**batch, **kwargs)
 
+    @torch.no_grad()
+    def predict_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
+        pass
+
     def on_train_batch_end(self, *args: Any, **kwargs: Any) -> None:
         self.training_step_outputs.clear()
 
     def on_validation_batch_end(self, outputs: Dict[str, Tensor], batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> None:
-        if batch_idx < 4 and len(self.validation_step_outputs):
-            step_outputs = self.validation_step_outputs[0]
-            specs = step_outputs["x"].squeeze().cpu().numpy()
-            recons = step_outputs["x_hat"].squeeze().cpu().numpy()
-            num_samples = min(6, step_outputs["x"].size(0))
-            for i in range(num_samples):
-                fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), width_ratios=[0.97, 0.03], constrained_layout=True)
-                mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
-                mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
-                axes[0, 0].set_title("Original Mel Spectrogram")
-                axes[1, 0].set_title("Reconstructed Mel Spectrogram")
-                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
-                fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
-                self.logger.experiment.log({ f"val/spectrogram": wandb.Image(fig) })
-                plt.close(fig)
+        # if batch_idx < 4 and len(self.validation_step_outputs):
+        #     step_outputs = self.validation_step_outputs[0]
+        #     specs = step_outputs["x"].squeeze().cpu().numpy()
+        #     recons = step_outputs["x_hat"].squeeze().cpu().numpy()
+        #     num_samples = min(6, step_outputs["x"].size(0))
+        #     for i in range(num_samples):
+        #         fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), width_ratios=[0.97, 0.03], constrained_layout=True)
+        #         mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
+        #         mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
+        #         axes[0, 0].set_title("Original Mel Spectrogram")
+        #         axes[1, 0].set_title("Reconstructed Mel Spectrogram")
+        #         fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+        #         fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+        #         self.logger.experiment.log({ f"val/spectrogram": wandb.Image(fig) })
+        #         plt.close(fig)
         self.validation_step_outputs.clear()
 
     @torch.no_grad()
     def on_test_batch_end(self, *args: Any, **kwargs: Any) -> None:
         self.test_step_outputs.clear()
-
-    @torch.no_grad()
-    def predict_step(
-        self,
-        batch: Tuple[Tensor, Tensor, Tensor],
-        batch_idx: int,
-        dataloader_idx: int = 0,
-        frame_hop_length: float | None = None,
-        **kwargs: Any
-    ) -> pd.DataFrame:
-        if not frame_hop_length:
-            frame_hop_length = self.frame_window_length // 2
-        x, *_ = batch
-        x = self.log_mel_spectrogram(x)
-        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
-        # encode with a half-frame overlap
-        q_z = self.encode(x, hop_length=frame_hop_length)
-        bs, seq, *_ = q_z.size()
-        sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
-        seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
-        dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
-        # seq start accounts for hop
-        frame_hop_samples = self.fft_hop_length * frame_hop_length
-        seq_start_samples = seq_idx * frame_hop_samples
-        # seq end accounts for receptive field
-        frame_duration_samples = self.fft_hop_length * self.frame_window_length
-        seq_end_samples = seq_start_samples + frame_duration_samples
-        # map to time in seconds
-        seq_start_seconds = seq_start_samples / self.sample_rate
-        seq_end_seconds = seq_end_samples / self.sample_rate
-        ref_column_types = dict(
-            file_i=int, dataloader_idx=int, timestep=int,
-            t_start_samples=int, t_end_samples=int,
-            t_start_seconds=float, t_end_seconds=float,
-        )
-        feat_column_types = dict(
-            **{ f"z_mean_{d}": float  for d in range(q_z.size(-1)//2) },
-            **{ f"z_log_var_{d}": float  for d in range(q_z.size(-1)//2) },
-        )
-        column_types = (ref_column_types | feat_column_types)
-        df = pd.DataFrame(
-            data=dict(zip(column_types.keys(), [
-                sample_idx, dl_idx, seq_idx,
-                seq_start_samples, seq_end_samples,
-                seq_start_seconds, seq_end_seconds,
-                *q_z.flatten(end_dim=1).cpu().t(),
-            ])),
-            columns=column_types.keys(),
-        ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
-        self.predict_step_outputs.append(df)
-        return df
 
     def configure_optimizers(self) -> Optimizer:
         optimiser_config = DictConfig(dict(_target_=self.optimiser_cls, **(self.optimiser_config or {})))
