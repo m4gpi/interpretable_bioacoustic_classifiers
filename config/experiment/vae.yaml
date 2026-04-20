@@ -24,7 +24,7 @@ callbacks:
     save_path: ${paths.results_dir}/metrics.parquet
   vae_embeddings:
     _target_: src.core.callbacks.vae_embeddings.VAEEmbeddings
-    frame_hop_length: 192
+    frame_hop_length: 96
     save_path: ${paths.results_dir}/features.parquet
 
 logger:
