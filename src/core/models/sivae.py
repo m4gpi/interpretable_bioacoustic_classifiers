@@ -35,7 +35,7 @@ from src.core.models.components import (
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
-from src.core.utils import soft_clip, detach_values, prefix_keys, bounded_sigmoid
+from src.core.utils import Batch, soft_clip, detach_values, prefix_keys, bounded_sigmoid
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -149,9 +149,9 @@ class SIVAE(L.LightningModule):
         x_hat = self.cnn_decode(U_hat.flatten(end_dim=1), delta) # (bs, 1, fr * seq, fq)
         x_hat_framed = x_hat.view(*x_framed.size())
         x_hat_trans = self.cnn_decode(U_hat_trans.flatten(end_dim=2), delta_trans.flatten(end_dim=2).unsqueeze(1)) # (bs * seq, 1, fr, fq)
-        x_hat_trans = x_hat_trans.unflatten(0, (U_hat_trans.size(0), U_hat_trans.size(1), U_hat_trans.size(2))) # (k, bs, seq, 1, fr, fq)
+        x_hat_trans = x_hat_trans.view(x_trans.size()) # (k, bs, seq, 1, fr, fq)
 
-        x_framed_stacked = torch.cat([x_framed.unsqueeze(0), x_trans.view(*x_hat_trans.size())], dim=0)
+        x_framed_stacked = torch.cat([x_framed.unsqueeze(0), x_trans], dim=0)
         x_hat_framed_stacked = torch.cat([x_hat_framed.unsqueeze(0), x_hat_trans], dim=0)
 
         return dict(
@@ -184,7 +184,6 @@ class SIVAE(L.LightningModule):
     def embed(
         self,
         batch: Tuple[Tensor, Tensor, Tensor],
-        batch_idx: int,
         dataloader_idx: int = 0,
         frame_hop_length: float | None = None,
         **kwargs: Any
@@ -324,7 +323,7 @@ class SIVAE(L.LightningModule):
 
     def step(
         self,
-        batch: Tuple[Tensor, Tensor, Tensor],
+        batch: Batch,
         batch_idx: int,
         stage: str,
         **kwargs: Any,
@@ -337,69 +336,75 @@ class SIVAE(L.LightningModule):
         self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
         return {**loss_outputs, **step_outputs}
 
-    def training_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
+    def training_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
         outputs = self.step(batch, batch_idx, "train")
         self.training_step_outputs.append(outputs)
         return outputs
 
     @torch.no_grad()
-    def validation_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
+    def validation_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
         outputs = self.step(batch, batch_idx, "val")
         self.validation_step_outputs.append(outputs)
         return outputs
 
     @torch.no_grad()
-    def test_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
+    def test_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
         return self.predict(**batch, **kwargs)
 
     @torch.no_grad()
     def predict_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
         pass
 
-    def on_train_batch_end(self, *args: Any, **kwargs: Any) -> None:
+    def on_train_batch_end(self, outputs: Dict[str, Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
+        if batch_idx < 4 and len(self.training_step_outputs):
+            step_outputs = self.training_step_outputs[0]
+            self.on_batch_end(step_outputs, "train")
         self.training_step_outputs.clear()
 
-    def on_validation_batch_end(self, outputs: Dict[str, Tensor], batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> None:
+    def on_validation_batch_end(self, outputs: Dict[str, Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
         if batch_idx < 4 and len(self.validation_step_outputs):
             step_outputs = self.validation_step_outputs[0]
-            if self.contiguous_frames:
-                # plot full specs
-                specs = step_outputs["x"].squeeze().cpu().numpy()
-                recons = step_outputs["x_hat"].squeeze().cpu().numpy()
-                num_samples = min(6, step_outputs["x"].size(0))
-                for i in range(num_samples):
-                    fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), width_ratios=[0.97, 0.03], constrained_layout=True)
-                    mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
-                    mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
-                    axes[0, 0].set_title("Original")
-                    axes[1, 0].set_title("Reconstruction")
-                    fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
-                    fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
-                    self.logger.experiment.log({ f"val/spectrogram": wandb.Image(fig) })
-                    plt.close(fig)
-            # plot kth translated frames
-            for k in range(self.k):
-                specs = step_outputs["x_framed"].squeeze().cpu().numpy()
-                recons = step_outputs["x_hat_framed"][k].squeeze().cpu().numpy()
-                num_frames = 6
-                for i in range(num_samples):
-                    fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=(10, 6), width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True)
-                    for j in range(num_frames):
-                        mesh = self.log_mel_spectrogram.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max())
-                        mesh = self.log_mel_spectrogram.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max())
-                    axes[0, 0].set_title("Original")
-                    axes[1, 0].set_title("Reconstruction")
-                    fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
-                    fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
-                    self.logger.experiment.log({f"val/frames/{k}": wandb.Image(fig)})
-                    plt.close(fig)
+            self.on_batch_end(step_outputs, "val")
         self.validation_step_outputs.clear()
 
     @torch.no_grad()
     def on_test_batch_end(self, *args: Any, **kwargs: Any) -> None:
         self.test_step_outputs.clear()
 
-    def on_load_checkpoint(self, checkpoint):
+    def on_batch_end(self, step_outputs, stage: str):
+        num_samples = min(6, step_outputs["x"].size(0))
+        if self.contiguous_frames:
+            specs = step_outputs["x"].squeeze().cpu().numpy()
+            recons = step_outputs["x_hat"].squeeze().cpu().numpy()
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), width_ratios=[0.97, 0.03], constrained_layout=True)
+                mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
+                mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
+                axes[0, 0].set_title("Original")
+                axes[1, 0].set_title("Reconstruction")
+                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+                self.logger.experiment.log({f"{stage}/spectrogram": wandb.Image(fig)})
+                plt.close(fig)
+        # plot kth translated frames
+        for k in range(self.k):
+            specs = step_outputs["x_framed_stacked"][k].squeeze().cpu().numpy()
+            recons = step_outputs["x_hat_framed_stacked"][k].squeeze().cpu().numpy()
+            num_frames = 6
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=(10, 6), width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True)
+                for j in range(num_frames):
+                    mesh = self.log_mel_spectrogram.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max())
+                    mesh = self.log_mel_spectrogram.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max())
+                axes[0, 0].set_title("Original")
+                axes[1, 0].set_title("Reconstruction")
+                fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
+                self.logger.experiment.log({f"{stage}/frames/{k}": wandb.Image(fig)})
+                plt.close(fig)
+
+    def on_load_checkpoint(self, checkpoint: Dict[str, Any]):
+        checkpoint["global_step"] = 0
         checkpoint["optimizer_states"] = []
 
     def configure_optimizers(self) -> Optimizer:
