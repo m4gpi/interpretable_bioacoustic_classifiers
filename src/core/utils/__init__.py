@@ -10,12 +10,13 @@ class Batch(NamedTuple):
     x: torch.Tensor
     y: torch.Tensor | None = None
     s: torch.Tensor | None = None
+    metadata: List[Any] | None = None
 
     def keys(self):
-        return ["x", "y", "s"]
+        return ["x", "y", "s", "metadata"]
 
     def __getitem__(self, key):
-        return {"x": self.x, "y": self.y, "s": self.s}[key]
+        return {"x": self.x, "y": self.y, "s": self.s, "metadata": self.metadata}[key]
 
 def tree():
     return collections.defaultdict(tree)

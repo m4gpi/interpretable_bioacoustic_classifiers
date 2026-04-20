@@ -23,6 +23,7 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
     index: List[int] = attrs.field()
     seed: int = attrs.field(default=None)
     download: bool = attrs.field(default=False)
+    chunked: bool = attrs.field(default=True)
 
     x: torch.Tensor = attrs.field(init=False)
     y: torch.Tensor = attrs.field(init=False)
@@ -51,6 +52,7 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
     @property
     def model_params(self):
         return dict(
+            in_features=self.x.shape[-1] // 2 if self.chunked else self.x.shape[-1],
             target_names=self.target_names,
             target_counts=self.target_counts,
             seed=self.seed,
@@ -135,13 +137,13 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
         )
 
     def setup(self, stage: str | None = None) -> None:
-        self.index = pd.read_parquet(self.root / "index.parquet")
-        query = (self.index["model_name"] == self.model) & (self.index["version"] == self.version) & (self.index["scope"] == self.scope)
-        assert query.any(), f"Data does not exist for {self.model} {self.version} {self.scope}"
-        # reuse the seed from pre-training
-        record = self.index[query].iloc[0]
-        self.seed = record.seed
-        L.seed_everything(self.seed)
+        # self.index = pd.read_parquet(self.root / "index.parquet")
+        # query = (self.index["model_name"] == self.model) & (self.index["version"] == self.version) & (self.index["scope"] == self.scope)
+        # assert query.any(), f"Data does not exist for {self.model} {self.version} {self.scope}"
+        # # reuse the seed from pre-training
+        # record = self.index[query].iloc[0]
+        # self.seed = record.seed
+        # L.seed_everything(self.seed)
 
         self._validate_features_and_labels_present(self.train_features_path, self.train_labels_path)
         self._validate_features_and_labels_present(self.test_features_path, self.test_labels_path)

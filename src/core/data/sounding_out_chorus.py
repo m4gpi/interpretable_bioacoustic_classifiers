@@ -192,7 +192,7 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
 
     def _batch_converter(self, batch: Tuple):
         xs, ys, ss = zip(*batch)
-        return Batch(x=torch.stack(xs, dim=0), y=torch.stack(ys, dim=0), s=torch.tensor(ss))
+        return Batch(x=torch.stack(xs, dim=0), y=torch.stack(ys, dim=0), s=torch.tensor(ss), metadata=self.data.target_names)
 
     def __attrs_post_init__(self):
         L.LightningDataModule.__init__(self)
