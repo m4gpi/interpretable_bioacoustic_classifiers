@@ -22,6 +22,10 @@ callbacks:
   vae_metrics:
     _target_: src.core.callbacks.vae_metrics.VAEMetrics
     save_path: ${paths.results_dir}/metrics.parquet
+  vae_embeddings:
+    _target_: src.core.callbacks.vae_embeddings.VAEEmbeddings
+    frame_hop_length: 192
+    save_path: ${paths.results_dir}/features.parquet
 
 logger:
   wandb:
