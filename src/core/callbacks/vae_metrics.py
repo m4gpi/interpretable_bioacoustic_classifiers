@@ -27,10 +27,9 @@ class VAEMetrics(L.Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        x, y, s = batch
         x_framed, x_hat_framed, q_z = outputs["x_framed"], outputs["x_hat_framed"], outputs["q_z"]
         bs, seq, *_ = x_framed.size()
-        sample_idx = s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
+        sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
         seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
         dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
         # frame-wise mean absolute error
@@ -38,7 +37,9 @@ class VAEMetrics(L.Callback):
         mse = (x_hat_framed - x_framed).pow(2).flatten(start_dim=-3).mean(dim=-1)
         # frame-wise kl divergence
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
-        dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp())).sum(dim=-1) / pl_module.latent_dim
+        dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp()))
+        dkl_norm = dkl.mean(dim=-1)
+        dkl = dkl.sum(dim=-1)
         # frame-wise full elbo
         nll = (1/2 * (2 * pl_module.sigma_recon.log() + ((x_framed - x_hat_framed) / pl_module.sigma_recon).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
         elbo = nll + dkl
@@ -55,7 +56,7 @@ class VAEMetrics(L.Callback):
             t_start_samples=int, t_end_samples=int,
             t_start_seconds=float, t_end_seconds=float,
         )
-        feat_column_types = dict(mae=float, mse=float, dkl=float, elbo=float)
+        feat_column_types = dict(mae=float, mse=float, dkl=float, dkl_norm=float, elbo=float)
         column_types = (ref_column_types | feat_column_types)
         df = pd.DataFrame(
             data=dict(zip(column_types.keys(), [
@@ -65,6 +66,7 @@ class VAEMetrics(L.Callback):
                 mae.flatten(end_dim=1).cpu(),
                 mse.flatten(end_dim=1).cpu(),
                 dkl.flatten(end_dim=1).cpu(),
+                dkl_norm.flatten(end_dim=1).cpu(),
                 elbo.flatten(end_dim=1).cpu(),
             ])),
             columns=column_types.keys(),
@@ -83,5 +85,7 @@ class VAEMetrics(L.Callback):
         if len(self.data):
             df = pd.concat(self.data, axis=0).sort_index()
             df.to_parquet(self.save_path)
+            summary_stats = df.groupby(["model_name", "dataloader_idx", "latent_dim", "sigma_x", "learning_rate"])[["mae", "mse", "dkl_norm", "elbo"]].agg(["mean", "std"])
+            print(summary_stats)
         self.data.clear()
 

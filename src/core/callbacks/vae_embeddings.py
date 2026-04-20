@@ -1,4 +1,5 @@
 import lightning as L
+import logging
 import numpy as np
 import pandas as pd
 import pathlib
@@ -10,74 +11,59 @@ from typing import Any, Dict, List, Tuple
 
 from src.core.utils import metrics
 
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
 __all__ = ["VAEEmbeddings"]
 
 class VAEEmbeddings(L.Callback):
     def __init__(self, save_path: str, frame_hop_length: int | None = None) -> None:
         super().__init__()
-        self.data = []
         self.save_path = pathlib.Path(save_path)
-        self.save_path.parent.mkdir(exist_ok=True, parents=True)
         self.frame_hop_length = frame_hop_length
-        self.data = []
+        self.embeddings = []
+        self.labels = []
 
-    def on_test_batch_end(
+        self.save_path.mkdir(exist_ok=True, parents=True)
+        self.train_save_path = (self.save_path / "train")
+        self.test_save_path = (self.save_path / "test")
+        self.train_save_path.mkdir(exist_ok=True, parents=True)
+        self.test_save_path.mkdir(exist_ok=True, parents=True)
+        log.info(f"Saving embeddings to {self.save_path.resolve()}")
+
+    def on_predict_batch_end(
         self,
         trainer: L.Trainer,
         pl_module: L.LightningModule,
         outputs: Dict[str, Any],
         batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[str]],
         batch_idx: int,
-        dataloader_idx: int = 0,
+        dataloader_idx: int,
     ) -> None:
-        if not self.frame_hop_length:
-            frame_hop_length = pl_module.frame_window_length // 2
-        x, *_ = batch
-        x = pl_module.log_mel_spectrogram(x)
-        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % pl_module.frame_window_length)), pl_module.num_mel_bins])
-        # encode with a half-frame overlap
-        q_z = pl_module.encode(x, hop_length=frame_hop_length)
-        bs, seq, *_ = q_z.size()
-        sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
-        seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
-        dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
-        # seq start accounts for hop
-        frame_hop_samples = pl_module.fft_hop_length * frame_hop_length
-        seq_start_samples = seq_idx * frame_hop_samples
-        # seq end accounts for receptive field
-        frame_duration_samples = pl_module.fft_hop_length * pl_module.frame_window_length
-        seq_end_samples = seq_start_samples + frame_duration_samples
-        # map to time in seconds
-        seq_start_seconds = seq_start_samples / pl_module.sample_rate
-        seq_end_seconds = seq_end_samples / pl_module.sample_rate
-        ref_column_types = dict(
-            file_i=int, dataloader_idx=int, timestep=int,
-            t_start_samples=int, t_end_samples=int,
-            t_start_seconds=float, t_end_seconds=float,
-        )
-        feat_column_types = dict(
-            **{ f"z_mean_{d}": float  for d in range(q_z.size(-1)//2) },
-            **{ f"z_log_var_{d}": float  for d in range(q_z.size(-1)//2) },
-        )
-        column_types = (ref_column_types | feat_column_types)
-        df = pd.DataFrame(
-            data=dict(zip(column_types.keys(), [
-                sample_idx, dl_idx, seq_idx,
-                seq_start_samples, seq_end_samples,
-                seq_start_seconds, seq_end_seconds,
-                *q_z.flatten(end_dim=1).cpu().t(),
-            ])),
-            columns=column_types.keys(),
-        ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
-        self.data.append(df)
-        return df
+        embeddings_df = pl_module.embed(batch, batch_idx, dataloader_idx, frame_hop_length=self.frame_hop_length)
+        labels_df = pd.DataFrame(data=batch.y.cpu().numpy(), columns=batch.metadata, index=batch.s.cpu().numpy())
+        labels_df.index.name = "file_i"
+        self.embeddings.append(embeddings_df)
+        self.labels.append(labels_df)
 
-    def on_test_end(
+    def on_predict_end(
         self,
         trainer: L.Trainer,
         pl_module: L.LightningModule,
     ) -> None:
-        if len(self.data):
-            df = pd.concat(self.data, axis=0).sort_index()
-            df.to_parquet(self.save_path)
-        self.data.clear()
+        emdeddings_df = pd.concat(self.embeddings, axis=0).sort_index()
+        train_embeddings_df = emdeddings_df[emdeddings_df.index.get_level_values("dataloader_idx").isin([0, 1])]
+        test_embeddings_df = emdeddings_df[emdeddings_df.index.get_level_values("dataloader_idx") == 2]
+        train_embeddings_df.to_parquet(self.train_save_path / "features.parquet")
+        log.info(f"Train embeddings saved to {self.train_save_path.resolve()}")
+        test_embeddings_df.to_parquet(self.test_save_path / "features.parquet")
+        log.info(f"Test embeddings saved to {self.test_save_path.resolve()}")
+
+        labels_df = pd.concat(self.labels, axis=0).sort_index()
+        train_labels_df = labels_df[labels_df.index.isin(train_embeddings_df.index.get_level_values("file_i"))]
+        test_labels_df = labels_df[labels_df.index.isin(test_embeddings_df.index.get_level_values("file_i"))]
+        train_labels_df.to_parquet(self.train_save_path / "labels.parquet")
+        log.info(f"Train labels saved to {self.train_save_path.resolve()}")
+        test_labels_df.to_parquet(self.test_save_path / "labels.parquet")
+        log.info(f"Test labels saved to {self.test_save_path.resolve()}")
+
