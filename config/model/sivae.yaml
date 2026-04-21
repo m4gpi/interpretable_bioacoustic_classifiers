@@ -1,4 +1,4 @@
-_target_: src.core.models.sivae_alg.SIVAE
+_target_: src.core.models.sivae.SIVAE
 # preprocessing
 sample_rate: 48000
 num_fft: 512

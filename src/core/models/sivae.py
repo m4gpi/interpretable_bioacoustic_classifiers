@@ -1,26 +1,12 @@
-import copy
-import enum
-import itertools
-import lightning as L
 import logging
-import hydra
-import math
 import numpy as np
-import pathlib
 import pandas as pd
-import seaborn as sns
 import torch
-import wandb
 
 from dataclasses import dataclass
 from matplotlib import pyplot as plt
-from numpy.typing import NDArray
-from omegaconf import DictConfig
-from torch import Tensor, nn
-from torch.distributions.normal import Normal
-from torch.optim import Optimizer
 from torchvision.transforms import functional as T
-from typing import Any, Dict, Tuple, List, Iterator
+from typing import Any, Dict, Tuple, List
 
 from src.core.models.components import (
     Activation,
@@ -35,7 +21,7 @@ from src.core.models.components import (
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
-from src.core.utils import Batch, soft_clip, detach_values, prefix_keys, bounded_sigmoid, random_derange
+from src.core.utils import Batch, soft_clip, detach_values, prefix_keys, bounded_sigmoid
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -43,7 +29,7 @@ log = logging.getLogger(__name__)
 __all__ = ["SIVAE"]
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
-class SIVAE(L.LightningModule):
+class SIVAE(torch.nn.Module):
     sample_rate: int = 48_000
     num_fft: int = 512
     fft_window_length: int = 512
@@ -56,8 +42,7 @@ class SIVAE(L.LightningModule):
     frame_hop_length: int | None = 192
     num_mel_bins: int = 64
     latent_dim: int = 128
-    sigma_z_min: float = 0.0498
-    sigma_x: float = 0.2
+    sigma_z_min: float = 0.05
     weight_init_std: float = 1e-3
     cnn_block_width: int = 4
     cnn_block_depth: int = 3
@@ -70,14 +55,7 @@ class SIVAE(L.LightningModule):
     mlp_dropout_prob: float = 0.1
     mlp_reduction_factor: int = 4
     frame_padding_mode: str = "circular"
-    learning_rate: float = 4e-5
-    optimiser_cls: str = "torch.optim.AdamW"
-    optimiser_config: DictConfig | None = None
-    scheduler_cls: str | None = None
-    scheduler_config: DictConfig | None = None
-    scheduler_interval: str = "step"
-    scheduler_frequency: int = 1
-
+    sigma_x: float = 1.0 # TODO: vectorise?
     cross_decode_method: str = "soft"
     k: int = 2
     contiguous_frames: bool = True
@@ -88,21 +66,13 @@ class SIVAE(L.LightningModule):
     delta_sigma_max: float = 2.0
     delta_sigma_step_slope: float = 1.0
 
-    def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
-        plt.switch_backend('agg')
-        log.info(f"Training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.fit(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
-        log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.test(self, dataloaders=data_module.predict_dataloader())
-
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
-        L.LightningModule.__init__(obj)
+        torch.nn.Module.__init__(obj)
         return obj
 
     def __post_init__(self):
         assert self.translation_layer_idx < self.cnn_layers
-        self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.register_buffer("sigma_recon", torch.tensor(self.sigma_x, dtype=torch.float32))
         if self.sigma_z_min is not None:
@@ -113,16 +83,14 @@ class SIVAE(L.LightningModule):
         self.alignment_encoder = init_alignment_encoder(**self.alignment_mlp_params)
         self.feature_decoder = init_cnn_feature_decoder(**self.cnn_decoder_params)
         self.content_decoder = init_mlp_content_decoder(**self.content_mlp_decoder_params)
-        self.strict_loading = False
-        self._reset_cache()
 
-    def forward(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
+    def forward(self, x: torch.Tensor, global_step: int, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
         # ------ pre-processing ------ #
         x = self.log_mel_spectrogram(x)
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
 
-        # ------ shift samples------ #
-        sigma_delta = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.sigma_delta_params))
+        # ------ shifted samples------ #
+        sigma_delta = torch.tensor(bounded_sigmoid(global_step, **self.sigma_delta_params))
         x_framed = x.view(x.size(0), -1, 1, self.frame_window_length, x.size(-1))
         x_trans = torch.stack([
             translation(
@@ -136,7 +104,6 @@ class SIVAE(L.LightningModule):
         if not self.contiguous_frames:
             x = x_framed.flatten(end_dim=1)
 
-        # ------ encode & reparam ------ #
         q_z, delta = self.encode(x) # (bs, seq, ld) or (bs * seq, 1, ld)
         q_z_trans, delta_trans = self.encode(x_trans.flatten(end_dim=2)) # (k-1 * bs * seq, 1, ld)
         q_z_trans = q_z_trans.view(-1, *q_z.size()) # (k-1, bs, seq, ld)
@@ -145,7 +112,6 @@ class SIVAE(L.LightningModule):
         delta_stacked = torch.cat([delta.unsqueeze(0), delta_trans], dim=0) # (k, bs, seq, 1)
         z_stacked = self.k_way_cross_decode(q_z_stacked, method=self.cross_decode_method, k=self.k) # (k, bs, seq, ld)
 
-        # ------ decode & stack ------ #
         U_hat = self.mlp_decode(z_stacked.flatten(end_dim=2))
         U_hat = U_hat.unflatten(dim=0, sizes=(z_stacked.size(0), z_stacked.size(1), z_stacked.size(2))) # (k, bs, seq, ch, fr, fq)
         U_hat, U_hat_trans = U_hat[0], U_hat[1:]
@@ -163,9 +129,9 @@ class SIVAE(L.LightningModule):
             q_z_stacked=q_z_stacked, q_z=q_z, q_z_trans=q_z_trans,
             delta_stacked=delta_stacked, delta_trans=delta_trans, delta=delta,
             sigma_delta=sigma_delta,
-        )
+        ), x.size(0) * self.k
 
-    def predict(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
+    def predict(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
         x = self.log_mel_spectrogram(x)
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
         q_z, delta = self.encode(x)
@@ -186,17 +152,17 @@ class SIVAE(L.LightningModule):
     @torch.no_grad()
     def embed(
         self,
-        batch: Tuple[Tensor, Tensor, Tensor],
+        x: torch.Tensor,
+        s: torch.Tensor,
         dataloader_idx: int = 0,
         frame_hop_length: float | None = None,
         **kwargs: Any
     ) -> pd.DataFrame:
-        x, *_ = batch
         x = self.log_mel_spectrogram(x)
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
         q_z, delta = self.encode(x, hop_length=frame_hop_length)
         bs, seq, *_ = q_z.size()
-        sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
+        sample_idx = s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
         seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
         dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
         # seq start accounts for hop
@@ -234,50 +200,49 @@ class SIVAE(L.LightningModule):
     def k_way_cross_decode(self, q_z: torch.Tensor, method: str = "soft", k: int = 2):
         mu_zs, log_sigma_sq_zs = q_z.chunk(2, dim=-1)
         if method == "soft":
-            # weighted average across translated representations
+            # weighted average along shift dimension
             mu_z = (1 / k * mu_zs).sum(dim=0, keepdims=True)
             log_sigma_sq_z = (1 / k**2 * log_sigma_sq_zs.exp()).sum(dim=0, keepdims=True).log()
-            zs = Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample().expand(k, -1, -1, -1)
+            zs = torch.distributions.Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample().expand(k, -1, -1, -1)
         elif method == "hard":
-            # randomly derange (permute w/o original) translated representations
-            zs = Normal(mu_zs, (1/2 * log_sigma_sq_zs).exp()).rsample()
-            zs = zs[random_derange(k)]
+            # FIXME for k > 2
+            # randomly roll samples along shift dimension
+            zs = torch.distributions.Normal(mu_zs, (1/2 * log_sigma_sq_zs).exp()).rsample()
+            zs = zs.roll(shifts=torch.randint(low=1, high=zs.size(0)).tolist(), dims=[0])
         return zs
 
-    def encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
-        U = self.cnn_encode(x, encoder=self.feature_encoder)
+    def encode(self, x: torch.Tensor, hop_length: int | None = None) -> torch.Tensor:
+        x = self.cnn_encode(x, encoder=self.feature_encoder)
         hop_length = (hop_length or self.frame_hop_length) // 2**(self.cnn_layers)
-        U = self.frame(U, window_length=self.latent_window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
-        delta = self.alignment_encode(U, encoder=self.alignment_encoder)
-        q_z = self.content_encode(U, encoder=self.content_encoder)
-        if self.sigma_z_min is not None:
-            mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
-            log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*self.sigma_latent.log())
-            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
+        x = self.frame(x, window_length=self.latent_window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
+        delta = self.alignment_encode(x, encoder=self.alignment_encoder)
+        q_z = self.content_encode(x, encoder=self.content_encoder)
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         return q_z, delta
 
-    def cnn_encode(self, x: Tensor, encoder: torch.nn.Module) -> Tensor:
+    def cnn_encode(self, x: torch.Tensor, encoder: torch.nn.Module) -> torch.Tensor:
         for i, block in enumerate(encoder):
             x = block(x)
         return x
 
-    def content_encode(self, x: Tensor, encoder: torch.nn.Module) -> Tuple[Tensor, Tensor]:
+    def content_encode(self, x: torch.Tensor, encoder: torch.nn.Module) -> Tuple[torch.Tensor, torch.Tensor]:
         q_z = encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         return q_z
 
-    def alignment_encode(self, x: Tensor, encoder: torch.nn.Module) -> Tuple[Tensor, Tensor]:
+    def alignment_encode(self, x: torch.Tensor, encoder: torch.nn.Module) -> Tuple[torch.Tensor, torch.Tensor]:
         delta = encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         return delta
 
-    def decode(self, z: Tensor, delta: Tensor | None = None) -> Tensor:
+    def decode(self, z: torch.Tensor, delta: torch.Tensor | None = None) -> torch.Tensor:
         x = self.mlp_decode(z.flatten(end_dim=1))
         x = self.cnn_decode(x, delta)
         return x
 
-    def mlp_decode(self, z: Tensor) -> Tensor:
+    def mlp_decode(self, z: torch.Tensor) -> torch.Tensor:
         return self.content_decoder(z)
 
-    def cnn_decode(self, U: Tensor, delta: Tensor) -> Tensor:
+    def cnn_decode(self, U: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
         for i, block in enumerate(self.feature_decoder):
             if i == self.translation_layer_idx:
                 U = translation(U, delta.view(delta.size(0) * delta.size(1), 1, 1, 1), padding_mode="circular")
@@ -287,7 +252,7 @@ class SIVAE(L.LightningModule):
         return U
 
     @staticmethod
-    def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:
+    def frame(x: torch.Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> torch.Tensor:
         if x.size(-2) == window_length:
             return x.unsqueeze(1)
         if hop_length != window_length:
@@ -296,13 +261,13 @@ class SIVAE(L.LightningModule):
 
     def loss(
         self,
-        x_framed_stacked: Tensor,
-        x_hat_framed_stacked: Tensor,
-        q_z_stacked: torch.Tensor,
-        delta_stacked: torch.Tensor,
-        sigma_delta: torch.Tensor,
+        x_framed_stacked: torch.Tensor,
+        x_hat_framed_stacked: torch.Tensor,
+        q_z_stacked: torch.torch.Tensor,
+        delta_stacked: torch.torch.Tensor,
+        sigma_delta: torch.torch.Tensor,
         **kwargs: Any,
-    ) -> Dict[str, Tensor]:
+    ) -> Dict[str, torch.Tensor]:
         outputs = dict()
         losses = []
         # batch/sequence mean frame-wise sum reconstruction loss
@@ -325,110 +290,12 @@ class SIVAE(L.LightningModule):
         outputs |= dict(loss=sum(losses))
         return outputs
 
-    # ------------------------------ LIGHTNING FUNCS --------------------------------- #
-
-    def step(
-        self,
-        batch: Batch,
-        batch_idx: int,
-        stage: str,
-        **kwargs: Any,
-    ) -> Dict[str, Tensor]:
-        step_outputs = self(**batch, **kwargs)
-        loss_outputs = self.loss(**step_outputs)
-        step_outputs = detach_values(step_outputs)
-        metrics = self.metrics(**step_outputs)
-        self.log_dict(prefix_keys(loss_outputs, stage), batch_size=batch.x.size(0) * self.k, prog_bar=True, logger=False)
-        if self.logger is not None and getattr(self.logger, "experiment") is not None:
-            self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
-        return {**loss_outputs, **step_outputs}
-
-    def training_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
-        outputs = self.step(batch, batch_idx, "train")
-        self.training_step_outputs.append(outputs)
-        return outputs
-
-    @torch.no_grad()
-    def validation_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
-        outputs = self.step(batch, batch_idx, "val")
-        self.validation_step_outputs.append(outputs)
-        return outputs
-
-    @torch.no_grad()
-    def test_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
-        return self.predict(**batch, **kwargs)
-
-    @torch.no_grad()
-    def predict_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
-        pass
-
-    def on_train_batch_end(self, outputs: Dict[str, Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
-        # if self.trainer.global_step == self.trainer.val_check_interval and batch_idx < 5 and len(self.training_step_outputs):
-        #     step_outputs = self.training_step_outputs[0]
-        #     self.on_batch_end(step_outputs, "train")
-        self.training_step_outputs.clear()
-
-    def on_validation_batch_end(self, outputs: Dict[str, Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
-        if batch_idx < 4 and len(self.validation_step_outputs):
-            step_outputs = self.validation_step_outputs[0]
-            self.on_batch_end(step_outputs, "val")
-        self.validation_step_outputs.clear()
-
-    @torch.no_grad()
-    def on_test_batch_end(self, *args: Any, **kwargs: Any) -> None:
-        self.test_step_outputs.clear()
-
-    def on_batch_end(self, step_outputs, stage: str):
-        num_samples = min(6, step_outputs["x"].size(0))
-        if self.contiguous_frames:
-            specs = step_outputs["x"].squeeze().cpu().numpy()
-            recons = step_outputs["x_hat"].squeeze().cpu().numpy()
-            for i in range(num_samples):
-                fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), width_ratios=[0.97, 0.03], constrained_layout=True)
-                mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
-                mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
-                axes[0, 0].set_title("Original")
-                axes[1, 0].set_title("Reconstruction")
-                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
-                fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
-                self.logger.experiment.log({f"{stage}/spectrogram": wandb.Image(fig)})
-                plt.close(fig)
-        # plot kth translated frames
-        for k in range(self.k):
-            specs = step_outputs["x_framed_stacked"][k].squeeze().cpu().numpy()
-            recons = step_outputs["x_hat_framed_stacked"][k].squeeze().cpu().numpy()
-            num_frames = 6
-            for i in range(num_samples):
-                fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=(10, 6), width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True)
-                for j in range(num_frames):
-                    mesh = self.log_mel_spectrogram.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max())
-                    mesh = self.log_mel_spectrogram.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max())
-                axes[0, 0].set_title("Original")
-                axes[1, 0].set_title("Reconstruction")
-                fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
-                fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
-                self.logger.experiment.log({f"{stage}/frames/{k}": wandb.Image(fig)})
-                plt.close(fig)
-
-    def configure_optimizers(self) -> Optimizer:
-        optimiser_config = DictConfig(dict(_target_=self.optimiser_cls, **(self.optimiser_config or {})))
-        optimiser = hydra.utils.instantiate(optimiser_config, params=self.parameters(), lr=self.learning_rate)
-        if self.scheduler_cls is not None:
-            scheduler_config = DictConfig(dict(_target_=self.scheduler_cls, **(self.scheduler_config or {})))
-            scheduler = hydra.utils.instantiate(scheduler_config, optimizer=optimiser)
-            return [optimiser], [dict(
-                scheduler=scheduler,
-                interval=self.scheduler_interval,
-                frequency=self.scheduler_frequency
-            )]
-        return optimiser
-
     def metrics(
         self,
-        x_framed_stacked: Tensor,
-        x_hat_framed_stacked: Tensor,
-        q_z_stacked: Tensor,
-        delta_stacked: Tensor,
+        x_framed_stacked: torch.Tensor,
+        x_hat_framed_stacked: torch.Tensor,
+        q_z_stacked: torch.Tensor,
+        delta_stacked: torch.Tensor,
         **kwargs: Any
     ) -> Dict[str, Any]:
         mu_z, log_sigma_sq_z = q_z_stacked.chunk(2, dim=-1)
@@ -442,19 +309,51 @@ class SIVAE(L.LightningModule):
         return dict(
             mae=mae,
             mse=mse,
-            mu_z=wandb.Histogram(np_histogram=mu_hist),
-            sigma_z=wandb.Histogram(np_histogram=sigma_hist),
-            delta=wandb.Histogram(np_histogram=delta_hist),
+            mu_z_hist=mu_hist,
+            sigma_z_hist=sigma_hist,
+            delta_hist=delta_hist,
             dkl_norm=dkl_norm,
         )
 
-    def _reset_cache(self):
-        self.training_step_outputs = []
-        self.validation_step_outputs = []
-        self.test_step_outputs = []
-        self.predict_step_outputs = []
-
-    # ------------------------------- GROUPED PROPS -------------------------------- #
+    def tracking_figures(
+        self,
+        x: torch.Tensor,
+        x_hat: torch.Tensor,
+        x_framed_stacked: torch.Tensor,
+        x_hat_framed_stacked: torch.Tensor,
+        figsize: Tuple[int, int] = (10, 6),
+        **kwargs: Any,
+    ) -> List:
+        figures = []
+        num_samples = min(6, x.size(0))
+        if self.contiguous_frames:
+            specs = x.squeeze().cpu().numpy()
+            recons = x_hat.squeeze().cpu().numpy()
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize, width_ratios=[0.97, 0.03], constrained_layout=True)
+                mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
+                mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
+                axes[0, 0].set_title("Original")
+                axes[1, 0].set_title("Reconstruction")
+                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+                figures.append(("spectrogram", fig))
+        # plot kth translated frames
+        for k in range(self.k):
+            specs = x_framed_stacked[k].squeeze().cpu().numpy()
+            recons = x_hat_framed_stacked[k].squeeze().cpu().numpy()
+            num_frames = 6
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=(10, 6), width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True)
+                for j in range(num_frames):
+                    mesh = self.log_mel_spectrogram.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max())
+                    mesh = self.log_mel_spectrogram.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max())
+                axes[0, 0].set_title("Original")
+                axes[1, 0].set_title("Reconstruction")
+                fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
+                figures.append((f"frames/{k}", fig))
+        return figures
 
     @property
     def log_mel_spectrogram_params(self):
@@ -574,4 +473,3 @@ class SIVAE(L.LightningModule):
             y_max=self.delta_sigma_max,
             k=self.delta_sigma_step_slope,
         )
-
