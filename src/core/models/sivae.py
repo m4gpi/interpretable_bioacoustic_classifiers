@@ -104,9 +104,9 @@ class SIVAE(L.LightningModule):
         assert self.translation_layer_idx < self.cnn_layers
         self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
-        self.sigma_recon = torch.nn.Parameter(torch.tensor(self.sigma_x, dtype=torch.float32), requires_grad=False)
+        self.register_buffer("sigma_recon", torch.tensor(self.sigma_x, dtype=torch.float32))
         if self.sigma_z_min is not None:
-            self.sigma_latent = torch.nn.Parameter(torch.tensor(self.sigma_z_min, dtype=torch.float32), requires_grad=False)
+            self.register_buffer("sigma_latent", torch.tensor(self.sigma_z_min, dtype=torch.float32))
         self.log_mel_spectrogram = LogMelSpectrogram(**self.log_mel_spectrogram_params)
         self.feature_encoder = init_cnn_feature_encoder(**self.cnn_encoder_params)
         self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
@@ -121,7 +121,7 @@ class SIVAE(L.LightningModule):
         x = self.log_mel_spectrogram(x)
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
 
-        # ------ shifted samples------ #
+        # ------ shift samples------ #
         sigma_delta = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.sigma_delta_params))
         x_framed = x.view(x.size(0), -1, 1, self.frame_window_length, x.size(-1))
         x_trans = torch.stack([
@@ -136,6 +136,7 @@ class SIVAE(L.LightningModule):
         if not self.contiguous_frames:
             x = x_framed.flatten(end_dim=1)
 
+        # ------ encode & reparam ------ #
         q_z, delta = self.encode(x) # (bs, seq, ld) or (bs * seq, 1, ld)
         q_z_trans, delta_trans = self.encode(x_trans.flatten(end_dim=2)) # (k-1 * bs * seq, 1, ld)
         q_z_trans = q_z_trans.view(-1, *q_z.size()) # (k-1, bs, seq, ld)
@@ -144,6 +145,7 @@ class SIVAE(L.LightningModule):
         delta_stacked = torch.cat([delta.unsqueeze(0), delta_trans], dim=0) # (k, bs, seq, 1)
         z_stacked = self.k_way_cross_decode(q_z_stacked, method=self.cross_decode_method, k=self.k) # (k, bs, seq, ld)
 
+        # ------ decode & stack ------ #
         U_hat = self.mlp_decode(z_stacked.flatten(end_dim=2))
         U_hat = U_hat.unflatten(dim=0, sizes=(z_stacked.size(0), z_stacked.size(1), z_stacked.size(2))) # (k, bs, seq, ch, fr, fq)
         U_hat, U_hat_trans = U_hat[0], U_hat[1:]
@@ -243,11 +245,11 @@ class SIVAE(L.LightningModule):
         return zs
 
     def encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
-        x = self.cnn_encode(x, encoder=self.feature_encoder)
+        U = self.cnn_encode(x, encoder=self.feature_encoder)
         hop_length = (hop_length or self.frame_hop_length) // 2**(self.cnn_layers)
-        x = self.frame(x, window_length=self.latent_window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
-        delta = self.alignment_encode(x, encoder=self.alignment_encoder)
-        q_z = self.content_encode(x, encoder=self.content_encoder)
+        U = self.frame(U, window_length=self.latent_window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
+        delta = self.alignment_encode(U, encoder=self.alignment_encoder)
+        q_z = self.content_encode(U, encoder=self.content_encoder)
         if self.sigma_z_min is not None:
             mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
             log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*self.sigma_latent.log())
@@ -286,8 +288,10 @@ class SIVAE(L.LightningModule):
 
     @staticmethod
     def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:
+        if x.size(-2) == window_length:
+            return x.unsqueeze(1)
         if hop_length != window_length:
-            return frame(x, window_length=window_length, hop_length=hop_length) if x.size(-2) > window_length else x.unsqueeze(1)
+            return frame(x, window_length=window_length, hop_length=hop_length, padding_mode=padding_mode)
         return x.view(x.size(0), x.size(1), x.size(2) // window_length, window_length, x.size(3)).transpose(1, 2)
 
     def loss(
@@ -359,9 +363,9 @@ class SIVAE(L.LightningModule):
         pass
 
     def on_train_batch_end(self, outputs: Dict[str, Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
-        if batch_idx < 4 and len(self.training_step_outputs):
-            step_outputs = self.training_step_outputs[0]
-            self.on_batch_end(step_outputs, "train")
+        # if self.trainer.global_step == self.trainer.val_check_interval and batch_idx < 5 and len(self.training_step_outputs):
+        #     step_outputs = self.training_step_outputs[0]
+        #     self.on_batch_end(step_outputs, "train")
         self.training_step_outputs.clear()
 
     def on_validation_batch_end(self, outputs: Dict[str, Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
@@ -405,13 +409,6 @@ class SIVAE(L.LightningModule):
                 fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
                 self.logger.experiment.log({f"{stage}/frames/{k}": wandb.Image(fig)})
                 plt.close(fig)
-
-    def on_load_checkpoint(self, checkpoint: Dict[str, Any]):
-        checkpoint["global_step"] = 0
-        checkpoint["optimizer_states"] = []
-        for key in checkpoint["state_dict"].keys():
-            if key in ["sigma_recon", "sigma_latent"]:
-                del checkpoint["state_dict"][key]
 
     def configure_optimizers(self) -> Optimizer:
         optimiser_config = DictConfig(dict(_target_=self.optimiser_cls, **(self.optimiser_config or {})))

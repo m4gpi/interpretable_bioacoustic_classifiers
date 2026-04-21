@@ -94,9 +94,9 @@ class VAE(L.LightningModule):
     def __post_init__(self):
         self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
-        self.sigma_recon = torch.nn.Parameter(torch.tensor(self.sigma_x, dtype=torch.float32), requires_grad=False)
+        self.register_buffer("sigma_recon", torch.tensor(self.sigma_x, dtype=torch.float32))
         if self.sigma_z_min is not None:
-            self.sigma_latent = torch.nn.Parameter(torch.tensor(self.sigma_z_min, dtype=torch.float32), requires_grad=False)
+            self.register_buffer("sigma_latent", torch.tensor(self.sigma_z_min, dtype=torch.float32))
         self.log_mel_spectrogram = LogMelSpectrogram(**self.log_mel_spectrogram_params)
         self.feature_encoder = init_cnn_feature_encoder(**self.cnn_encoder_params)
         self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
@@ -110,7 +110,7 @@ class VAE(L.LightningModule):
     def forward(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
         x = self.log_mel_spectrogram(x)
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)]).float()
-        q_z = self.encode(x)
+        q_z, *_ = self.encode(x)
         mu_x, log_sigma_sq_x = q_z.chunk(2, dim=-1)
         z = Normal(mu_x, (0.5 * log_sigma_sq_x).exp()).rsample()
         x_hat = self.decode(z).view(*x.size())
@@ -135,7 +135,7 @@ class VAE(L.LightningModule):
         x = self.log_mel_spectrogram(x)
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
         # encode with a half-frame overlap
-        q_z = self.encode(x, hop_length=frame_hop_length)
+        q_z, *_ = self.encode(x, hop_length=frame_hop_length)
         bs, seq, *_ = q_z.size()
         sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
         seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
@@ -170,8 +170,7 @@ class VAE(L.LightningModule):
         ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
         return df
 
-
-    def encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
+    def encode(self, x: Tensor, hop_length: int | None = None) -> Tuple[Tensor]:
         for i, block in enumerate(self.feature_encoder):
             x = block(x)
         hop_length = (hop_length or self.frame_hop_length) // 2**(self.cnn_layers)
@@ -181,7 +180,7 @@ class VAE(L.LightningModule):
             mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
             log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*self.sigma_latent.log())
             torch.cat([mu_z, log_sigma_sq_z], dim=-1)
-        return q_z
+        return q_z,
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         bs, seq, *other_dims = z.size()

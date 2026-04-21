@@ -1,0 +1,5 @@
+_target_: src.core.evaluators.translation_invariance_figure.TranslationInvarianceFigure
+save_path:
+vae_path:
+sivae_path:
+
