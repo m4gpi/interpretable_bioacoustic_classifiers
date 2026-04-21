@@ -248,7 +248,6 @@ class SIVAE(L.LightningModule):
         delta = self.alignment_encode(x, encoder=self.alignment_encoder)
         q_z = self.content_encode(x, encoder=self.content_encoder)
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
-        log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=2*self.sigma_latent.log())
         q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         return q_z, delta
 
@@ -406,6 +405,9 @@ class SIVAE(L.LightningModule):
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]):
         checkpoint["global_step"] = 0
         checkpoint["optimizer_states"] = []
+        for key in checkpoint["state_dict"].keys():
+            if key in ["sigma_recon", "sigma_latent"]:
+                del checkpoint["state_dict"][key]
 
     def configure_optimizers(self) -> Optimizer:
         optimiser_config = DictConfig(dict(_target_=self.optimiser_cls, **(self.optimiser_config or {})))
