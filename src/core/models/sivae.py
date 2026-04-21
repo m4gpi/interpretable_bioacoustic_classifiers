@@ -56,7 +56,8 @@ class SIVAE(L.LightningModule):
     frame_hop_length: int | None = 192
     num_mel_bins: int = 64
     latent_dim: int = 128
-    sigma_z_min: float = 0.05
+    sigma_z_min: float = 0.0498
+    sigma_x: float = 0.2
     weight_init_std: float = 1e-3
     cnn_block_width: int = 4
     cnn_block_depth: int = 3
@@ -69,7 +70,6 @@ class SIVAE(L.LightningModule):
     mlp_dropout_prob: float = 0.1
     mlp_reduction_factor: int = 4
     frame_padding_mode: str = "circular"
-    sigma_x: float = 1.0 # TODO: vectorise?
     learning_rate: float = 4e-5
     optimiser_cls: str = "torch.optim.AdamW"
     optimiser_config: DictConfig | None = None
@@ -105,7 +105,8 @@ class SIVAE(L.LightningModule):
         self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.sigma_recon = torch.nn.Parameter(torch.tensor(self.sigma_x, dtype=torch.float32), requires_grad=False)
-        self.sigma_latent = torch.nn.Parameter(torch.tensor(self.sigma_z_min, dtype=torch.float32), requires_grad=False)
+        if self.sigma_z_min is not None:
+            self.sigma_latent = torch.nn.Parameter(torch.tensor(self.sigma_z_min, dtype=torch.float32), requires_grad=False)
         self.log_mel_spectrogram = LogMelSpectrogram(**self.log_mel_spectrogram_params)
         self.feature_encoder = init_cnn_feature_encoder(**self.cnn_encoder_params)
         self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
@@ -247,8 +248,10 @@ class SIVAE(L.LightningModule):
         x = self.frame(x, window_length=self.latent_window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
         delta = self.alignment_encode(x, encoder=self.alignment_encoder)
         q_z = self.content_encode(x, encoder=self.content_encoder)
-        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
-        q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
+        if self.sigma_z_min is not None:
+            mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+            log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*self.sigma_latent.log())
+            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         return q_z, delta
 
     def cnn_encode(self, x: Tensor, encoder: torch.nn.Module) -> Tensor:
