@@ -1,6 +1,7 @@
 import collections
 import torch
 import numpy as np
+import random
 import re
 
 from torch.functional import F
@@ -79,3 +80,10 @@ def bounded_sigmoid(x: float, x_min: float, x_max: float, y_min: float, y_max: f
 
 def soft_clip(x: torch.Tensor, minimum: int = -6.0) -> torch.Tensor:
     return minimum + F.softplus(x - minimum)
+
+def random_derange(n):
+    arr = list(range(n))
+    while True:
+        random.shuffle(arr)
+        if all(arr[i] != i for i in range(n)):
+            return arr

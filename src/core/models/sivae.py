@@ -6,9 +6,9 @@ import logging
 import hydra
 import math
 import numpy as np
-import seaborn as sns
 import pathlib
 import pandas as pd
+import seaborn as sns
 import torch
 import wandb
 
@@ -35,7 +35,7 @@ from src.core.models.components import (
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
-from src.core.utils import Batch, soft_clip, detach_values, prefix_keys, bounded_sigmoid
+from src.core.utils import Batch, soft_clip, detach_values, prefix_keys, bounded_sigmoid, random_derange
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -231,14 +231,14 @@ class SIVAE(L.LightningModule):
     def k_way_cross_decode(self, q_z: torch.Tensor, method: str = "soft", k: int = 2):
         mu_zs, log_sigma_sq_zs = q_z.chunk(2, dim=-1)
         if method == "soft":
-            # weighted average along shift dimension
+            # weighted average across translated representations
             mu_z = (1 / k * mu_zs).sum(dim=0, keepdims=True)
             log_sigma_sq_z = (1 / k**2 * log_sigma_sq_zs.exp()).sum(dim=0, keepdims=True).log()
             zs = Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample().expand(k, -1, -1, -1)
         elif method == "hard":
-            # randomly shuffle samples along shift dimension
+            # randomly derange (permute w/o original) translated representations
             zs = Normal(mu_zs, (1/2 * log_sigma_sq_zs).exp()).rsample()
-            zs = zs[torch.randperm(k)]
+            zs = zs[random_derange(k)]
         return zs
 
     def encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
