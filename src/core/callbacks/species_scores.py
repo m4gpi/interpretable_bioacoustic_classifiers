@@ -141,6 +141,7 @@ class SpeciesScores(L.Callback):
 
     def _on_batch_end(self, outputs: List[Dict[str, Any]]) -> pd.DataFrame:
         y, y_probs, s, target_names = outputs["y"], outputs["y_probs"], outputs["s"], outputs["target_names"]
+        s = s.expand(y.size(1), -1).t().flatten
         label_df = pd.DataFrame(data=y.detach().cpu(), columns=target_names, index=s.detach().cpu().tolist())
         probs_df = pd.DataFrame(data=y_probs.detach().cpu(), columns=target_names, index=s.detach().cpu().tolist())
         return (

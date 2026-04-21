@@ -17,8 +17,11 @@ model:
   seed: ${seed}
 
 data:
-  root: ${paths.data_dir}/soundscape_vae_embeddings
   seed: ${seed}
+  root: ${paths.data_dir}/soundscape_vae_embeddings
+  model: vae
+  version: v0
+  chunked: true
 
 trainer:
   max_epochs: 2000

@@ -8,7 +8,7 @@ import torch
 
 from typing import Any, Callable, Dict, List, Tuple
 
-from src.core.utils import tree
+from src.core.utils import Batch
 
 __all__ = [
     "SoundscapeEmbeddings",
@@ -218,7 +218,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
 
     def batch_converter(self, batch: List[List[torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]]:
         xs, ys, idx = zip(*batch)
-        return (torch.stack(xs), torch.stack(ys), torch.tensor(idx))
+        return Batch(x=torch.stack(xs), y=torch.stack(ys), s=torch.tensor(idx))
 
     def _build_dataloader(self, dataset: torch.utils.data.Dataset, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
         return torch.utils.data.DataLoader(

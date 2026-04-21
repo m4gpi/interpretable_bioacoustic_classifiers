@@ -1,6 +1,6 @@
 _target_: src.core.models.species_detector.SpeciesDetector
 in_features: 128
-pool_method: prob_attn
+ensemble_size: 1
 l1_penalty: 0.1
 penalty_multiplier: 1
 beta: 0.0
@@ -11,8 +11,3 @@ attn_dim: 10
 attn_weight_decay: 1.e-2
 train_sample_size: 1
 eval_sample_size: 100
-key_per_target: true
-training_method: continuous
-mean_stage_epochs:
-attn_stage_epochs:
-final_stage_epochs:
