@@ -3,7 +3,7 @@
 # python main.py +experiment=vae
 
 defaults:
-  - override /model: vae
+  - override /algorithm: vae
   - override /trainer: gpu
   - override /logger: wandb
 
@@ -19,6 +19,7 @@ callbacks:
     filename: model_{step}
     every_n_train_steps: 60_000
     save_top_k: -1
+    save_last: true
   vae_metrics:
     _target_: src.core.callbacks.vae_metrics.VAEMetrics
     save_path: ${paths.results_dir}/metrics.parquet

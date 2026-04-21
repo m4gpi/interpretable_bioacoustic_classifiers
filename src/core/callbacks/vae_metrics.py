@@ -41,15 +41,15 @@ class VAEMetrics(L.Callback):
         dkl_norm = dkl.mean(dim=-1)
         dkl = dkl.sum(dim=-1)
         # frame-wise full elbo
-        nll = (1/2 * (2 * pl_module.sigma_recon.log() + ((x_framed - x_hat_framed) / pl_module.sigma_recon).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
+        nll = (1/2 * (2 * pl_module.vae.sigma_recon.log() + ((x_framed - x_hat_framed) / pl_module.vae.sigma_recon).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
         elbo = nll + dkl
         # calculate timestamps
-        frame_hop_samples = pl_module.fft_hop_length * pl_module.frame_window_length
+        frame_hop_samples = pl_module.vae.fft_hop_length * pl_module.vae.frame_window_length
         seq_start_samples = seq_idx * frame_hop_samples
-        frame_duration_samples = pl_module.fft_hop_length * pl_module.frame_window_length
+        frame_duration_samples = pl_module.vae.fft_hop_length * pl_module.vae.frame_window_length
         seq_end_samples = seq_start_samples + frame_duration_samples
-        seq_start_seconds = seq_start_samples / pl_module.sample_rate
-        seq_end_seconds = seq_end_samples / pl_module.sample_rate
+        seq_start_seconds = seq_start_samples / pl_module.vae.sample_rate
+        seq_end_seconds = seq_end_samples / pl_module.vae.sample_rate
         # set types
         ref_column_types = dict(
             file_i=int, timestep=int, dataloader_idx=int,
@@ -71,9 +71,9 @@ class VAEMetrics(L.Callback):
             ])),
             columns=column_types.keys(),
         ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
-        df["latent_dim"] = pl_module.latent_dim
-        df["model_name"] = pl_module.__class__.__name__
-        df["sigma_x"] = pl_module.sigma_x
+        df["latent_dim"] = pl_module.vae.latent_dim
+        df["model_name"] = pl_module.vae.__class__.__name__
+        df["sigma_x"] = pl_module.vae.sigma_x
         df["learning_rate"] = pl_module.learning_rate
         self.data.append(df)
 

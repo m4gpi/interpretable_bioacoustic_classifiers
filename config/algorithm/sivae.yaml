@@ -1,0 +1,11 @@
+defaults:
+  - /model: sivae
+
+_target_: src.core.algorithms.vae.VAE
+learning_rate: 4.e-5
+optimiser_cls: torch.optim.AdamW
+scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+scheduler_config:
+  T_max: 40_000
+  eta_min: 4.e-7
+

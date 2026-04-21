@@ -3,7 +3,7 @@
 # python main.py +experiment=sivae
 
 defaults:
-  - override /model: sivae
+  - override /algorithm: sivae
   - override /trainer: gpu
   - override /logger: wandb
 
@@ -16,9 +16,10 @@ trainer:
 callbacks:
   model_checkpoint:
     dirpath: ./checkpoints/sivae.pt:v1
-    filename: model
+    filename: model_{step}
     every_n_train_steps: 60_000
     save_top_k: -1
+    save_last: true
   vae_metrics:
     _target_: src.core.callbacks.vae_metrics.VAEMetrics
     save_path: ${paths.results_dir}/metrics.parquet

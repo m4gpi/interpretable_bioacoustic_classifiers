@@ -24,10 +24,3 @@ latent_dim: 128
 # tuning
 sigma_x: 0.2
 sigma_z_min: 0.0498
-# optimiser
-learning_rate: 4.e-5
-optimiser_cls: torch.optim.AdamW
-scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
-scheduler_config:
-  T_max: 40_000
-  eta_min: 4.e-7

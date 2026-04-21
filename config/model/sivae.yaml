@@ -1,4 +1,4 @@
-_target_: src.core.models.sivae.SIVAE
+_target_: src.core.models.sivae_alg.SIVAE
 # preprocessing
 sample_rate: 48000
 num_fft: 512
@@ -32,10 +32,3 @@ delta_sigma_max: 2.0
 delta_sigma_step_slope: 0.4
 delta_sigma_step_start: 0
 delta_sigma_step_end: 20_000
-# optimiser
-learning_rate: 4.e-5
-optimiser_cls: torch.optim.AdamW
-scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
-scheduler_config:
-  T_max: 40_000
-  eta_min: 4.e-7

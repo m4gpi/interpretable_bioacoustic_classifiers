@@ -40,7 +40,7 @@ class VAEEmbeddings(L.Callback):
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
-        embeddings_df = pl_module.embed(batch, batch_idx, dataloader_idx, frame_hop_length=self.frame_hop_length)
+        embeddings_df = pl_module.vae.embed(batch, batch_idx, dataloader_idx, frame_hop_length=self.frame_hop_length)
         labels_df = pd.DataFrame(data=batch.y.cpu().numpy(), columns=batch.metadata, index=batch.s.cpu().numpy())
         labels_df.index.name = "file_i"
         self.embeddings.append(embeddings_df)

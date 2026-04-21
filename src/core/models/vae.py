@@ -1,28 +1,12 @@
-import os
-import enum
-import functools
-import itertools
-import lightning as L
 import logging
-import math
 import numpy as np
 import pandas as pd
-import pathlib
 import torch
-import wandb
 
-from dataclasses import dataclass, field
-from hydra.utils import instantiate
-from numpy.typing import NDArray
+from dataclasses import dataclass
 from matplotlib import pyplot as plt
-from pathlib import Path
-from omegaconf import DictConfig
-from torch import Tensor, nn
-from torch.functional import F
 from torchvision.transforms import functional as T
-from torch.distributions.normal import Normal
-from torch.optim import Optimizer
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, List
 
 from src.core.models.components import (
     Activation,
@@ -33,10 +17,8 @@ from src.core.models.components import (
     init_mlp_content_decoder,
     init_alignment_encoder,
 )
-from src.core.utils import soft_clip
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
-from src.core.utils import detach_values, prefix_keys, try_or
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -44,7 +26,7 @@ log = logging.getLogger(__name__)
 __all__ = ["VAE"]
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
-class VAE(L.LightningModule):
+class VAE(torch.nn.Module):
     sample_rate: int = 48_000
     num_fft: int = 512
     fft_window_length: int = 512
@@ -71,28 +53,13 @@ class VAE(L.LightningModule):
     mlp_dropout_prob: float = 0.1
     mlp_reduction_factor: int = 4
     frame_padding_mode: str = "circular"
-    learning_rate: float = 4e-5
-    optimiser_cls: str = "torch.optim.AdamW"
-    optimiser_config: DictConfig | None = None
-    scheduler_cls: str | None = None
-    scheduler_config: DictConfig | None = None
-    scheduler_interval: str = "step"
-    scheduler_frequency: int = 1
-
-    def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
-        plt.switch_backend('agg')
-        log.info(f"Training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.fit(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
-        log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.test(self, dataloaders=data_module.predict_dataloader())
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
-        L.LightningModule.__init__(obj)
+        torch.nn.Module.__init__(obj)
         return obj
 
     def __post_init__(self):
-        self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.register_buffer("sigma_recon", torch.tensor(self.sigma_x, dtype=torch.float32))
         if self.sigma_z_min is not None:
@@ -102,42 +69,37 @@ class VAE(L.LightningModule):
         self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
         self.feature_decoder = init_cnn_feature_decoder(**self.cnn_decoder_params)
         self.content_decoder = init_mlp_content_decoder(**self.content_mlp_decoder_params)
-        self.strict_loading = False
-        self._reset_cache()
 
-    # ------------------------------- MODEL -------------------------------- #
-
-    def forward(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
+    def forward(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
         x = self.log_mel_spectrogram(x)
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)]).float()
         q_z, *_ = self.encode(x)
         mu_x, log_sigma_sq_x = q_z.chunk(2, dim=-1)
-        z = Normal(mu_x, (0.5 * log_sigma_sq_x).exp()).rsample()
+        z = torch.distributions.Normal(mu_x, (0.5 * log_sigma_sq_x).exp()).rsample()
         x_hat = self.decode(z).view(*x.size())
         x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_hop_length)
         x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_hop_length)
-        return dict(x=x, x_framed=x_framed, x_hat=x_hat, x_hat_framed=x_hat_framed, q_z=q_z, **kwargs)
+        return dict(x=x, x_framed=x_framed, x_hat=x_hat, x_hat_framed=x_hat_framed, q_z=q_z), x.size(0)
 
-    def predict(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
+    def predict(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
         return self.forward(x, *args, **kwargs)
 
     @torch.no_grad()
     def embed(
         self,
-        batch: Tuple[Tensor, Tensor, Tensor],
-        batch_idx: int,
+        x: torch.Tensor,
+        s: torch.Tensor,
         dataloader_idx: int = 0,
         frame_hop_length: float | None = None,
         **kwargs: Any
     ) -> pd.DataFrame:
         frame_hop_length = frame_hop_length or self.frame_window_length // 2
-        x, *_ = batch
         x = self.log_mel_spectrogram(x)
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
         # encode with a half-frame overlap
         q_z, *_ = self.encode(x, hop_length=frame_hop_length)
         bs, seq, *_ = q_z.size()
-        sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
+        sample_idx = s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
         seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
         dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
         # seq start accounts for hop
@@ -170,7 +132,7 @@ class VAE(L.LightningModule):
         ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
         return df
 
-    def encode(self, x: Tensor, hop_length: int | None = None) -> Tuple[Tensor]:
+    def encode(self, x: torch.Tensor, hop_length: int | None = None) -> Tuple[torch.Tensor]:
         for i, block in enumerate(self.feature_encoder):
             x = block(x)
         hop_length = (hop_length or self.frame_hop_length) // 2**(self.cnn_layers)
@@ -192,18 +154,18 @@ class VAE(L.LightningModule):
         return U
 
     @staticmethod
-    def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:
+    def frame(x: torch.Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> torch.Tensor:
         if hop_length != window_length:
             return frame(x, window_length=window_length, hop_length=hop_length) if x.size(-2) > window_length else x.unsqueeze(1)
         return x.view(x.size(0), x.size(1), x.size(2) // window_length, window_length, x.size(3)).transpose(1, 2)
 
     def loss(
         self,
-        x_framed: Tensor,
-        x_hat_framed: Tensor,
-        q_z: Tensor,
+        x_framed: torch.Tensor,
+        x_hat_framed: torch.Tensor,
+        q_z: torch.Tensor,
         **kwargs: Any
-    ) -> Dict[str, Tensor]:
+    ) -> Dict[str, torch.Tensor]:
         outputs = dict()
         losses = []
         # batch/sequence mean frame-wise sum reconstruction loss
@@ -222,87 +184,11 @@ class VAE(L.LightningModule):
         outputs |= dict(loss=sum(losses))
         return outputs
 
-    # ------------------------------- LIGHTNING TRAINING -------------------------------- #
-
-    def step(
-        self,
-        batch: Tuple[Tensor, Tensor, Tensor],
-        batch_idx: int,
-        stage: str,
-        **kwargs: Any,
-    ) -> Dict[str, Tensor]:
-        step_outputs = self(**batch, **kwargs)
-        loss_outputs = self.loss(**step_outputs)
-        step_outputs = detach_values(step_outputs)
-        metrics = self.metrics(**step_outputs)
-        self.log_dict(prefix_keys(loss_outputs, stage), batch_size=batch.s.size(0), prog_bar=True, logger=False)
-        if self.logger is not None and getattr(self.logger, "experiment") is not None:
-            self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
-        return {**loss_outputs, **step_outputs}
-
-    def training_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
-        outputs = self.step(batch, batch_idx, "train")
-        self.training_step_outputs.append(outputs)
-        return outputs
-
-    @torch.no_grad()
-    def validation_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> Dict[str, Tensor]:
-        outputs = self.step(batch, batch_idx, "val")
-        self.validation_step_outputs.append(outputs)
-        return outputs
-
-    @torch.no_grad()
-    def test_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
-        return self.predict(**batch, **kwargs)
-
-    @torch.no_grad()
-    def predict_step(self, batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, Tensor]:
-        pass
-
-    def on_train_batch_end(self, *args: Any, **kwargs: Any) -> None:
-        self.training_step_outputs.clear()
-
-    def on_validation_batch_end(self, outputs: Dict[str, Tensor], batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> None:
-        # if batch_idx < 4 and len(self.validation_step_outputs):
-        #     step_outputs = self.validation_step_outputs[0]
-        #     specs = step_outputs["x"].squeeze().cpu().numpy()
-        #     recons = step_outputs["x_hat"].squeeze().cpu().numpy()
-        #     num_samples = min(6, step_outputs["x"].size(0))
-        #     for i in range(num_samples):
-        #         fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), width_ratios=[0.97, 0.03], constrained_layout=True)
-        #         mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
-        #         mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
-        #         axes[0, 0].set_title("Original Mel Spectrogram")
-        #         axes[1, 0].set_title("Reconstructed Mel Spectrogram")
-        #         fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
-        #         fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
-        #         self.logger.experiment.log({ f"val/spectrogram": wandb.Image(fig) })
-        #         plt.close(fig)
-        self.validation_step_outputs.clear()
-
-    @torch.no_grad()
-    def on_test_batch_end(self, *args: Any, **kwargs: Any) -> None:
-        self.test_step_outputs.clear()
-
-    def configure_optimizers(self) -> Optimizer:
-        optimiser_config = DictConfig(dict(_target_=self.optimiser_cls, **(self.optimiser_config or {})))
-        optimiser = instantiate(optimiser_config, params=self.parameters(), lr=self.learning_rate)
-        if self.scheduler_cls is not None:
-            scheduler_config = DictConfig(dict(_target_=self.scheduler_cls, **(self.scheduler_config or {})))
-            scheduler = instantiate(scheduler_config, optimizer=optimiser)
-            return [optimiser], [dict(
-                scheduler=scheduler,
-                interval=self.scheduler_interval,
-                frequency=self.scheduler_frequency
-            )]
-        return optimiser
-
-    @torch.no_grad()
     def metrics(
         self,
-        x_framed: Tensor,
-        x_hat_framed: Tensor,
-        q_z: Tensor,
+        x_framed: torch.Tensor,
+        x_hat_framed: torch.Tensor,
+        q_z: torch.Tensor,
         **kwargs: Any
     ) -> Dict[str, Any]:
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
@@ -315,18 +201,32 @@ class VAE(L.LightningModule):
         return dict(
             mae=mae,
             mse=mse,
-            mu_z=wandb.Histogram(np_histogram=mu_hist),
-            sigma_z=wandb.Histogram(np_histogram=sigma_hist),
+            mu_z_hist=mu_hist,
+            sigma_z_hist=sigma_hist,
             dkl_norm=dkl_norm,
         )
 
-    def _reset_cache(self):
-        self.training_step_outputs = []
-        self.validation_step_outputs = []
-        self.test_step_outputs = []
-        self.predict_step_outputs = []
-
-    # ------------------------------- GROUPED PROPS -------------------------------- #
+    def tracking_figures(
+        self,
+        x: torch.Tensor,
+        x_hat: torch.Tensor,
+        figsize: Tuple[int, int] = (10, 6),
+        **kwargs: Any,
+    ) -> List:
+        figures = []
+        num_samples = min(6, x.size(0))
+        specs = x.squeeze().cpu().numpy()
+        recons = x_hat.squeeze().cpu().numpy()
+        for i in range(num_samples):
+            fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize, width_ratios=[0.97, 0.03], constrained_layout=True)
+            mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
+            mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
+            axes[0, 0].set_title("Original")
+            axes[1, 0].set_title("Reconstruction")
+            fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+            fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+            figures.append(("spectrogram", fig))
+        return figures
 
     @property
     def cnn_block_sizes(self):

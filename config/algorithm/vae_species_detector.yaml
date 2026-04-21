@@ -1,0 +1,7 @@
+defaults:
+  - /model: vae
+  - /clf: species_detector
+
+_target_: src.core.algorithms.vae_species_detector.VAESpeciesDetector
+learning_rate: 4.e-5
+optimiser_cls: torch.optim.AdamW
