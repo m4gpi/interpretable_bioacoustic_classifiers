@@ -233,8 +233,8 @@ class VAE(L.LightningModule):
         loss_outputs = self.loss(**step_outputs)
         step_outputs = detach_values(step_outputs)
         metrics = self.metrics(**step_outputs)
-        self.log_dict(prefix_keys(loss_outputs, stage), prog_bar=True, logger=False)
-        if self.logger and logger.get("experiment") is not None:
+        self.log_dict(prefix_keys(loss_outputs, stage), batch_size=batch.s.size(0), prog_bar=True, logger=False)
+        if self.logger is not None and getattr(self.logger, "experiment") is not None:
             self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
         return {**loss_outputs, **step_outputs}
 
