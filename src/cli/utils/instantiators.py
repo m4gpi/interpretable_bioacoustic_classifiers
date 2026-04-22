@@ -23,7 +23,7 @@ def instantiate_callbacks(callbacks_cfg: DictConfig, **kwargs: Any) -> List[Call
         return callbacks
 
     for _, cb_conf in callbacks_cfg.items():
-        if "_target_" in cb_conf:
+        if cb_conf is not None and "_target_" in cb_conf:
             log.info(f"Instantiating callback <{cb_conf['_target_']}>")
             callbacks.append(hydra.utils.instantiate(cb_conf, **kwargs))
 
@@ -42,7 +42,7 @@ def instantiate_loggers(logger_cfg: DictConfig, **kwargs: Any) -> List[Logger]:
         return logger
 
     for _, lg_conf in logger_cfg.items():
-        if "_target_" in lg_conf:
+        if lg_conf is not None and "_target_" in lg_conf:
             log.info(f"Instantiating logger <{lg_conf['_target_']}>")
             logger.append(hydra.utils.instantiate(lg_conf, **kwargs))
 
@@ -61,7 +61,7 @@ def instantiate_transforms(transforms_cfg: DictConfig, **kwargs: Any) -> T.Compo
         return None
 
     for key, tf_conf in transforms_cfg.items():
-        if "_target_" in tf_conf:
+        if tf_conf is not None and "_target_" in tf_conf:
             log.info(f"Instantiating transform <{tf_conf['_target_']}>")
             transforms.append(hydra.utils.instantiate(tf_conf, **kwargs))
 

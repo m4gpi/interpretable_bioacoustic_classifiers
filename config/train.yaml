@@ -13,5 +13,6 @@ defaults:
 
 task_name: train
 tags: ["dev"]
+resume: false
 ckpt_path: null
 seed: 42
