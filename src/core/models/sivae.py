@@ -91,7 +91,17 @@ class SIVAE(L.LightningModule):
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         plt.switch_backend('agg')
         log.info(f"Training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.fit(self, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
+        checkpoint_path, resume = config.get("ckpt_path"), config.get("resume")
+        if checkpoint_path is not None and resume:
+            log.info(f"Resuming from {checkpoint_path}")
+            trainer.fit(self, datamodule=data_module, ckpt_path=checkpoint_path)
+        elif config.get("ckpt_path"):
+            log.info(f"Loading state dict from {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path)
+            self.load_state_dict(checkpoint["state_dict"], strict=False)
+            trainer.fit(self, datamodule=data_module)
+        else:
+            trainer.fit(self, datamodule=data_module)
         log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.test(self, dataloaders=data_module.predict_dataloader())
 
@@ -124,20 +134,14 @@ class SIVAE(L.LightningModule):
         # ------ shift samples------ #
         sigma_delta = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.sigma_delta_params))
         x_framed = x.view(x.size(0), -1, 1, self.frame_window_length, x.size(-1))
-        x_trans = torch.stack([
-            translation(
-                x_framed.flatten(end_dim=1),
-                torch.randn(x_framed.size(0), x_framed.size(1), 1, 1, 1, device=x.device).flatten(end_dim=1) * sigma_delta,
-                padding_mode="circular",
-            ).unflatten(0, (x_framed.size(0), x_framed.size(1)))
-            for _ in range(self.k - 1)
-        ], dim=0) # (k-1, bs * seq, 1, fr, fq)
+        delta = torch.randn(self.k - 1, x_framed.size(0), x_framed.size(1), 1, 1, 1, device=x.device) * sigma_delta
+        x_trans = self.k_way_translated_frames(x_framed, delta * sigma_delta, self.k - 1) # (k-1, bs, seq, 1, fr, fq)
 
         if not self.contiguous_frames:
             x = x_framed.flatten(end_dim=1)
 
         # ------ encode & reparam ------ #
-        q_z, delta = self.encode(x) # (bs, seq, ld) or (bs * seq, 1, ld)
+        q_z, delta = self.encode(x) # (bs, seq, ld)
         q_z_trans, delta_trans = self.encode(x_trans.flatten(end_dim=2)) # (k-1 * bs * seq, 1, ld)
         q_z_trans = q_z_trans.view(-1, *q_z.size()) # (k-1, bs, seq, ld)
         delta_trans = delta_trans.view(-1, *delta.size()) # (k-1, bs, seq, 1)
@@ -151,8 +155,8 @@ class SIVAE(L.LightningModule):
         U_hat, U_hat_trans = U_hat[0], U_hat[1:]
         x_hat = self.cnn_decode(U_hat.flatten(end_dim=1), delta) # (bs, 1, fr * seq, fq)
         x_hat_framed = x_hat.view(*x_framed.size())
-        x_hat_trans = self.cnn_decode(U_hat_trans.flatten(end_dim=2), delta_trans.flatten(end_dim=2).unsqueeze(1)) # (bs * seq, 1, fr, fq)
-        x_hat_trans = x_hat_trans.view(x_trans.size()) # (k, bs, seq, 1, fr, fq)
+        x_hat_trans = self.cnn_decode(U_hat_trans.flatten(end_dim=2), delta_trans.flatten(end_dim=2).unsqueeze(1)) # (k-1 * bs * seq, 1, fr, fq)
+        x_hat_trans = x_hat_trans.view(x_trans.size()) # (k-1, bs, seq, 1, fr, fq)
 
         x_framed_stacked = torch.cat([x_framed.unsqueeze(0), x_trans], dim=0)
         x_hat_framed_stacked = torch.cat([x_hat_framed.unsqueeze(0), x_hat_trans], dim=0)
@@ -231,6 +235,17 @@ class SIVAE(L.LightningModule):
         ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
         return df
 
+    def k_way_translated_frames(self, x_framed: torch.Tensor, dx: torch.Tensor, k: int, mode: str = "bilinear") -> torch.Tensor:
+        return torch.stack([
+            translation(
+                x_framed.flatten(end_dim=1).transpose(-1, -2),
+                dx[i].flatten(end_dim=1),
+                mode=mode,
+                padding_mode="circular",
+            ).transpose(-1, -2).unflatten(0, (x_framed.size(0), x_framed.size(1)))
+            for i in range(k)
+        ], dim=0)
+
     def k_way_cross_decode(self, q_z: torch.Tensor, method: str = "soft", k: int = 2):
         mu_zs, log_sigma_sq_zs = q_z.chunk(2, dim=-1)
         if method == "soft":
@@ -280,11 +295,14 @@ class SIVAE(L.LightningModule):
     def cnn_decode(self, U: Tensor, delta: Tensor) -> Tensor:
         for i, block in enumerate(self.feature_decoder):
             if i == self.translation_layer_idx:
-                U = translation(U, delta.view(delta.size(0) * delta.size(1), 1, 1, 1), padding_mode="circular")
+                U = self.translate_cnn_features(U, delta.view(delta.size(0) * delta.size(1), 1, 1, 1))
             if i == len(self.feature_decoder) - 1:
                 U = U.unflatten(0, (delta.size(0), delta.size(1))).transpose(1, 2).flatten(start_dim=2, end_dim=3)
             U = block(U)
         return U
+
+    def translate_cnn_features(self, U: torch.Tensor, delta: torch.Tensor, mode: str = "bilinear") -> torch.Tensor:
+        return translation(U.transpose(-1, -2), delta, padding_mode="circular", mode=mode).transpose(-1, -2)
 
     @staticmethod
     def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:
