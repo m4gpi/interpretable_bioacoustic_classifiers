@@ -524,6 +524,7 @@ class SIVAE(L.LightningModule):
             flatten_start_dim=1,
             activation_fn=Activation[self.mlp_activation],
             out_features=1,
+            target_std=self.delta_sigma_min,
         )
 
     @property

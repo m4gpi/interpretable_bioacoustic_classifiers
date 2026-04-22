@@ -186,11 +186,16 @@ def init_alignment_encoder(
     activation_fn: Activation,
     mlp_reduction_factor: int,
     out_features: int,
+    target_std: float = 1.0,
 ) -> nn.Module:
+    output_layer = nn.Linear(in_features=in_features // mlp_reduction_factor, out_features=out_features)
+    nn.init.xavier_normal_(output_layer.weight, gain=target_std)
+    output_layer.bias.data.zero_()
     return nn.Sequential(
         nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=cnn_kernel_size),
         nn.Flatten(start_dim=flatten_start_dim),
         nn.Linear(in_features=in_features, out_features=in_features // mlp_reduction_factor),
+        nn.LayerNorm(in_features // mlp_reduction_factor),
         activation_fn.init(),
-        nn.Linear(in_features=in_features // mlp_reduction_factor, out_features=out_features)
+        output_layer,
     )
