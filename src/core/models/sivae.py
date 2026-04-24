@@ -30,7 +30,6 @@ from src.core.models.components import (
     init_mlp_content_encoder,
     init_mlp_content_decoder,
     init_alignment_encoder,
-    init_alignment_encoder,
 )
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
@@ -206,15 +205,16 @@ class SIVAE(L.LightningModule):
         self.log_mel_spectrogram = LogMelSpectrogram(**self.log_mel_spectrogram_params)
         self.feature_encoder = init_cnn_feature_encoder(**self.cnn_encoder_params)
         self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
-        self.alignment_encoder = AlignmentEncoder(
-            x_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
-            x_freq_dim=self.num_mel_bins // 2**(self.cnn_layers-1),
-            x_time_dim=self.frame_window_length // 2**self.cnn_layers,
-            u_channels=self.cnn_block_sizes[1] * self.cnn_block_width,
-            u_freq_dim=self.num_mel_bins // 2**1,
-            u_time_dim=self.frame_window_length // 2**2,
-            proj_dim=64,
-        )
+        self.alignment_encoder = init_alignment_encoder(**self.alignment_encoder_params)
+        # self.alignment_encoder = AlignmentEncoder(
+        #     x_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
+        #     x_freq_dim=self.num_mel_bins // 2**(self.cnn_layers-1),
+        #     x_time_dim=self.frame_window_length // 2**self.cnn_layers,
+        #     u_channels=self.cnn_block_sizes[1] * self.cnn_block_width,
+        #     u_freq_dim=self.num_mel_bins // 2**1,
+        #     u_time_dim=self.frame_window_length // 2**2,
+        #     proj_dim=64,
+        # )
         self.feature_decoder = init_cnn_feature_decoder(**self.cnn_decoder_params)
         self.content_decoder = init_mlp_content_decoder(**self.content_mlp_decoder_params)
         self.strict_loading = False
@@ -235,37 +235,58 @@ class SIVAE(L.LightningModule):
         sigma_delta = torch.tensor(sigma_schedule(self.trainer.global_step, **sigma_delta_params), device=x.device, dtype=torch.float32)
         # sigma_delta = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.sigma_delta_params))
         x_framed = x.view(x.size(0), -1, 1, self.frame_window_length, x.size(-1))
-        delta = torch.randn(self.k - 1, x_framed.size(0), x_framed.size(1), 1, 1, 1, device=x.device) * sigma_delta
-        x_trans = self.k_way_translated_frames(x_framed, delta * sigma_delta, self.k - 1) # (k-1, bs, seq, 1, fr, fq)
-
+        delta = torch.randn(x_framed.size(0), x_framed.size(1), 1, 1, 1, device=x.device) * sigma_delta
+        x_trans = translation(x_framed.flatten(end_dim=1), delta * sigma_delta).unflatten(0, (x_framed.size(0), x_framed.size(1)))
+        # x_trans = self.k_way_translated_frames(x_framed, delta * sigma_delta, self.k - 1) # (k-1, bs, seq, 1, fr, fq)
         if not self.contiguous_frames:
             x = x_framed.flatten(end_dim=1)
 
-        # ------ encode & reparam ------ #
+        # ------ encode, reparam, cross-decode ------ #
         q_z, delta_hat = self.encode(x) # (bs, seq, ld)
-        q_z_trans, delta_hat_trans = self.encode(x_trans.flatten(end_dim=2)) # (k-1 * bs * seq, 1, ld)
-        q_z_trans = q_z_trans.view(-1, *q_z.size()) # (k-1, bs, seq, ld)
-        delta_hat_trans = delta_hat_trans.view(-1, *delta_hat.size()) # (k-1, bs, seq, 1)
-        q_z_stacked = torch.cat([q_z.unsqueeze(0), q_z_trans], dim=0) # (k, bs, seq, ld)
-        delta_hat_stacked = torch.cat([delta_hat.unsqueeze(0), delta_hat_trans], dim=0) # (k, bs, seq, 1)
-        z_stacked = self.k_way_cross_decode(q_z_stacked, method=self.cross_decode_method, k=self.k) # (k, bs, seq, ld)
-
-        # ------ decode & stack ------ #
-        U_hat = self.mlp_decode(z_stacked.flatten(end_dim=2))
-        U_hat = U_hat.unflatten(dim=0, sizes=(z_stacked.size(0), z_stacked.size(1), z_stacked.size(2))) # (k, bs, seq, ch, fr, fq)
-        U_hat, U_hat_trans = U_hat[0], U_hat[1:]
-        x_hat = self.cnn_decode(U_hat.flatten(end_dim=1), delta_hat) # (bs, 1, fr * seq, fq)
+        q_z_trans, delta_hat_trans = self.encode(x_trans.flatten(end_dim=1)) # (bs * seq, 1, ld)
+        q_z_trans = q_z_trans.view(*q_z.size()) # (k-1, bs, seq, ld)
+        delta_hat_trans = delta_hat_trans.view(*delta_hat.size()) # (k-1, bs, seq, 1)
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        mu_z_trans, log_sigma_sq_z_trans = q_z_trans.chunk(2, dim=-1)
+        mu_z = 1/2 * mu_z + 1/2 * mu_z_trans
+        log_sigma_sq_z = ((log_sigma_sq_z.exp() + log_sigma_sq_z.exp()) / 2**2).log()
+        z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()  # (bs, seq, ld)
+        q_z_avg = torch.stack([mu_z, log_sigma_sq_z], dim=-1)
+        q_z_stacked = torch.stack([q_z, q_z_trans], dim=1)
+        U_hat = self.mlp_decode(torch.stack([z, z], dim=1).flatten(end_dim=2))
+        U_hat, U_hat_trans = U_hat.unflatten(0, (z.size(0), 2, z.size(1))).chunk(2, dim=1)
+        x_hat = self.cnn_decode(U_hat_trans.flatten(end_dim=2), delta_hat) # (bs, 1, fr * seq, fq)
         x_hat_framed = x_hat.view(*x_framed.size())
-        x_hat_trans = self.cnn_decode(U_hat_trans.flatten(end_dim=2), delta_hat_trans.flatten(end_dim=2).unsqueeze(1)) # (k-1 * bs * seq, 1, fr, fq)
-        x_hat_trans = x_hat_trans.view(x_trans.size()) # (k-1, bs, seq, 1, fr, fq)
+        x_hat_trans = self.cnn_decode(U_hat.flatten(end_dim=2), delta_hat_trans.view(-1, 1, 1))
+        x_hat_trans = x_hat_trans.view(x_trans.size())
 
-        x_framed_stacked = torch.cat([x_framed.unsqueeze(0), x_trans], dim=0)
-        x_hat_framed_stacked = torch.cat([x_hat_framed.unsqueeze(0), x_hat_trans], dim=0)
+        x_framed_stacked = torch.stack([x_framed, x_trans], dim=1)
+        x_hat_framed_stacked = torch.stack([x_hat_framed, x_hat_trans], dim=1)
+        delta_hat_stacked = torch.stack([delta_hat, delta_hat_trans], dim=1)
+
+        # q_z_trans, delta_hat_trans = self.encode(x_trans.flatten(end_dim=2)) # (k-1 * bs * seq, 1, ld)
+        # q_z_trans = q_z_trans.view(-1, *q_z.size()) # (k-1, bs, seq, ld)
+        # delta_hat_trans = delta_hat_trans.view(-1, *delta_hat.size()) # (k-1, bs, seq, 1)
+        # q_z_stacked = torch.cat([q_z.unsqueeze(0), q_z_trans], dim=0) # (k, bs, seq, ld)
+        # delta_hat_stacked = torch.cat([delta_hat.unsqueeze(0), delta_hat_trans], dim=0) # (k, bs, seq, 1)
+        # z_stacked = self.k_way_cross_decode(q_z_stacked, method=self.cross_decode_method, k=self.k) # (k, bs, seq, ld)
+
+        # # ------ decode & stack ------ #
+        # U_hat = self.mlp_decode(z_stacked.flatten(end_dim=2))
+        # U_hat = U_hat.unflatten(dim=0, sizes=(z_stacked.size(0), z_stacked.size(1), z_stacked.size(2))) # (k, bs, seq, ch, fr, fq)
+        # U_hat, U_hat_trans = U_hat[0], U_hat[1:]
+        # x_hat = self.cnn_decode(U_hat.flatten(end_dim=1), delta_hat) # (bs, 1, fr * seq, fq)
+        # x_hat_framed = x_hat.view(*x_framed.size())
+        # x_hat_trans = self.cnn_decode(U_hat_trans.flatten(end_dim=2), delta_hat_trans.flatten(end_dim=2).unsqueeze(1)) # (k-1 * bs * seq, 1, fr, fq)
+        # x_hat_trans = x_hat_trans.view(x_trans.size()) # (k-1, bs, seq, 1, fr, fq)
+
+        # x_framed_stacked = torch.cat([x_framed.unsqueeze(0), x_trans], dim=0)
+        # x_hat_framed_stacked = torch.cat([x_hat_framed.unsqueeze(0), x_hat_trans], dim=0)
 
         return dict(
             x=x, x_framed=x_framed, x_framed_stacked=x_framed_stacked,
             x_hat=x_hat, x_hat_framed=x_hat_trans, x_hat_framed_stacked=x_hat_framed_stacked,
-            q_z_stacked=q_z_stacked, q_z=q_z, q_z_trans=q_z_trans,
+            q_z_avg=q_z_avg, q_z_stacked=q_z_stacked, q_z=q_z, q_z_trans=q_z_trans,
             # u_attn=u_attn, u_attn_trans=u_attn_trans,
             # x_attn=x_attn, x_attn_trans=x_attn_trans,
             delta=delta, delta_hat_stacked=delta_hat_stacked, delta_hat_trans=delta_hat_trans, delta_hat=delta_hat,
@@ -367,7 +388,7 @@ class SIVAE(L.LightningModule):
         hop_length = (hop_length or self.frame_hop_length) // 2**(self.cnn_layers)
         u = self.frame(u, window_length=self.frame_window_length // 2**2, hop_length=self.frame_window_length // 2**2, padding_mode=self.frame_padding_mode)
         x = self.frame(x, window_length=self.latent_window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
-        delta = self.alignment_encoder(x, u) #, t=self.trainer.global_step, t0=5000)
+        delta = self.alignment_encode(x)
         q_z = self.content_encode(x, encoder=self.content_encoder)
         if self.sigma_z_min is not None:
             mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
@@ -382,9 +403,13 @@ class SIVAE(L.LightningModule):
             U.append(x)
         return x, U[1]
 
-    def content_encode(self, x: Tensor, encoder: torch.nn.Module) -> Tuple[Tensor, Tensor]:
+    def content_encode(self, x: Tensor, encoder: torch.nn.Module) -> Tensor:
         q_z = encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         return q_z
+
+    def alignment_encode(self, x: Tensor) -> Tensor:
+        delta = self.alignment_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
+        return delta
 
     def decode(self, z: Tensor, delta: Tensor | None = None) -> Tensor:
         x = self.mlp_decode(z.flatten(end_dim=1))
@@ -396,7 +421,7 @@ class SIVAE(L.LightningModule):
 
     def cnn_decode(self, U: Tensor, delta: Tensor) -> Tensor:
         for i, block in enumerate(self.feature_decoder):
-            if i == self.translation_layer_idx:
+            if i == len(self.feature_decoder) - 2:
                 U = self.translate_cnn_features(U, delta.view(delta.size(0) * delta.size(1), 1, 1, 1))
             if i == len(self.feature_decoder) - 1:
                 U = U.unflatten(0, (delta.size(0), delta.size(1))).transpose(1, 2).flatten(start_dim=2, end_dim=3)
@@ -419,6 +444,7 @@ class SIVAE(L.LightningModule):
         x_framed_stacked: Tensor,
         x_hat_framed_stacked: Tensor,
         q_z_stacked: torch.Tensor,
+        q_z_avg: torch.Tensor,
         delta_hat_stacked: torch.Tensor,
         sigma_delta: torch.Tensor,
         **kwargs: Any,
@@ -433,11 +459,13 @@ class SIVAE(L.LightningModule):
         losses.append(nll)
         outputs |= dict(log_likelihood_x=-nll.detach().mean())
         # batch/sequence mean frame-wise shift loss
-        nll_delta = (1/2 * (2 * sigma_delta.log() + (delta_hat_stacked / sigma_delta).pow(2))).mean()
+        delta_sigma_sq= sigma_delta.pow(2)
+        nll_delta = (1/2 * (delta_sigma_sq.log() + (delta_hat_stacked.pow(2) / delta_sigma_sq)))
+        nll_delta = nll_delta.mean()
         losses.append(nll_delta)
         outputs |= dict(log_likelihood_delta=-nll_delta.detach(), sigma_delta=sigma_delta)
         # batch/sequence mean frame-wise sum standard normal kl
-        mu, log_sigma_sq = q_z_stacked.chunk(2, dim=-1)
+        mu, log_sigma_sq = q_z_avg.chunk(2, dim=-1)
         dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp())).sum(dim=-1).mean()
         losses.append(dkl)
         outputs |= dict(dkl=dkl.detach())
@@ -514,9 +542,9 @@ class SIVAE(L.LightningModule):
                 self.logger.experiment.log({f"{stage}/spectrogram": wandb.Image(fig)})
                 plt.close(fig)
         # plot kth translated frames
-        for k in range(self.k):
-            specs = step_outputs["x_framed_stacked"][k].squeeze().cpu().numpy()
-            recons = step_outputs["x_hat_framed_stacked"][k].squeeze().cpu().numpy()
+        for k in range(2):
+            specs = step_outputs["x_framed_stacked"][:, k].squeeze().cpu().numpy()
+            recons = step_outputs["x_hat_framed_stacked"][:, k].squeeze().cpu().numpy()
             num_frames = 6
             for i in range(num_samples):
                 fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=(10, 6), width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True)
@@ -547,6 +575,8 @@ class SIVAE(L.LightningModule):
         self,
         x_framed_stacked: Tensor,
         x_hat_framed_stacked: Tensor,
+        q_z: torch.Tensor,
+        q_z_trans: torch.Tensor,
         q_z_stacked: Tensor,
         delta: torch.Tensor,
         delta_hat_stacked: Tensor,
@@ -560,6 +590,11 @@ class SIVAE(L.LightningModule):
         sigma_z = (0.5 * log_sigma_sq_z).exp()
         mu_hist = np.histogram(mu_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
         sigma_hist = np.histogram(sigma_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
+
+        (mu_p, log_sigma_sq_p), (mu_q, log_sigma_sq_q), (mu_m, log_sigma_sq_m) = q_z.chunk(2, dim=-1), q_z_trans.chunk(2, dim=-1), q_z_avg.chunk(2, dim=-1)
+        dkl_left = (-1/2 * (1 + log_sigma_sq_p - log_sigma_sq_m - (log_sigma_sq_p.exp() + (mu_p - mu_m).pow(2)) / log_sigma_sq_m.exp())).sum(dim=-1)
+        dkl_right = (-1/2 * (1 + log_sigma_sq_q - log_sigma_sq_m - (log_sigma_sq_q.exp() + (mu_q - mu_m).pow(2)) / log_sigma_sq_m.exp())).sum(dim=-1)
+        jsd = (1/2 * dkl_left + 1/2 * dkl_right).mean()
         delta_hat_mean = delta_hat_stacked.mean().cpu().numpy()
         delta_hat_var = delta_hat_stacked.var().cpu().numpy()
         delta_hat_seq_var = delta_hat_stacked.var(dim=2).mean().cpu().numpy()
@@ -579,6 +614,7 @@ class SIVAE(L.LightningModule):
             mse=mse,
             mu_z=wandb.Histogram(np_histogram=mu_hist),
             sigma_z=wandb.Histogram(np_histogram=sigma_hist),
+            jsd=jsd,
             delta_hat_hist=wandb.Histogram(np_histogram=delta_hat_hist),
             # u_entropy=u_entropy_mean,
             # u_entropy_hist=wandb.Histogram(np_histogram=u_entropy_hist),
@@ -640,7 +676,7 @@ class SIVAE(L.LightningModule):
         )
 
     @property
-    def alignment_mlp_params(self):
+    def alignment_encoder_params(self):
         return dict(
             in_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
             out_channels=self.cnn_block_sizes[-1] * self.cnn_block_width // 4,
