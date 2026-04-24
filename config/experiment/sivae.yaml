@@ -10,15 +10,22 @@ defaults:
 trainer:
   max_steps: 180_000
   max_epochs: -1
-  log_every_n_steps: 100
+  log_every_n_steps: 1000
   val_check_interval: 2500
 
 callbacks:
-  model_checkpoint:
+  primary_model_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
     dirpath: ./checkpoints/sivae.pt:v1
-    filename: model
+    filename: '{step}'
     every_n_train_steps: 60_000
     save_top_k: -1
+  secondary_model_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ./checkpoints/sivae.pt:v1/intervals
+    filename: '{step}'
+    every_n_train_steps: 5_000
+    save_top_k: 1
   vae_metrics:
     _target_: src.core.callbacks.vae_metrics.VAEMetrics
     save_path: ${paths.results_dir}/metrics.parquet

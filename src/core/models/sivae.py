@@ -34,7 +34,7 @@ from src.core.models.components import (
 )
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
-from src.core.transforms.translation import translation
+from src.core.transforms.translation import translation, circular_boundary
 from src.core.utils import Batch, soft_clip, detach_values, prefix_keys, bounded_sigmoid, random_derange
 
 logging.basicConfig(level=logging.INFO)
@@ -42,39 +42,79 @@ log = logging.getLogger(__name__)
 
 __all__ = ["SIVAE"]
 
-class ShiftHead(nn.Module):
-    def __init__(self, u_channels=64, u_feat_dim=128, x_channels=512, d=16):
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+class TimeFrequencyPooling(nn.Module):
+    def __init__(
+        self,
+        channels: int = 64,
+        freq_dim: int = 32,
+    ) -> None:
         super().__init__()
-        self.u_proj = nn.Linear(u_feat_dim, d)
-        self.x_proj = nn.Linear(x_channels, d)
+        self.conv_freq = torch.nn.Conv2d(channels, channels, kernel_size=(1, freq_dim))
+        self.attn_proj = torch.nn.Linear(channels, 1)
+
+    def forward(self, x: Tensor) -> Tensor:
+        # frequency pooling by convolution
+        x = self.conv_freq(x).squeeze(-1)
+        # intra-frame time-step attention using channels
+        logits = self.attn_proj(x.transpose(-1, -2)).squeeze(-1)
+        attn = torch.softmax(logits, dim=-1)
+        x = (x * attn.unsqueeze(1)).sum(dim=-1)
+        return x, attn
+
+class AlignmentEncoder(nn.Module):
+    def __init__(
+        self,
+        proj_dim: int = 16,
+        u_channels: int = 64,
+        x_channels: int = 512,
+        u_freq_dim: int = 32,
+        x_freq_dim: int = 4,
+    ) -> None:
+        super().__init__()
+        # self.u_pool = TimeFrequencyPooling(channels=u_channels, freq_dim=u_freq_dim)
+        # self.u_proj = nn.Linear(u_channels, proj_dim)
+        # self.ln_u = nn.LayerNorm(proj_dim)
+
+        # self.x_attn_proj = torch.nn.Linear(x_channels, 1)
+        self.x_conv_freq = torch.nn.Conv2d(x_channels, x_channels, kernel_size=(1, x_freq_dim))
+        self.x_proj = nn.Linear(x_channels * 6, proj_dim)
+        self.ln_x = nn.LayerNorm(proj_dim)
+
+        # self.direct = nn.Linear(2 * proj_dim, 1)
         self.mlp = nn.Sequential(
-            nn.Linear(2 * d, 128),
+            nn.Linear(proj_dim, 128),
             nn.GELU(),
             nn.Linear(128, 64),
             nn.GELU(),
             nn.Linear(64, 1)
         )
-        self.ln_u = nn.LayerNorm(d)
-        self.ln_x = nn.LayerNorm(d)
-        self.direct = nn.Linear(2 * d, 1)
 
-    def forward(self, u: torch.Tensor, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, u: torch.Tensor):
         bs, seq, ch1, fr1, fq1 = u.shape
         _, _, ch2, fr2, fq2 = x.shape
-        # time & freq pooling independently for early shift-sensitive features
-        u_time = u.mean(dim=-1)  # (bs, seq, ch1, fr1)
-        u_freq = u.mean(dim=-2)  # (bs, seq, ch1, fq)
-        u_time = u_time.mean(dim=-1)  # (bs, seq, ch1)
-        u_freq = u_freq.mean(dim=-1)  # (bs, seq, ch1)
-        u_feat = torch.cat([u_time, u_freq], dim=-1)  # (bs, seq, 2 * ch1)
-        u_feat = self.ln_u(self.u_proj(u_feat)) # (bs, seq, d)
-        u_feat = u_feat.view(bs, seq, -1)
-        # time & frequency pooling for deep shift invariant features
-        x_feat = x.mean(dim=(-2, -1))  # (bs, seq, ch2)
-        x_feat = self.ln_x(self.x_proj(x_feat)) # (bs, seq, d)
-        # both parametrise the shift
-        h = torch.cat([u_feat, x_feat], dim=-1)  # (bs, seq, 2 * d)
-        return self.mlp(h) + self.direct(h) # (bs, seq, 1)
+        # pool time and frequency and project down
+        # u_feat, u_attn = self.u_pool(u.flatten(end_dim=1))
+        # u_feat = u_feat.unflatten(0, (bs, seq)) # (bs, seq, ch1)
+        x_feat = self.x_conv_freq(x.flatten(end_dim=1)).squeeze(-1)
+        x_feat = x_feat.unflatten(0, (bs, seq))
+        # u_feat = self.ln_u(self.u_proj(u_feat))
+        x_feat = self.x_proj(x_feat.flatten(start_dim=-2)) # (bs, seq, d)
+        # parametrise the shift
+        # h = torch.cat([u_feat, x_feat], dim=-1)  # (bs, seq, 2 * d)
+        h = x_feat
+        delta = self.mlp(h) # + self.direct(h) # (bs, seq, 1)
+        return delta #, x_attn #u_attn
+
+def attention_entropy(attn: torch.Tensor, eps: float = 1e-8):
+    attn = attn.clamp(min=eps)
+    entropy = -(attn * attn.log()).sum(dim=-1)
+    T = attn.size(-1)
+    max_entropy = torch.log(torch.tensor(float(T), device=attn.device))
+    norm_entropy = entropy / (max_entropy + eps)
+    return entropy, entropy.mean(), norm_entropy
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
 class SIVAE(L.LightningModule):
@@ -154,11 +194,12 @@ class SIVAE(L.LightningModule):
         self.log_mel_spectrogram = LogMelSpectrogram(**self.log_mel_spectrogram_params)
         self.feature_encoder = init_cnn_feature_encoder(**self.cnn_encoder_params)
         self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
-        self.alignment_encoder = ShiftHead(
+        self.alignment_encoder = AlignmentEncoder(
             u_channels=self.cnn_block_sizes[1] * self.cnn_block_width,
             x_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
-            u_feat_dim=self.cnn_block_sizes[1] * self.cnn_block_width * 2,
-            d=32,
+            u_freq_dim=self.num_mel_bins // 2**1,
+            x_freq_dim=self.num_mel_bins // 2**(self.cnn_layers-1),
+            proj_dim=64,
         )
         self.feature_decoder = init_cnn_feature_decoder(**self.cnn_decoder_params)
         self.content_decoder = init_mlp_content_decoder(**self.content_mlp_decoder_params)
@@ -204,6 +245,8 @@ class SIVAE(L.LightningModule):
             x=x, x_framed=x_framed, x_framed_stacked=x_framed_stacked,
             x_hat=x_hat, x_hat_framed=x_hat_trans, x_hat_framed_stacked=x_hat_framed_stacked,
             q_z_stacked=q_z_stacked, q_z=q_z, q_z_trans=q_z_trans,
+            # u_attn=u_attn, u_attn_trans=u_attn_trans,
+            # x_attn=x_attn, x_attn_trans=x_attn_trans,
             delta=delta, delta_hat_stacked=delta_hat_stacked, delta_hat_trans=delta_hat_trans, delta_hat=delta_hat,
             sigma_delta=sigma_delta,
         )
@@ -303,7 +346,7 @@ class SIVAE(L.LightningModule):
         hop_length = (hop_length or self.frame_hop_length) // 2**(self.cnn_layers)
         u = self.frame(u, window_length=self.frame_window_length // 2**2, hop_length=self.frame_window_length // 2**2, padding_mode=self.frame_padding_mode)
         x = self.frame(x, window_length=self.latent_window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
-        delta = self.alignment_encode(x, u, encoder=self.alignment_encoder)
+        delta = self.alignment_encoder(x, u) #, t=self.trainer.global_step, t0=5000)
         q_z = self.content_encode(x, encoder=self.content_encoder)
         if self.sigma_z_min is not None:
             mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
@@ -321,10 +364,6 @@ class SIVAE(L.LightningModule):
     def content_encode(self, x: Tensor, encoder: torch.nn.Module) -> Tuple[Tensor, Tensor]:
         q_z = encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         return q_z
-
-    def alignment_encode(self, x: Tensor, u: torch.Tensor, encoder: torch.nn.Module) -> Tuple[Tensor, Tensor]:
-        delta = self.alignment_encoder(u, x)
-        return delta
 
     def decode(self, z: Tensor, delta: Tensor | None = None) -> Tensor:
         x = self.mlp_decode(z.flatten(end_dim=1))
@@ -423,9 +462,9 @@ class SIVAE(L.LightningModule):
         pass
 
     def on_train_batch_end(self, outputs: Dict[str, Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
-        # if self.trainer.global_step == self.trainer.val_check_interval and batch_idx < 5 and len(self.training_step_outputs):
-        #     step_outputs = self.training_step_outputs[0]
-        #     self.on_batch_end(step_outputs, "train")
+        if self.trainer.global_step % self.trainer.log_every_n_steps == 0 and len(self.training_step_outputs):
+            step_outputs = self.training_step_outputs[0]
+            self.on_batch_end(step_outputs, "train", min_num_samples=1)
         self.training_step_outputs.clear()
 
     def on_validation_batch_end(self, outputs: Dict[str, Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
@@ -438,8 +477,8 @@ class SIVAE(L.LightningModule):
     def on_test_batch_end(self, *args: Any, **kwargs: Any) -> None:
         self.test_step_outputs.clear()
 
-    def on_batch_end(self, step_outputs, stage: str):
-        num_samples = min(6, step_outputs["x"].size(0))
+    def on_batch_end(self, step_outputs, stage: str, min_num_samples: int = 6):
+        num_samples = min(min_num_samples, step_outputs["x"].size(0))
         if self.contiguous_frames:
             specs = step_outputs["x"].squeeze().cpu().numpy()
             recons = step_outputs["x_hat"].squeeze().cpu().numpy()
@@ -490,6 +529,10 @@ class SIVAE(L.LightningModule):
         q_z_stacked: Tensor,
         delta: torch.Tensor,
         delta_hat_stacked: Tensor,
+        # u_attn: torch.Tensor,
+        # u_attn_trans: torch.Tensor,
+        # x_attn: torch.Tensor,
+        # x_attn_trans: torch.Tensor,
         **kwargs: Any
     ) -> Dict[str, Any]:
         mu_z, log_sigma_sq_z = q_z_stacked.chunk(2, dim=-1)
@@ -502,7 +545,11 @@ class SIVAE(L.LightningModule):
         d, dh = delta.squeeze().view(1,-1), delta_hat_stacked.squeeze().view(2, -1)
         vx, vy = dh - dh.mean(), d - d.mean()
         delta_corr = ((vx * vy).sum(dim=-1) / (vx.norm(dim=-1) * vy.norm(dim=-1) + 1e-8)).mean().cpu().numpy()
-        delta_hat_hist = np.histogram(delta_hat_stacked.flatten().cpu().numpy(), bins=128, range=[-2.0, 2.0])
+        # u_entropy, u_entropy_mean, u_entropy_norm = attention_entropy(torch.cat([u_attn, u_attn_trans], dim=0))
+        # u_entropy_hist = np.histogram(u_entropy.cpu().numpy(), bins=64, range=[0.0, np.log(u_attn.size(-1))])
+        # x_entropy, x_entropy_mean, x_entropy_norm = attention_entropy(torch.cat([x_attn, x_attn_trans], dim=0))
+        # x_entropy_hist = np.histogram(x_entropy.cpu().numpy(), bins=64, range=[0.0, np.log(x_attn.size(-1))])
+        delta_hat_hist = np.histogram(circular_boundary(delta_hat_stacked).flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
         mae = (x_hat_framed_stacked - x_framed_stacked).abs().flatten(start_dim=-3).mean(dim=-1).mean()
         mse = (x_hat_framed_stacked - x_framed_stacked).pow(2).flatten(start_dim=-3).mean(dim=-1).mean()
         dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / self.latent_dim).mean()
@@ -512,6 +559,12 @@ class SIVAE(L.LightningModule):
             mu_z=wandb.Histogram(np_histogram=mu_hist),
             sigma_z=wandb.Histogram(np_histogram=sigma_hist),
             delta_hat_hist=wandb.Histogram(np_histogram=delta_hat_hist),
+            # u_entropy=u_entropy_mean,
+            # u_entropy_hist=wandb.Histogram(np_histogram=u_entropy_hist),
+            # u_entropy_norm_std=u_entropy_norm.std(),
+            # x_entropy=x_entropy_mean,
+            # x_entropy_hist=wandb.Histogram(np_histogram=x_entropy_hist),
+            # x_entropy_norm_std=x_entropy_norm.std(),
             delta_hat_var=delta_hat_var,
             delta_hat_seq_var=delta_hat_seq_var,
             delta_corr=delta_corr,
