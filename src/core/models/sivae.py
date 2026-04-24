@@ -42,28 +42,6 @@ log = logging.getLogger(__name__)
 
 __all__ = ["SIVAE"]
 
-def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
-
-class TimeFrequencyPooling(nn.Module):
-    def __init__(
-        self,
-        channels: int = 64,
-        freq_dim: int = 32,
-    ) -> None:
-        super().__init__()
-        self.conv_freq = torch.nn.Conv2d(channels, channels, kernel_size=(1, freq_dim))
-        self.attn_proj = torch.nn.Linear(channels, 1)
-
-    def forward(self, x: Tensor) -> Tensor:
-        # frequency pooling by convolution
-        x = self.conv_freq(x).squeeze(-1)
-        # intra-frame time-step attention using channels
-        logits = self.attn_proj(x.transpose(-1, -2)).squeeze(-1)
-        attn = torch.softmax(logits, dim=-1)
-        x = (x * attn.unsqueeze(1)).sum(dim=-1)
-        return x, attn
-
 class AlignmentEncoder(nn.Module):
     def __init__(
         self,
@@ -74,16 +52,8 @@ class AlignmentEncoder(nn.Module):
         x_freq_dim: int = 4,
     ) -> None:
         super().__init__()
-        # self.u_pool = TimeFrequencyPooling(channels=u_channels, freq_dim=u_freq_dim)
-        # self.u_proj = nn.Linear(u_channels, proj_dim)
-        # self.ln_u = nn.LayerNorm(proj_dim)
-
-        # self.x_attn_proj = torch.nn.Linear(x_channels, 1)
         self.x_conv_freq = torch.nn.Conv2d(x_channels, x_channels, kernel_size=(1, x_freq_dim))
         self.x_proj = nn.Linear(x_channels * 6, proj_dim)
-        self.ln_x = nn.LayerNorm(proj_dim)
-
-        # self.direct = nn.Linear(2 * proj_dim, 1)
         self.mlp = nn.Sequential(
             nn.Linear(proj_dim, 128),
             nn.GELU(),
@@ -95,18 +65,46 @@ class AlignmentEncoder(nn.Module):
     def forward(self, x: torch.Tensor, u: torch.Tensor):
         bs, seq, ch1, fr1, fq1 = u.shape
         _, _, ch2, fr2, fq2 = x.shape
-        # pool time and frequency and project down
-        # u_feat, u_attn = self.u_pool(u.flatten(end_dim=1))
-        # u_feat = u_feat.unflatten(0, (bs, seq)) # (bs, seq, ch1)
-        x_feat = self.x_conv_freq(x.flatten(end_dim=1)).squeeze(-1)
-        x_feat = x_feat.unflatten(0, (bs, seq))
-        # u_feat = self.ln_u(self.u_proj(u_feat))
-        x_feat = self.x_proj(x_feat.flatten(start_dim=-2)) # (bs, seq, d)
+        x_feat = self.x_conv_freq(x.flatten(end_dim=1)).squeeze(-1).unflatten(0, (bs, seq))
+        h = self.x_proj(x_feat.flatten(start_dim=-2)) # (bs, seq, d)
         # parametrise the shift
-        # h = torch.cat([u_feat, x_feat], dim=-1)  # (bs, seq, 2 * d)
-        h = x_feat
-        delta = self.mlp(h) # + self.direct(h) # (bs, seq, 1)
-        return delta #, x_attn #u_attn
+        delta = self.mlp(h)
+        return delta
+
+# class AlignmentEncoder(nn.Module):
+#     def __init__(
+#         self,
+#         proj_dim: int = 16,
+#         x_channels: int = 512,
+#         x_freq_dim: int = 4,
+#         x_time_dim: int = 48,
+#         u_channels: int = 64,
+#         u_freq_dim: int = 32,
+#         u_time_dim: int = 6,
+#     ) -> None:
+#         super().__init__()
+#         self.x_conv_freq = torch.nn.Conv2d(x_channels, x_channels, kernel_size=(1, x_freq_dim))
+#         self.u_conv_freq = torch.nn.Conv2d(x_channels, x_channels, kernel_size=(1, u_freq_dim))
+#         self.x_proj = nn.Linear(x_channels * x_time_dim, proj_dim)
+#         self.u_proj = nn.Linear(u_channels * u_time_dim, proj_dim)
+#         self.mlp = nn.Sequential(
+#             nn.Linear(proj_dim * 2, 128),
+#             nn.GELU(),
+#             nn.Linear(128, 64),
+#             nn.GELU(),
+#             nn.Linear(64, 1)
+#         )
+
+#     def forward(self, x: torch.Tensor, u: torch.Tensor):
+#         bs, seq, ch1, fr1, fq1 = u.shape
+#         _, _, ch2, fr2, fq2 = x.shape
+#         x = self.x_conv_freq(x.flatten(end_dim=1)).squeeze(-1).unflatten(0, (bs, seq))
+#         u = self.x_conv_freq(u.flatten(end_dim=1)).squeeze(-1).unflatten(0, (bs, seq))
+#         x = self.x_proj(x_feat.flatten(start_dim=-2))
+#         u = self.u_proj(x_feat.flatten(start_dim=-2))
+#         h = torch.cat([x, u], dim=-1)  # (bs, seq, d)
+#         delta = self.mlp(h)
+#         return delta
 
 def attention_entropy(attn: torch.Tensor, eps: float = 1e-8):
     attn = attn.clamp(min=eps)
@@ -115,6 +113,20 @@ def attention_entropy(attn: torch.Tensor, eps: float = 1e-8):
     max_entropy = torch.log(torch.tensor(float(T), device=attn.device))
     norm_entropy = entropy / (max_entropy + eps)
     return entropy, entropy.mean(), norm_entropy
+
+def sigma_schedule(
+    step: int,
+    sigma_min: float = 0.1,
+    sigma_max: float = 4.0,
+    warmup_steps: int = 10000,
+    hold_steps: int = 10000,
+) -> float:
+    if step < hold_steps:
+        return sigma_min
+    if step >= hold_steps + warmup_steps:
+        return sigma_max
+    t = (step - hold_steps) / warmup_steps
+    return sigma_min + (sigma_max - sigma_min) * t
 
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
 class SIVAE(L.LightningModule):
@@ -212,7 +224,14 @@ class SIVAE(L.LightningModule):
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
 
         # ------ shift samples------ #
-        sigma_delta = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.sigma_delta_params))
+        sigma_delta_params = dict(
+            sigma_min=self.delta_sigma_min,
+            sigma_max=self.delta_sigma_max,
+            hold_steps=self.delta_sigma_step_start,
+            warmup_steps=self.delta_sigma_step_end - self.delta_sigma_step_start,
+        )
+        sigma_delta = torch.tensor(sigma_schedule(self.trainer.global_step, **sigma_delta_params), device=x.device, dtype=torch.float32)
+        # sigma_delta = torch.tensor(bounded_sigmoid(self.trainer.global_step, **self.sigma_delta_params))
         x_framed = x.view(x.size(0), -1, 1, self.frame_window_length, x.size(-1))
         delta = torch.randn(self.k - 1, x_framed.size(0), x_framed.size(1), 1, 1, 1, device=x.device) * sigma_delta
         x_trans = self.k_way_translated_frames(x_framed, delta * sigma_delta, self.k - 1) # (k-1, bs, seq, 1, fr, fq)
