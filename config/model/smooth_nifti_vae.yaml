@@ -1,11 +1,4 @@
 _target_: src.core.models.smooth_nifti_vae.SmoothNiftiVAE
-sigma_z_max: 0.2
-sigma_z_mode: FIXED
-smooth_prop: 0.5
-p_dt_step_start: 0
-p_dt_step_end: 20_000
-p_dt_sigma_min: 0.1
-p_dt_sigma_max: 2.0
 sample_rate: 48000
 fft_window_length: 512
 fft_hop_length: 384
@@ -25,6 +18,11 @@ cnn_activation: LEAK
 mlp_activation: LEAK
 mlp_dropout_prob: 0.1
 frame_padding_mode: circular
+sigma_x: 0.2
+delta_sigma_step_start: 0
+delta_sigma_step_end: 20_000
+delta_sigma_min: 0.1
+delta_sigma_max: 2.0
 learning_rate: 4.e-5
 optimiser_cls: torch.optim.AdamW
 scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
