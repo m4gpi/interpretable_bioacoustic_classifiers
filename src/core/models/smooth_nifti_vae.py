@@ -42,6 +42,42 @@ log = logging.getLogger(__name__)
 
 __all__ = ["SmoothNiftiVAE"]
 
+class AlignmentEncoder(nn.Module):
+    def __init__(
+        self,
+        proj_dim: int = 16,
+        x_channels: int = 512,
+        x_freq_dim: int = 4,
+        x_time_dim: int = 48,
+        u_channels: int = 64,
+        u_freq_dim: int = 32,
+        u_time_dim: int = 6,
+    ) -> None:
+        super().__init__()
+        self.x_conv_freq = torch.nn.Conv2d(x_channels, x_channels, kernel_size=(1, x_freq_dim))
+        self.u_conv_freq = torch.nn.Conv2d(u_channels, u_channels, kernel_size=(1, u_freq_dim))
+        self.x_proj = nn.Linear(x_channels * x_time_dim, proj_dim)
+        self.u_proj = nn.Linear(u_channels * u_time_dim, proj_dim)
+        in_features = proj_dim * 2
+        self.mlp = nn.Sequential(
+            nn.Linear(in_features, in_features * 2),
+            nn.GELU(),
+            nn.Linear(in_features * 2, in_features),
+            nn.GELU(),
+            nn.Linear(in_features, 1)
+
+        )
+
+    def forward(self, x: torch.Tensor, u: torch.Tensor):
+        bs, seq, *_ = u.shape
+        x = self.x_conv_freq(x.flatten(end_dim=1)).squeeze(-1).unflatten(0, (bs, seq))
+        u = self.u_conv_freq(u.flatten(end_dim=1)).squeeze(-1).unflatten(0, (bs, seq))
+        x = self.x_proj(x.flatten(start_dim=-2))
+        u = self.u_proj(u.flatten(start_dim=-2))
+        h = torch.cat([x, u], dim=-1)  # (bs, seq, d)
+        delta = self.mlp(h)
+        return delta
+
 @dataclass(unsafe_hash=True, kw_only=True, eq=False)
 class SmoothNiftiVAE(L.LightningModule):
     sample_rate: int = 48_000
@@ -114,7 +150,16 @@ class SmoothNiftiVAE(L.LightningModule):
         self.log_mel_spectrogram = LogMelSpectrogram(**self.log_mel_spectrogram_params)
         self.feature_encoder = init_cnn_feature_encoder(**self.cnn_encoder_params)
         self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
-        self.alignment_encoder = init_alignment_encoder(**self.alignment_encoder_params)
+        # self.alignment_encoder = init_alignment_encoder(**self.alignment_encoder_params)
+        self.alignment_encoder = AlignmentEncoder(
+            x_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
+            x_freq_dim=self.num_mel_bins // 2**(self.cnn_layers-1),
+            x_time_dim=self.frame_window_length // 2**self.cnn_layers,
+            u_channels=self.cnn_block_sizes[1] * self.cnn_block_width,
+            u_freq_dim=self.num_mel_bins // 2**1,
+            u_time_dim=self.frame_window_length // 2**2,
+            proj_dim=128,
+        )
         self.feature_decoder = init_cnn_feature_decoder(**self.cnn_decoder_params)
         self.content_decoder = init_mlp_content_decoder(**self.content_mlp_decoder_params)
         self.strict_loading = False
@@ -230,11 +275,12 @@ class SmoothNiftiVAE(L.LightningModule):
     def encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
         x, u = self.cnn_encode(x)
         x = self.frame(x, window_length=self.latent_window_length, hop_length=(hop_length or self.frame_hop_length) // 2**(self.cnn_layers), padding_mode=self.frame_padding_mode)
+        u = self.frame(u, window_length=self.frame_window_length // 2**2, hop_length=self.frame_window_length // 2**2, padding_mode=self.frame_padding_mode)
         q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
         log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=self.sigma_latent.pow(2).log())
         q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
-        delta_hat = self.alignment_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
+        delta_hat = self.alignment_encoder(x, u)
         return q_z, delta_hat
 
     def cnn_encode(self, x: Tensor) -> Tensor:
@@ -254,7 +300,6 @@ class SmoothNiftiVAE(L.LightningModule):
             if i == len(self.feature_decoder) - 2:
                 U = translation(U, delta.view(delta.size(0) * delta.size(1), 1, 1, 1), padding_mode="circular")
             if i == len(self.feature_decoder) - 1:
-                num_timesteps = (self.frame_window_length * delta.size(1)) // 2**(len(self.feature_decoder) - i)
                 U = U.unflatten(0, (delta.size(0), delta.size(1))).transpose(1, 2).flatten(start_dim=2, end_dim=3)
             U = block(U)
         return U
