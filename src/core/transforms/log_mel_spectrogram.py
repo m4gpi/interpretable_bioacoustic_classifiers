@@ -64,173 +64,270 @@ def mel_filterbanks(
     # return the filterbank
     return filterbank.T
 
-class LogMelSpectrogram(object):
-    def __init__(
-        self,
-        sample_rate: int = 48_000,
-        window_length: int = 512,
-        hop_length: int = 384,
-        num_mel_bins: int = 64,
-        mel_min_hertz: float = 150.0,
-        mel_max_hertz: float = 15_000.0,
-        mel_scaling_factor: float = 4581.0,
-        mel_break_frequency: float = 1750.0,
-        griffin_lim_iterations: int = 32,
-        griffin_lim_momentum: float = 0.99,
-        mel_filterbank_norm: str | None = None,
-    ) -> None:
-        self.sample_rate = sample_rate
-        self.window_length = window_length
-        self.hop_length = hop_length
-        self.num_mel_bins = num_mel_bins
-        self.mel_min_hertz = mel_min_hertz
-        self.mel_max_hertz = mel_max_hertz
-        self.mel_scaling_factor = mel_scaling_factor
-        self.mel_break_frequency = mel_break_frequency
-        self.griffin_lim_iterations = griffin_lim_iterations
-        self.griffin_lim_momentum = griffin_lim_momentum
-        self.mel_filterbank_norm = mel_filterbank_norm
+@dataclass(kw_only=True, unsafe_hash=True)
+class LogMelSpectrogram(torch.nn.Module):
+    sample_rate: int = 48_000
+    n_fft: int = 512
+    fft_window_length: int = 512
+    fft_hop_length: int = 384
+    num_mel_bins: int = 64
+    mel_min_hertz: float | None = 0.0
+    mel_max_hertz: float | None = None
+    mel_scaling_factor: float | None = 4581.0
+    mel_break_frequency: float | None = 1750.0
 
-    def forward(self, wav: NDArray | Tensor) -> Tensor:
-        return_type = type(wav)
-        if return_type == Tensor:
-            device = wav.device
-            wav = wav.numpy()
-        spec = librosa.stft(wav.squeeze(), **self.fft_params)
-        spec, phase = librosa.magphase(spec, power=1)
-        mel = (spec.T @ self.mel_filterbanks.T).T
-        log_mel = np.log(np.maximum(1e-6, mel))
-        if return_type == Tensor:
-            return torch.as_tensor(log_mel.T, device=device, dtype=torch.float32).unsqueeze(0)
-        return log_mel
+    def __new__(cls, *args: Any, **kwargs: Any):
+        obj = object.__new__(cls)
+        torch.nn.Module.__init__(obj)
+        return obj
 
-    def backward(self, log_mel: Tensor) -> Tensor:
-        mel = log_mel.exp().numpy().squeeze()
-        mel = librosa.util.nnls(self.mel_filterbanks, mel.T)
-        wav = librosa.griffinlim(mel, **self.griffin_lim_params)
-        wav = self.bandpass_filter(wav)
-        return torch.as_tensor(wav.copy(), device=log_mel.device).unsqueeze(0)
+    def __post_init__(self):
+        mel_basis = mel_filterbanks(**self.mel_params, linear_frequencies=self.fft_frequencies)
+        self.register_buffer("mel_basis", torch.tensor(mel_basis, requires_grad=False), persistent=False)
 
-    def seconds_to_hops(self, seconds: float) -> int:
-        hops_per_second = self.sample_rate / self.hop_length
-        return int(seconds * hops_per_second)
+    @torch.no_grad()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # remove DC offset
+        x = x - x.mean(dim=-1, keepdims=True)
+        # apply fourier transform
+        window = torch.hann_window(self.fft_window_length).to(x.device)
+        x = torch.stft(x, self.n_fft, window=window, **self.stft_params)
+        # discard phase
+        x = x.abs()
+        # transpose time on inner axes
+        x = x.transpose(-1, -2)
+        # apply mel
+        x = x @ self.mel_basis.t()
+        # apply log
+        x = torch.clamp(x, min=1e-6).log()
+        # add a channel dimension
+        x = x.unsqueeze(1)
+        return x
 
-    def hops_to_seconds(self, hops: float) -> int:
-        hops_per_second = self.sample_rate / self.hop_length
-        return 1 / hops_per_second * hops
-
-    def hz_to_mel_bin(self, frequency: float) -> int:
-        return np.abs(self.mel_range - hz_to_mel(frequency)).argmin()
-
-    def mel_bin_to_hz(self, mel_bin: int) -> float:
-        return mel_to_hz(
-            self.mel_range,
-            scaling_factor=self.mel_scaling_factor,
-            break_frequency=self.mel_break_frequency,
-        )[mel_bin]
-
-    def __call__(self, wav: Tensor) -> Tensor:
-        return self.forward(wav)
-
-    @cached_property
-    def mel_filterbanks(self) -> NDArray:
-        return mel_filterbanks(**self.mel_filterbank_params)
+    @torch.no_grad()
+    def plot(self, z: NDArray | torch.Tensor, vmin: float | None = None, vmax: float | None = None, cmap: str = "viridis", ax: None = None, **kwargs: Any):
+        ax = ax if ax is not None else plt.gca()
+        vmin = vmin if vmin is not None and kwargs.get("norm", None) is None else z.min()
+        vmax = vmax if vmax is not None and kwargs.get("norm", None) is None else z.max()
+        imshow_params = dict(vmin=vmin, vmax=vmax, origin="lower", aspect="auto", cmap=cmap, **kwargs)
+        im = ax.imshow(z, **imshow_params)
+        # TODO: allow parametrisation of tick duration
+        duration_seconds = (z.shape[1] * self.fft_hop_length) // self.sample_rate
+        time = np.linspace(0, duration_seconds, z.shape[1])
+        x_tick_positions = np.linspace(0, duration_seconds, int(z.shape[1] // (self.sample_rate // self.fft_hop_length) / 5) + 1)
+        x_tick_labels = [f"{np.format_float_positional(t, trim='-', precision=2)}" for t in x_tick_positions]
+        x_tick_indices = [np.argmin(np.abs(time - t)) for t in x_tick_positions]
+        ax.set_xticks(x_tick_indices, labels=x_tick_labels)
+        ax.set_xlabel("Time (s)")
+        # ticks for y-axis are on a log scale, find the nearest base 2 exponents for the ticks
+        y_tick_positions = [2**i for i in range(max(9, int(np.ceil(np.log2(self.mel_min_hertz + 1e-8)))), int(np.floor(np.log2(self.mel_max_hertz))) + 1)]
+        y_tick_labels = [f"{int(f)}" for f in y_tick_positions]
+        y_tick_indices = [np.argmin(np.abs(self.mel_frequencies - f)) for f in y_tick_positions]
+        ax.set_yticks(y_tick_indices, labels=y_tick_labels)
+        ax.set_ylabel("Frequency (Hz)")
+        return im
 
     @property
-    def bandpass_filter(self) -> NDArray:
-        return functools.partial(signal.sosfiltfilt, signal.butter(**self.butter_params))
+    def mel_bands(self):
+        mel_params = dict(scaling_factor=self.mel_scaling_factor, break_frequency=self.mel_break_frequency)
+        min_mel = hz_to_mel(self.mel_min_hertz, **mel_params)
+        max_mel = hz_to_mel(self.mel_max_hertz, **mel_params)
+        return np.linspace(min_mel, max_mel, self.num_mel_bins)
 
     @property
-    def frequency_range(self):
-        return np.array([self.mel_min_hertz, self.mel_max_hertz])
+    def fft_frequencies(self):
+        return torch.linspace(0.0, self.sample_rate / 2, (self.n_fft // 2) + 1)
 
     @property
-    def fft_length(self):
-        return int(np.power(2, np.ceil(np.log(self.window_length) / np.log(2.0))))
+    def mel_frequencies(self):
+        return mel_to_hz(self.mel_bands, scaling_factor=self.mel_scaling_factor, break_frequency=self.mel_break_frequency)
 
     @property
-    def stft_hop_length_seconds(self) -> float:
-        return self.hop_length / self.sample_rate
-
-    @property
-    def stft_window_length_seconds(self) -> float:
-        return self.window_length / self.sample_rate
-
-    @property
-    def overlap_length_seconds(self) -> float:
-        return self.stft_window_length_seconds - self.stft_hop_length_seconds
-
-    @property
-    def overlap_length(self) -> int:
-        return self.window_length - self.hop_length
-
-    @property
-    def overlap_prop(self) -> float:
-        return 1 - (self.hop_length / self.window_length)
-
-    @property
-    def nyquist_frequency(self) -> float:
-        return self.sample_rate / 2.0
-
-    @property
-    def linear_frequency_range(self) -> NDArray:
-        return np.linspace(0.0, self.nyquist_frequency, (self.fft_length // 2) + 1)
-
-    @property
-    def min_mel(self) -> float:
-        return hz_to_mel(
-            self.mel_min_hertz,
-            scaling_factor=self.mel_scaling_factor,
-            break_frequency=self.mel_break_frequency,
+    def stft_params(self):
+        return dict(
+            win_length=self.fft_window_length,
+            hop_length=self.fft_hop_length,
+            return_complex=True,
+            pad_mode="constant",
         )
 
     @property
-    def max_mel(self) -> float:
-        return hz_to_mel(
-            self.mel_max_hertz,
-            scaling_factor=self.mel_scaling_factor,
-            break_frequency=self.mel_break_frequency,
-        )
-
-    @property
-    def mel_range(self) -> float:
-        return np.linspace(self.min_mel, self.max_mel, self.num_mel_bins)
-
-    @property
-    def mel_filterbank_params(self) -> Dict[str, Any]:
+    def mel_params(self):
         return dict(
             num_mel_bins=self.num_mel_bins,
             mel_min_hertz=self.mel_min_hertz,
             mel_max_hertz=self.mel_max_hertz,
-            linear_frequencies=self.linear_frequency_range,
             scaling_factor=self.mel_scaling_factor,
             break_frequency=self.mel_break_frequency,
-            norm=self.mel_filterbank_norm,
         )
 
-    @property
-    def fft_params(self) -> Dict[str, Any]:
-        return dict(
-            n_fft=self.fft_length,
-            win_length=self.window_length,
-            hop_length=self.hop_length,
-            window='hann',
-        )
+# class LogMelSpectrogram(object):
+#     def __init__(
+#         self,
+#         sample_rate: int = 48_000,
+#         window_length: int = 512,
+#         hop_length: int = 384,
+#         num_mel_bins: int = 64,
+#         mel_min_hertz: float = 150.0,
+#         mel_max_hertz: float = 15_000.0,
+#         mel_scaling_factor: float = 4581.0,
+#         mel_break_frequency: float = 1750.0,
+#         griffin_lim_iterations: int = 32,
+#         griffin_lim_momentum: float = 0.99,
+#         mel_filterbank_norm: str | None = None,
+#     ) -> None:
+#         self.sample_rate = sample_rate
+#         self.window_length = window_length
+#         self.hop_length = hop_length
+#         self.num_mel_bins = num_mel_bins
+#         self.mel_min_hertz = mel_min_hertz
+#         self.mel_max_hertz = mel_max_hertz
+#         self.mel_scaling_factor = mel_scaling_factor
+#         self.mel_break_frequency = mel_break_frequency
+#         self.griffin_lim_iterations = griffin_lim_iterations
+#         self.griffin_lim_momentum = griffin_lim_momentum
+#         self.mel_filterbank_norm = mel_filterbank_norm
 
-    @property
-    def butter_params(self) -> Dict[str, Any]:
-        return dict(
-            N=4,
-            Wn=self.frequency_range / self.nyquist_frequency,
-            btype='bandpass',
-            output='sos'
-        )
+#     def forward(self, wav: NDArray | Tensor) -> Tensor:
+#         return_type = type(wav)
+#         if return_type == Tensor:
+#             device = wav.device
+#             wav = wav.numpy()
+#         spec = librosa.stft(wav.squeeze(), **self.fft_params)
+#         spec, phase = librosa.magphase(spec, power=1)
+#         mel = (spec.T @ self.mel_filterbanks.T).T
+#         log_mel = np.log(np.maximum(1e-6, mel))
+#         if return_type == Tensor:
+#             return torch.as_tensor(log_mel.T, device=device, dtype=torch.float32).unsqueeze(0)
+#         return log_mel
 
-    @property
-    def griffin_lim_params(self) -> Dict[str, Any]:
-        return dict(
-            n_iter=self.griffin_lim_iterations,
-            momentum=self.griffin_lim_momentum,
-            init='random',
-            **self.fft_params,
-        )
+#     def backward(self, log_mel: Tensor) -> Tensor:
+#         mel = log_mel.exp().numpy().squeeze()
+#         mel = librosa.util.nnls(self.mel_filterbanks, mel.T)
+#         wav = librosa.griffinlim(mel, **self.griffin_lim_params)
+#         wav = self.bandpass_filter(wav)
+#         return torch.as_tensor(wav.copy(), device=log_mel.device).unsqueeze(0)
+
+#     def seconds_to_hops(self, seconds: float) -> int:
+#         hops_per_second = self.sample_rate / self.hop_length
+#         return int(seconds * hops_per_second)
+
+#     def hops_to_seconds(self, hops: float) -> int:
+#         hops_per_second = self.sample_rate / self.hop_length
+#         return 1 / hops_per_second * hops
+
+#     def hz_to_mel_bin(self, frequency: float) -> int:
+#         return np.abs(self.mel_range - hz_to_mel(frequency)).argmin()
+
+#     def mel_bin_to_hz(self, mel_bin: int) -> float:
+#         return mel_to_hz(
+#             self.mel_range,
+#             scaling_factor=self.mel_scaling_factor,
+#             break_frequency=self.mel_break_frequency,
+#         )[mel_bin]
+
+#     def __call__(self, wav: Tensor) -> Tensor:
+#         return self.forward(wav)
+
+#     @cached_property
+#     def mel_filterbanks(self) -> NDArray:
+#         return mel_filterbanks(**self.mel_filterbank_params)
+
+#     @property
+#     def bandpass_filter(self) -> NDArray:
+#         return functools.partial(signal.sosfiltfilt, signal.butter(**self.butter_params))
+
+#     @property
+#     def frequency_range(self):
+#         return np.array([self.mel_min_hertz, self.mel_max_hertz])
+
+#     @property
+#     def fft_length(self):
+#         return int(np.power(2, np.ceil(np.log(self.window_length) / np.log(2.0))))
+
+#     @property
+#     def stft_hop_length_seconds(self) -> float:
+#         return self.hop_length / self.sample_rate
+
+#     @property
+#     def stft_window_length_seconds(self) -> float:
+#         return self.window_length / self.sample_rate
+
+#     @property
+#     def overlap_length_seconds(self) -> float:
+#         return self.stft_window_length_seconds - self.stft_hop_length_seconds
+
+#     @property
+#     def overlap_length(self) -> int:
+#         return self.window_length - self.hop_length
+
+#     @property
+#     def overlap_prop(self) -> float:
+#         return 1 - (self.hop_length / self.window_length)
+
+#     @property
+#     def nyquist_frequency(self) -> float:
+#         return self.sample_rate / 2.0
+
+#     @property
+#     def linear_frequency_range(self) -> NDArray:
+#         return np.linspace(0.0, self.nyquist_frequency, (self.fft_length // 2) + 1)
+
+#     @property
+#     def min_mel(self) -> float:
+#         return hz_to_mel(
+#             self.mel_min_hertz,
+#             scaling_factor=self.mel_scaling_factor,
+#             break_frequency=self.mel_break_frequency,
+#         )
+
+#     @property
+#     def max_mel(self) -> float:
+#         return hz_to_mel(
+#             self.mel_max_hertz,
+#             scaling_factor=self.mel_scaling_factor,
+#             break_frequency=self.mel_break_frequency,
+#         )
+
+#     @property
+#     def mel_range(self) -> float:
+#         return np.linspace(self.min_mel, self.max_mel, self.num_mel_bins)
+
+#     @property
+#     def mel_filterbank_params(self) -> Dict[str, Any]:
+#         return dict(
+#             num_mel_bins=self.num_mel_bins,
+#             mel_min_hertz=self.mel_min_hertz,
+#             mel_max_hertz=self.mel_max_hertz,
+#             linear_frequencies=self.linear_frequency_range,
+#             scaling_factor=self.mel_scaling_factor,
+#             break_frequency=self.mel_break_frequency,
+#             norm=self.mel_filterbank_norm,
+#         )
+
+#     @property
+#     def fft_params(self) -> Dict[str, Any]:
+#         return dict(
+#             n_fft=self.fft_length,
+#             win_length=self.window_length,
+#             hop_length=self.hop_length,
+#             window='hann',
+#         )
+
+#     @property
+#     def butter_params(self) -> Dict[str, Any]:
+#         return dict(
+#             N=4,
+#             Wn=self.frequency_range / self.nyquist_frequency,
+#             btype='bandpass',
+#             output='sos'
+#         )
+
+#     @property
+#     def griffin_lim_params(self) -> Dict[str, Any]:
+#         return dict(
+#             n_iter=self.griffin_lim_iterations,
+#             momentum=self.griffin_lim_momentum,
+#             init='random',
+#             **self.fft_params,
+#         )

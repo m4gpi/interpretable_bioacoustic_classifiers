@@ -19,6 +19,7 @@ from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergen
 from src.core.models.base_vae import BaseVAE
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
+from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.utils.sketch import plot_mel_spectrogram
 from src.core.utils import soft_clip, linear_decay, bounded_sigmoid, nth_percentile, detach_values, prefix_keys, to_snake_case
 
@@ -43,6 +44,16 @@ class SmoothNiftiVAE(BaseVAE):
 
     def __post_init__(self):
         super().__post_init__()
+        self.log_mel_spectrogram = LogMelSpectrogram(
+            sample_rate=self.sample_rate,
+            fft_window_length=self.fft_window_length,
+            fft_hop_length=self.fft_hop_length,
+            num_mel_bins=self.num_mel_bins,
+            mel_min_hertz=self.mel_min_hertz,
+            mel_max_hertz=self.mel_max_hertz,
+            mel_scaling_factor=self.mel_scaling_factor,
+            mel_break_frequency=self.mel_break_frequency,
+        )
         self.offset_encoder = init_alignment_encoder(
             in_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
             out_channels=self.cnn_block_sizes[-1] * self.cnn_block_width // 4,
@@ -93,12 +104,13 @@ class SmoothNiftiVAE(BaseVAE):
 
     def step(self, x_i: Tensor, **kwargs: Any) -> Dict[str, Tensor]:
         # ensure x_i is a full sequence that can be divided into equal length frames
+        x_i = self.log_mel_spectrogram(x_i)
         x_i = T.center_crop(x_i, [(x_i.size(-2) - (x_i.size(-2) % self.frame_window_length)), self.num_mel_bins])
         # encode posterior for full sequence
         q_z_i, dt_i = self.encode(x_i) # (bs, seq, ld)
         mu_x_i, log_sigma_sq_x_i = q_z_i.chunk(2, dim=-1)
         # x_j is x_i chunked into independently translated frames
-        x_i_framed = frame(x_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
+        x_i_framed = self.frame(x_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
         epsilon = torch.randn(x_i_framed.size(0), 1, 1, 1).to(x_i.device)
         sigma_dt = self.p_dt_sigma_current(self.trainer.global_step)
         dt = epsilon * sigma_dt
@@ -120,7 +132,7 @@ class SmoothNiftiVAE(BaseVAE):
         # and reconstruct independent translations
         x_hat_j = self.cnn_decode(U_hat, dt_j) # (bs * seq, 1, fr, fq)
         # frame for frame-wise loss
-        x_hat_i_framed = frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
+        x_hat_i_framed = self.frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
         return dict(
             x_i=x_i, x_j=x_j,
             x_i_framed=x_i_framed,
@@ -144,8 +156,8 @@ class SmoothNiftiVAE(BaseVAE):
     def frame_encode(self, x: Tensor, hop_length: int | None = None) -> Tensor:
         frame_params = self.latent_frame_params
         if hop_length is not None:
-            frame_params.update(dict(hop_length=hop_length // 2**(self.cnn_layers)))
-        x = frame(x, **frame_params) if x.size(-2) > self.latent_window_length else x.unsqueeze(1)
+            frame_params.update(dict(hop_length=hop_length // 3**(self.cnn_layers)))
+        x = self.frame(x, **frame_params)
         return x
 
     def mlp_encode(self, x: Tensor) -> Tuple[Tensor, Tensor]:
@@ -162,8 +174,8 @@ class SmoothNiftiVAE(BaseVAE):
             if dt is not None and i == len(self.feature_decoder) - 2:
                 U = translation(U, dt.view(dt.size(0) * dt.size(1), 1, 1, 1), padding_mode="circular")
             if i == len(self.feature_decoder) - 1:
-                num_timesteps = (self.frame_window_length * z.size(1)) // 2**(len(self.feature_decoder) - i)
-                U = unframe(U.view(z.size(0), z.size(1), *U.size()[1:]), hop_length=U.size(-2), num_timesteps=num_timesteps)
+                # num_timesteps = (self.frame_window_length * z.size(1)) // 2**(len(self.feature_decoder) - i)
+                U = U.unflatten(0, (dt.size(0), dt.size(1))).transpose(1, 2).flatten(start_dim=2, end_dim=3)
             U = block(U)
         return U
 
@@ -176,7 +188,8 @@ class SmoothNiftiVAE(BaseVAE):
                 U = translation(U, dt.view(dt.size(0) * dt.size(1), 1, 1, 1), padding_mode="circular")
             if i == len(self.feature_decoder) - 1:
                 num_timesteps = (self.frame_window_length * dt.size(1)) // 2**(len(self.feature_decoder) - i)
-                U = unframe(U.view(dt.size(0), dt.size(1), *U.size()[1:]), hop_length=U.size(-2), num_timesteps=num_timesteps)
+                U = U.unflatten(0, (dt.size(0), dt.size(1))).transpose(1, 2).flatten(start_dim=2, end_dim=3)
+                # U = unframe(U.view(dt.size(0), dt.size(1), *U.size()[1:]), hop_length=U.size(-2), num_timesteps=num_timesteps)
             U = block(U)
         return U
 
@@ -187,6 +200,14 @@ class SmoothNiftiVAE(BaseVAE):
         z = Normal(mu_x, (0.5 * log_sigma_sq_x).exp()).rsample()
         x_hat = self.decode(z, dt).view(*x.size())
         return dict(x=x, x_hat=x_hat, q_z=q_z)
+
+    @staticmethod
+    def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:
+        if x.size(-2) == window_length:
+            return x.unsqueeze(1)
+        if hop_length != window_length:
+            return frame(x, window_length=window_length, hop_length=hop_length, padding_mode=padding_mode)
+        return x.view(x.size(0), x.size(1), x.size(2) // window_length, window_length, x.size(3)).transpose(1, 2)
 
     def loss(
         self,
@@ -248,6 +269,7 @@ class SmoothNiftiVAE(BaseVAE):
         if self.p_dt_sigma_min is None: return self.p_dt_sigma_max
         return torch.tensor(bounded_sigmoid(t, **self.p_dt_sigma_params))
 
+    @torch.no_grad()
     def metrics(
         self,
         q_z_i: Tensor,
@@ -261,7 +283,10 @@ class SmoothNiftiVAE(BaseVAE):
         sigma_x_i = np.exp(0.5 * log_sigma_sq_x_i)
         mu_x_j, log_sigma_sq_x_j = (t.flatten(end_dim=-2).cpu().numpy() for t in q_z_j.chunk(2, dim=-1))
         sigma_x_j = np.exp(0.5 * log_sigma_sq_x_j)
-        dt = torch.cat([dt_i.flatten(end_dim=1).unsqueeze(1), dt_j])
+        dt = torch.cat([dt_i, dt_j.view(dt_i.shape)])
+        delta_hat_mean = dt.mean().cpu().numpy()
+        delta_hat_var = dt.var().cpu().numpy()
+        delta_hat_seq_var = dt.var(dim=1).mean().cpu().numpy()
         return dict(
             **outputs,
             p_sigma_dt=self.p_dt_sigma_current(self.trainer.global_step),
@@ -269,7 +294,10 @@ class SmoothNiftiVAE(BaseVAE):
             sigma_x_i=wandb.Histogram(np_histogram=np.histogram(sigma_x_i, range=[0.0, 2.0])),
             mu_x_j=wandb.Histogram(np_histogram=np.histogram(mu_x_j, range=nth_percentile(mu_x_j, 1.28))),
             sigma_x_j=wandb.Histogram(np_histogram=np.histogram(sigma_x_j, range=[0.0, 2.0])),
-            dt=wandb.Histogram(np_histogram=np.histogram(dt.flatten(end_dim=-2).cpu().numpy(), bins=64, range=[-5.0, 5.0])),
+            dt=wandb.Histogram(np_histogram=np.histogram(dt.view(-1).cpu().numpy(), bins=64, range=[-5.0, 5.0])),
+            delta_hat_mean=delta_hat_mean,
+            delta_hat_var=delta_hat_var,
+            delta_hat_seq_var=delta_hat_seq_var,
         )
 
     def on_validation_batch_end(self, outputs: Dict[str, Tensor], batch: Tuple[Tensor, Tensor, Tensor], batch_idx: int, **kwargs: Any) -> None:

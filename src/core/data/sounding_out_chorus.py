@@ -32,7 +32,10 @@ class SoundingOutChorus(torch.utils.data.Dataset):
     _BIT_RATE: int = 16
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return self.transforms(self.load_sample(self.x[idx])), self.y[idx], self.s[idx]
+        x = self.load_sample(self.x[idx])
+        if callable(self.transforms):
+            x = self.transforms(x)
+        return x, self.y[idx], self.s[idx]
 
     def __len__(self):
         return len(self.x)
@@ -183,7 +186,7 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
         self.training_mode = ranzen.torch.TrainingMode[self.training_mode]
 
     def prepare_data(self):
-        SoundingOutChorus(root=self.root, download=True)
+        SoundingOutChorus(root=self.root)
         return self
 
     def setup(self, stage: str):
