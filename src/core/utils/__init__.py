@@ -54,6 +54,20 @@ def detach_values(d: Dict) -> Dict:
         for k, v in d.items()
     }
 
+def linear_schedule(
+    step: int,
+    x_min: float,
+    x_max: float,
+    warmup_steps: int = 10000,
+    hold_steps: int = 10000,
+) -> float:
+    if step < hold_steps:
+        return x_min
+    if step >= hold_steps + warmup_steps:
+        return x_max
+    t = (step - hold_steps) / warmup_steps
+    return x_min + (x_max - x_min) * t
+
 def nth_percentile(x: torch.Tensor, z_score: float) -> Tuple[torch.Tensor, torch.Tensor]:
     return x.mean() - z_score * x.std(), x.mean() + z_score * x.std()
 
