@@ -152,16 +152,16 @@ class SIVAE(L.LightningModule):
         self.log_mel_spectrogram = LogMelSpectrogram(**self.log_mel_spectrogram_params)
         self.feature_encoder = init_cnn_feature_encoder(**self.cnn_encoder_params)
         self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
-        # self.alignment_encoder = init_alignment_encoder(**self.alignment_encoder_params)
-        self.alignment_encoder = AlignmentEncoder(
-            x_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
-            x_freq_dim=self.num_mel_bins // 2**(self.cnn_layers-1),
-            x_time_dim=self.frame_window_length // 2**self.cnn_layers,
-            u_channels=self.cnn_block_sizes[1] * self.cnn_block_width,
-            u_freq_dim=self.num_mel_bins // 2**1,
-            u_time_dim=self.frame_window_length // 2**2,
-            proj_dim=512,
-        )
+        self.alignment_encoder = init_alignment_encoder(**self.alignment_encoder_params)
+        # self.alignment_encoder = AlignmentEncoder(
+        #     x_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
+        #     x_freq_dim=self.num_mel_bins // 2**(self.cnn_layers-1),
+        #     x_time_dim=self.frame_window_length // 2**self.cnn_layers,
+        #     u_channels=self.cnn_block_sizes[1] * self.cnn_block_width,
+        #     u_freq_dim=self.num_mel_bins // 2**1,
+        #     u_time_dim=self.frame_window_length // 2**2,
+        #     proj_dim=512,
+        # )
         self.feature_decoder = init_cnn_feature_decoder(**self.cnn_decoder_params)
         self.content_decoder = init_mlp_content_decoder(**self.content_mlp_decoder_params)
         self.strict_loading = False
@@ -282,7 +282,7 @@ class SIVAE(L.LightningModule):
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
         log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=self.sigma_latent.pow(2).log())
         q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
-        delta_hat = self.alignment_encoder(x, u, t=t)
+        delta_hat = self.alignment_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         return q_z, delta_hat
 
     def cnn_encode(self, x: Tensor) -> Tensor:
@@ -429,9 +429,9 @@ class SIVAE(L.LightningModule):
         return self.predict(**batch, **kwargs)
 
     def on_train_batch_end(self, outputs: Dict[str, Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
-        if self.trainer.global_step % self.trainer.log_every_n_steps == 0:
-            step_outputs = self.training_step_outputs[0]
-            self.on_batch_end(step_outputs, "train", min_num_samples=1)
+        # if self.trainer.global_step % self.trainer.log_every_n_steps == 0:
+        #     step_outputs = self.training_step_outputs[0]
+        #     self.on_batch_end(step_outputs, "train", min_num_samples=1)
         self.training_step_outputs.clear()
 
     def on_validation_batch_end(self, outputs: Dict[str, Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
