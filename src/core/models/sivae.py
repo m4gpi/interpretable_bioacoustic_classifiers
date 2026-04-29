@@ -212,7 +212,7 @@ class SIVAE(L.LightningModule):
         U_hat = self.content_decoder(z) # (bs * seq, ch, fr, fq)
         if self.training:
             # during training, occasionally aid the decoder by providing the true delta
-            true_delta_prob = 1 - linear_schedule(t, **self.delta_prob_params)
+            true_delta_prob = self.delta_prob_max - linear_schedule(t, **self.delta_prob_params)
             mask = torch.bernoulli(torch.full((delta_i.size(0), 1, 1), true_delta_prob, device=delta_i.device))
             delta_i_mixed = (mask * delta_i + (1 - mask) * delta_hat_i.view(delta_i.size())).view(delta_hat_i.size())
             delta_j_mixed = (mask * delta_j + (1 - mask) * delta_hat_j.view(delta_j.size())).view(delta_hat_j.size())
@@ -408,7 +408,7 @@ class SIVAE(L.LightningModule):
         mae = (x_hat - x).abs().flatten(start_dim=-3).mean(dim=-1).mean()
         mse = (x_hat - x).pow(2).flatten(start_dim=-3).mean(dim=-1).mean()
         dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / self.latent_dim).mean()
-        true_delta_prob = 1 - linear_schedule(self.trainer.global_step, **self.delta_prob_params)
+        true_delta_prob = self.delta_prob_max - linear_schedule(self.trainer.global_step, **self.delta_prob_params)
         return dict(
             mae=mae,
             mse=mse,
