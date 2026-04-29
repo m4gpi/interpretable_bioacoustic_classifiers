@@ -35,7 +35,7 @@ from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
 from src.core.utils import Batch, soft_clip, detach_values, prefix_keys, bounded_sigmoid, linear_schedule
-from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, autoregressive_prior
+from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -94,6 +94,7 @@ class SIVAE(L.LightningModule):
     frame_hop_length: int | None = 192
     num_mel_bins: int = 64
     latent_dim: int = 128
+    beta: float = 1.0
     sigma_x: float = 0.2
     sigma_z_min: float = 0.0498
     weight_init_std: float = 1e-3
@@ -146,6 +147,7 @@ class SIVAE(L.LightningModule):
     def __post_init__(self):
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
         self.save_hyperparameters()
+        self.register_buffer("_beta", torch.tensor(self.beta, dtype=torch.float32, requires_grad=False))
         self.register_buffer("sigma_recon", torch.tensor(self.sigma_x, dtype=torch.float32, requires_grad=False))
         if self.sigma_z_min is not None:
             self.register_buffer("sigma_latent", torch.tensor(self.sigma_z_min, dtype=torch.float32, requires_grad=False))
@@ -178,8 +180,9 @@ class SIVAE(L.LightningModule):
         x_i_framed = self.frame(x_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
         epsilon = torch.randn(x_i_framed.size(0), 1, 1, 1).to(x_i.device)
         delta_sigma = self.delta_sigma_current(self.trainer.global_step)
-        delta = epsilon * delta_sigma
-        x_j = translation(x_i_framed, delta, padding_mode="circular")
+        delta_i = torch.zeros_like(epsilon)
+        delta_j = epsilon * delta_sigma
+        x_j = translation(x_i_framed, delta_j, padding_mode="circular")
         # encode posterior for translated frames separately
         q_z_j, delta_hat_j = self.encode(x_j, t=t) # (bs * seq, 1, ld)
         mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
@@ -192,10 +195,24 @@ class SIVAE(L.LightningModule):
         q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1).view(q_z_i.size())
         # decode to feature maps
         U_hat = self.content_decoder(z) # (bs * seq, ch, fr, fq)
-        # reconstruct a contiguous sequence
-        x_hat_i = self.cnn_decode(U_hat, delta_hat_i) # (bs, 1, fr * seq, fq)
-        # and reconstruct independent translations
-        x_hat_j = self.cnn_decode(U_hat, delta_hat_j) # (bs * seq, 1, fr, fq)
+        # during training, sometimes aid the decoder by providing the true delta
+        if self.training:
+            true_delta_prob = 1 - linear_schedule(t, 0.0, 1.0, hold_steps=10000, warmup_steps=10000)
+            if np.random.choice([0, 1], p=[1 - true_delta_prob, true_delta_prob]):
+                # reconstruct a contiguous sequence
+                x_hat_i = self.cnn_decode(U_hat, delta_i) # (bs, 1, fr * seq, fq)
+                # and reconstruct independent translations
+                x_hat_j = self.cnn_decode(U_hat, delta_j) # (bs * seq, 1, fr, fq)
+            else:
+                # reconstruct a contiguous sequence
+                x_hat_i = self.cnn_decode(U_hat, delta_hat_i) # (bs, 1, fr * seq, fq)
+                # and reconstruct independent translations
+                x_hat_j = self.cnn_decode(U_hat, delta_hat_j) # (bs * seq, 1, fr, fq)
+        else:
+            # reconstruct a contiguous sequence
+            x_hat_i = self.cnn_decode(U_hat, delta_hat_i) # (bs, 1, fr * seq, fq)
+            # and reconstruct independent translations
+            x_hat_j = self.cnn_decode(U_hat, delta_hat_j) # (bs * seq, 1, fr, fq)
         # frame for frame-wise loss
         x_hat_i_framed = self.frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
         x = torch.cat([x_i_framed, x_j], dim=0)
@@ -204,7 +221,7 @@ class SIVAE(L.LightningModule):
             x=x, x_i=x_i, x_j=x_j,
             x_hat=x_hat, x_hat_i=x_hat_i, x_hat_j=x_hat_j,
             q_z=q_z, q_z_i=q_z_i, q_z_j=q_z_j,
-            delta=delta, delta_hat_i=delta_hat_i, delta_hat_j=delta_hat_j,
+            delta_i=delta_i, delta_j=delta_j, delta_hat_i=delta_hat_i, delta_hat_j=delta_hat_j,
             delta_sigma=delta_sigma,
         )
 
@@ -279,9 +296,10 @@ class SIVAE(L.LightningModule):
         x = self.frame(x, window_length=self.latent_window_length, hop_length=(hop_length or self.frame_hop_length) // 2**(self.cnn_layers), padding_mode=self.frame_padding_mode)
         u = self.frame(u, window_length=self.frame_window_length // 2**2, hop_length=self.frame_window_length // 2**2, padding_mode=self.frame_padding_mode)
         q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
-        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
-        log_sigma_sq_z = soft_clip(log_sigma_sq_z, minimum=self.sigma_latent.pow(2).log())
-        q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
+        if self.sigma_z_min is not None:
+            mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+            log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*self.sigma_latent.pow(2).log())
+            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         delta_hat = self.alignment_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         return q_z, delta_hat
 
@@ -300,7 +318,7 @@ class SIVAE(L.LightningModule):
     def cnn_decode(self, U: Tensor, delta: Tensor) -> Tensor:
         for i, block in enumerate(self.feature_decoder):
             if i == len(self.feature_decoder) - 2:
-                U = translation(U, delta.view(delta.size(0) * delta.size(1), 1, 1, 1), padding_mode="circular")
+                U = translation(U, delta.view(delta.size(0) * delta.size(1), 1, 1, 1), padding_mode="circular", mode="bicubic")
             if i == len(self.feature_decoder) - 1:
                 U = U.unflatten(0, (delta.size(0), delta.size(1))).transpose(1, 2).flatten(start_dim=2, end_dim=3)
             U = block(U)
@@ -331,14 +349,14 @@ class SIVAE(L.LightningModule):
         # maximise likelihood p(x_i|z_j) framewise to ensure invariance to sequence length
         nll = negative_log_likelihood(x, x_hat, self.sigma_recon.pow(2).log()).flatten(start_dim=-3).sum(dim=-1)
         losses.append(nll.mean())
-        outputs |= dict(log_likelihood_x=-nll.detach().mean(), )
+        outputs |= dict(log_likelihood_x=-nll.detach().mean())
         # MAP estimate of the alignment factor p(x|dt)p(dt)
         delta_hat = torch.cat([delta_hat_i.flatten(end_dim=1).unsqueeze(1), delta_hat_j], dim=0)
         nll_delta = negative_log_likelihood(delta_hat, torch.zeros(1).to(delta_hat.device), delta_sigma.pow(2).log())
         losses.append(nll_delta.mean())
         outputs |= dict(nll_delta=nll_delta.detach().mean())
         # standard normal dkl
-        dkl = gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
+        dkl = self._beta * gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
         losses.append(dkl.mean())
         outputs |= dict(dkl=dkl.detach().mean())
         # sum the loss components
@@ -356,7 +374,7 @@ class SIVAE(L.LightningModule):
         x_hat: Tensor,
         q_z_i: Tensor,
         q_z_j: Tensor,
-        delta: Tensor,
+        delta_j: Tensor,
         delta_hat_i: Tensor,
         delta_hat_j: Tensor,
         delta_sigma: Tensor,
@@ -372,7 +390,7 @@ class SIVAE(L.LightningModule):
         delta_hat = torch.cat([delta_hat_i, delta_hat_j.view(delta_hat_i.size())])
         delta_hat_hist = np.histogram(delta_hat.flatten().cpu().numpy(), bins=128, range=[-5.0, 5.0])
         delta_hat_mean, delta_hat_var, delta_hat_seq_var = delta_hat.mean(), delta_hat.var(), delta_hat.var(dim=1).mean()
-        delta_mae = (delta_hat_j - delta).abs().mean()
+        delta_mae = (delta_hat_j - delta_j).abs().mean()
         mae = (x_hat - x).abs().flatten(start_dim=-3).mean(dim=-1).mean()
         mse = (x_hat - x).pow(2).flatten(start_dim=-3).mean(dim=-1).mean()
         dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / self.latent_dim).mean()
@@ -429,9 +447,9 @@ class SIVAE(L.LightningModule):
         return self.predict(**batch, **kwargs)
 
     def on_train_batch_end(self, outputs: Dict[str, Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
-        # if self.trainer.global_step % self.trainer.log_every_n_steps == 0:
-        #     step_outputs = self.training_step_outputs[0]
-        #     self.on_batch_end(step_outputs, "train", min_num_samples=1)
+        if self.trainer.log_every_n_steps is not None and self.trainer.global_step % self.trainer.log_every_n_steps == 0:
+            step_outputs = self.training_step_outputs[0]
+            self.on_batch_end(step_outputs, "train", min_num_samples=1)
         self.training_step_outputs.clear()
 
     def on_validation_batch_end(self, outputs: Dict[str, Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
