@@ -126,6 +126,7 @@ class SIVAE(L.LightningModule):
     delta_sigma_min: float | None = None
     delta_sigma_max: float = 2.0
     delta_sigma_step_slope: float = 1.0
+    prior_delta_sigma: float = 2.0
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         plt.switch_backend('agg')
@@ -156,6 +157,7 @@ class SIVAE(L.LightningModule):
         self.register_buffer("sigma_recon", torch.tensor(self.sigma_x, dtype=torch.float32, requires_grad=False))
         if self.sigma_z_min is not None:
             self.register_buffer("sigma_latent", torch.tensor(self.sigma_z_min, dtype=torch.float32, requires_grad=False))
+        self.register_buffer("sigma_trans", torch.tensor(self.prior_delta_sigma, dtype=torch.float32, requires_grad=False))
         self.log_mel_spectrogram = LogMelSpectrogram(**self.log_mel_spectrogram_params)
         self.feature_encoder = init_cnn_feature_encoder(**self.cnn_encoder_params)
         self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
@@ -364,7 +366,7 @@ class SIVAE(L.LightningModule):
         outputs |= dict(log_likelihood_x=-nll.detach().mean())
         # MAP estimate of the alignment factor p(x|dt)p(dt)
         delta_hat = torch.cat([delta_hat_i.flatten(end_dim=1).unsqueeze(1), delta_hat_j], dim=0)
-        nll_delta = negative_log_likelihood(delta_hat, torch.zeros(1).to(delta_hat.device), delta_sigma.pow(2).log())
+        nll_delta = negative_log_likelihood(delta_hat, torch.zeros(1).to(delta_hat.device), self.sigma_trans.pow(2).log())
         losses.append(nll_delta.mean())
         outputs |= dict(nll_delta=nll_delta.detach().mean())
         # standard normal dkl
