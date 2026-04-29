@@ -37,6 +37,7 @@ from src.core.utils import soft_clip
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.utils import detach_values, prefix_keys, try_or
+from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -94,9 +95,10 @@ class VAE(L.LightningModule):
     def __post_init__(self):
         self.save_hyperparameters()
         self.mel_max_hertz = self.mel_max_hertz or self.sample_rate / 2.0
-        self.register_buffer("sigma_recon", torch.tensor(self.sigma_x, dtype=torch.float32))
+        self.register_buffer("__beta", torch.tensor(self._beta, dtype=torch.float32, requires_grad=False))
+        self.register_buffer("sigma_recon", torch.tensor(self.sigma_x, dtype=torch.float32, requires_grad=False))
         if self.sigma_z_min is not None:
-            self.register_buffer("sigma_latent", torch.tensor(self.sigma_z_min, dtype=torch.float32))
+            self.register_buffer("sigma_latent", torch.tensor(self.sigma_z_min, dtype=torch.float32, requires_grad=False))
         self.log_mel_spectrogram = LogMelSpectrogram(**self.log_mel_spectrogram_params)
         self.feature_encoder = init_cnn_feature_encoder(**self.cnn_encoder_params)
         self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
@@ -179,7 +181,7 @@ class VAE(L.LightningModule):
         if self.sigma_z_min is not None:
             mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
             log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*self.sigma_latent.log())
-            torch.cat([mu_z, log_sigma_sq_z], dim=-1)
+            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         return q_z,
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
@@ -212,10 +214,9 @@ class VAE(L.LightningModule):
         nll = (1/2 * (var.log() + (err / var)))
         nll = nll.flatten(start_dim=-3).sum(dim=-1).mean()
         losses.append(nll)
-        outputs |= dict(log_likelihood_x=-nll.detach().mean())
+        outputs |= dict(log_likelihood_x=-nll.detach())
         # batch/sequence mean frame-wise sum standard normal kl
-        mu, log_sigma_sq = q_z.chunk(2, dim=-1)
-        dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp())).sum(dim=-1).mean()
+        dkl = self._beta * gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
         losses.append(dkl)
         outputs |= dict(dkl=dkl.detach())
         # sum the loss components
