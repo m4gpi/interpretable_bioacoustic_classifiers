@@ -1,6 +1,7 @@
 # @package _global_
 
 # python main.py +experiment=sivae
+version: v101
 
 defaults:
   - override /model: sivae
@@ -26,6 +27,14 @@ callbacks:
     filename: '{step}'
     every_n_train_steps: 5_000
     save_top_k: 1
+  # spectrogram_logger:
+  #   _target_: src.core.callbacks.spectrogram_logger.SpectrogramLogger
+  #   log_every_n_train_steps: 500
+  #   log_every_n_val_steps: 5
+  #   num_train_samples_per_batch: 1
+  #   num_val_samples_per_batch: 1
+  #   max_val_samples: 12
+  #   num_frames_per_sample: 6
   vae_metrics:
     _target_: src.core.callbacks.vae_metrics.VAEMetrics
     save_path: ${paths.results_dir}/metrics.parquet
