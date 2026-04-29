@@ -632,8 +632,8 @@ class SIVAE(L.LightningModule):
     @property
     def delta_prob_params(self):
         return dict(
-            x_min=0.0,
-            x_max=1.0,
+            x_min=self.delta_prob_min,
+            x_max=self.delta_prob_max,
             hold_steps=self.delta_prob_step_start,
             warmup_steps=self.delta_prob_step_end - self.delta_prob_step_start
         )
