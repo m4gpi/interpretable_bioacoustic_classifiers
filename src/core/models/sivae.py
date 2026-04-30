@@ -34,7 +34,7 @@ from src.core.models.components import (
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation
-from src.core.utils import Batch, soft_clip, detach_values, prefix_keys, bounded_sigmoid, linear_schedule
+from src.core.utils import Batch, soft_clip, detach_values, prefix_keys, bounded_sigmoid, linear_schedule, linear_decay
 from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior
 
 logging.basicConfig(level=logging.INFO)
@@ -212,7 +212,7 @@ class SIVAE(L.LightningModule):
         U_hat = self.content_decoder(z) # (bs * seq, ch, fr, fq)
         if self.training:
             # during training, occasionally aid the decoder by providing the true delta
-            true_delta_prob = self.delta_prob_max - linear_schedule(t, **self.delta_prob_params)
+            true_delta_prob = linear_decay(t, **self.delta_prob_params)
             mask = torch.bernoulli(torch.full((delta_i.size(0), 1, 1), true_delta_prob, device=delta_i.device))
             delta_i_mixed = (mask * delta_i + (1 - mask) * delta_hat_i.view(delta_i.size())).view(delta_hat_i.size())
             delta_j_mixed = (mask * delta_j + (1 - mask) * delta_hat_j.view(delta_j.size())).view(delta_hat_j.size())
@@ -366,7 +366,7 @@ class SIVAE(L.LightningModule):
         outputs |= dict(log_likelihood_x=-nll.detach().mean())
         # MAP estimate of the alignment factor p(x|dt)p(dt)
         delta_hat = torch.cat([delta_hat_i.flatten(end_dim=1).unsqueeze(1), delta_hat_j], dim=0)
-        nll_delta = negative_log_likelihood(delta_hat, torch.zeros(1).to(delta_hat.device), self.sigma_trans.pow(2).log())
+        nll_delta = negative_log_likelihood(delta_hat, torch.zeros(1).to(delta_hat.device), delta_sigma.pow(2).log())
         losses.append(nll_delta.mean())
         outputs |= dict(nll_delta=nll_delta.detach().mean())
         # standard normal dkl
@@ -408,7 +408,7 @@ class SIVAE(L.LightningModule):
         mae = (x_hat - x).abs().flatten(start_dim=-3).mean(dim=-1).mean()
         mse = (x_hat - x).pow(2).flatten(start_dim=-3).mean(dim=-1).mean()
         dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / self.latent_dim).mean()
-        true_delta_prob = self.delta_prob_max - linear_schedule(self.trainer.global_step, **self.delta_prob_params)
+        true_delta_prob = linear_decay(self.trainer.global_step, **self.delta_prob_params)
         return dict(
             mae=mae,
             mse=mse,
@@ -632,9 +632,9 @@ class SIVAE(L.LightningModule):
     @property
     def delta_prob_params(self):
         return dict(
-            x_min=self.delta_prob_min,
-            x_max=self.delta_prob_max,
-            hold_steps=self.delta_prob_step_start,
-            warmup_steps=self.delta_prob_step_end - self.delta_prob_step_start
+            minimum=self.delta_prob_min,
+            maximum=self.delta_prob_max,
+            t_start=self.delta_prob_step_start,
+            t_end=self.delta_prob_step_end,
         )
 
