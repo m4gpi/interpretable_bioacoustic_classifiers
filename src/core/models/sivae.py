@@ -58,7 +58,7 @@ class AlignmentEncoder(torch.nn.Module):
         weight_init_std: float = 1e-1,
     ) -> nn.Module:
         super().__init__()
-        # self.x_norm = torch.nn.LayerNorm([x_channels, x_time_dim, x_freq_dim])
+        self.x_norm = torch.nn.LayerNorm([x_channels, x_time_dim, x_freq_dim])
         self.x_conf_freq = torch.nn.Conv2d(x_channels, x_channels // 4, kernel_size=(1, x_freq_dim))
         in_features = x_channels // 4 * x_time_dim
         self.mlp = torch.nn.Sequential(
@@ -70,7 +70,7 @@ class AlignmentEncoder(torch.nn.Module):
             self.mlp[-1].weight.mul_(weight_init_std)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x = self.x_norm(x)
+        x = self.x_norm(x)
         x = self.x_conf_freq(x)
         x = x.flatten(start_dim=1)
         delta = self.mlp(x)
@@ -132,6 +132,7 @@ class SIVAE(L.LightningModule):
         scheduler_interval: str = "step",
         scheduler_frequency: int = 1,
         translation_mode: str = "bicubic",
+        delta_weight_init_std: float = 1e-1,
         delta_prob_step_start: int = 0,
         delta_prob_step_end: int = 20000,
         delta_prob_min: float = 0.0,
@@ -181,6 +182,7 @@ class SIVAE(L.LightningModule):
         self.scheduler_interval = scheduler_interval
         self.scheduler_frequency = scheduler_frequency
         self.translation_mode = translation_mode
+        self.delta_weight_init_std = delta_weight_init_std
         self.delta_prob_step_start = delta_prob_step_start
         self.delta_prob_step_end = delta_prob_step_end
         self.delta_prob_min = delta_prob_min
@@ -209,7 +211,7 @@ class SIVAE(L.LightningModule):
             x_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
             x_freq_dim=self.num_mel_bins // 2**(self.cnn_layers-1),
             x_time_dim=self.frame_window_length // 2**self.cnn_layers,
-            weight_init_std=1e-1,
+            weight_init_std=self.delta_weight_init_std,
         )
         self.feature_decoder = init_cnn_feature_decoder(**self.cnn_decoder_params)
         self.content_decoder = init_mlp_content_decoder(**self.content_mlp_decoder_params)
