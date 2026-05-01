@@ -43,6 +43,12 @@ log = logging.getLogger(__name__)
 
 __all__ = ["SIVAE"]
 
+def circular_variance(theta, dim=1, keepdim=False):
+    sin_mean = torch.sin(theta).mean(dim=dim, keepdim=keepdim)
+    cos_mean = torch.cos(theta).mean(dim=dim, keepdim=keepdim)
+    R = torch.sqrt(sin_mean**2 + cos_mean**2)
+    return 1 - R
+
 class AlignmentEncoder(torch.nn.Module):
     def __init__(
         self,
@@ -52,6 +58,7 @@ class AlignmentEncoder(torch.nn.Module):
         weight_init_std: float = 1e-1,
     ) -> nn.Module:
         super().__init__()
+        # self.x_norm = torch.nn.LayerNorm([x_channels, x_time_dim, x_freq_dim])
         self.x_conf_freq = torch.nn.Conv2d(x_channels, x_channels // 4, kernel_size=(1, x_freq_dim))
         in_features = x_channels // 4 * x_time_dim
         self.mlp = torch.nn.Sequential(
@@ -63,6 +70,7 @@ class AlignmentEncoder(torch.nn.Module):
             self.mlp[-1].weight.mul_(weight_init_std)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x = self.x_norm(x)
         x = self.x_conf_freq(x)
         x = x.flatten(start_dim=1)
         delta = self.mlp(x)
@@ -188,7 +196,6 @@ class SIVAE(L.LightningModule):
         self.log_mel_spectrogram = LogMelSpectrogram(**self.log_mel_spectrogram_params)
         self.feature_encoder = init_cnn_feature_encoder(**self.cnn_encoder_params)
         self.content_encoder = init_mlp_content_encoder(**self.content_mlp_encoder_params)
-        # self.alignment_encoder = init_alignment_encoder(**self.alignment_encoder_params)
         # self.alignment_encoder = AlignmentEncoder(
         #     x_channels=self.cnn_block_sizes[-1] * self.cnn_block_width,
         #     x_freq_dim=self.num_mel_bins // 2**(self.cnn_layers-1),
@@ -218,16 +225,15 @@ class SIVAE(L.LightningModule):
         mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
         # x_j is x_i chunked into independently translated frames
         x_i_framed = self.frame(x_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
-        epsilon = torch.randn(x_i_framed.size(0), 1, 1, 1).to(x_i.device)
+        epsilon = torch.randn(x_i_framed.size(0), 1, 1).to(x_i.device)
         delta_sigma = self.delta_sigma_current(self.trainer.global_step)
-        delta_j = (epsilon * delta_sigma).detach()
+        delta_j = (epsilon * delta_sigma)
+        delta_i = torch.zeros_like(delta_j)
         x_j = self.translation(x_i_framed.transpose(-1, -2).contiguous(), delta_j, mode=self.translation_mode).transpose(-1, -2).contiguous()
         # encode posterior for translated frames separately
         q_z_j, delta_hat_j = self.encode(x_j, t=t) # (bs * seq, 1, ld)
         mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
         # ground truth delta factors squeezed to (bs * seq, 1, 1)
-        delta_i = torch.zeros_like(epsilon).detach().squeeze(-1)
-        delta_j = delta_j.squeeze(-1)
         # decode to feature maps
         if self.cross_decode_method == "soft":
             # soft cross-decoding averages the distributions
@@ -250,9 +256,10 @@ class SIVAE(L.LightningModule):
         if self.training:
             # during training, occasionally aid the decoder by providing the true delta
             true_delta_prob = linear_decay(t, **self.delta_prob_params)
-            mask = torch.bernoulli(torch.full((delta_i.size(0), 1, 1), true_delta_prob, device=delta_i.device))
-            delta_i_mixed = (mask * delta_i + (1 - mask) * delta_hat_i.view(delta_i.size())).view(delta_hat_i.size())
-            delta_j_mixed = (mask * delta_j + (1 - mask) * delta_hat_j.view(delta_j.size())).view(delta_hat_j.size())
+            mask_i = torch.bernoulli(torch.full(delta_i.size(), true_delta_prob, device=delta_i.device))
+            mask_j = torch.bernoulli(torch.full(delta_j.size(), true_delta_prob, device=delta_j.device))
+            delta_i_mixed = (mask_i * delta_i + (1 - mask_j) * delta_hat_i.view(delta_i.size())).view(delta_hat_i.size())
+            delta_j_mixed = (mask_j * delta_j + (1 - mask_j) * delta_hat_j.view(delta_j.size())).view(delta_hat_j.size())
             # reconstruct a contiguous sequence
             x_hat_i = self.cnn_decode(U_hat_j, delta_i_mixed) # (bs, 1, fr * seq, fq)
             # reconstruct independent translations
@@ -466,6 +473,7 @@ class SIVAE(L.LightningModule):
         x_hat: Tensor,
         q_z_i: Tensor,
         q_z_j: Tensor,
+        delta_i: Tensor,
         delta_j: Tensor,
         delta_hat_i: Tensor,
         delta_hat_j: Tensor,
@@ -482,7 +490,15 @@ class SIVAE(L.LightningModule):
         delta_hat = torch.cat([delta_hat_i, delta_hat_j.view(delta_hat_i.size())])
         delta_hat_hist = np.histogram(delta_hat.flatten().cpu().numpy(), bins=128, range=[-5.0, 5.0])
         delta_hat_mean, delta_hat_var, delta_hat_seq_var = delta_hat.mean(), delta_hat.var(), delta_hat.var(dim=1).mean()
-        delta_mae = (delta_hat_j - delta_j).abs().mean()
+        diff = torch.pi * (delta_hat_j - delta_j)
+        theta_i, theta_j = torch.pi * delta_i, torch.pi * delta_j
+        theta_hat_i, theta_hat_j = torch.pi * delta_hat_i, torch.pi * delta_hat_j
+        theta_hat = torch.cat([theta_hat_i, theta_hat_j.view(theta_hat_i.size())])
+        theta_hat_var = circular_variance(theta_hat, dim=None).mean()
+        theta_hat_seq_var = circular_variance(theta_hat, dim=1).mean()
+        angular_distance = torch.atan2(torch.sin(diff), torch.cos(diff))
+        angular_error = angular_distance.abs().mean()
+        angular_distance = angular_distance.mean()
         mae = (x_hat - x).abs().flatten(start_dim=-3).mean(dim=-1).mean()
         mse = (x_hat - x).pow(2).flatten(start_dim=-3).mean(dim=-1).mean()
         dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / self.latent_dim).mean()
@@ -498,7 +514,10 @@ class SIVAE(L.LightningModule):
             delta_hat_mean=delta_hat_mean,
             delta_hat_var=delta_hat_var,
             delta_hat_seq_var=delta_hat_seq_var,
-            delta_mae=delta_mae,
+            theta_hat_var=theta_hat_var,
+            theta_hat_seq_var=theta_hat_seq_var,
+            angular_distance=angular_distance,
+            angular_error=angular_error,
             dkl_norm=dkl_norm,
             delta_sigma=delta_sigma,
         )
