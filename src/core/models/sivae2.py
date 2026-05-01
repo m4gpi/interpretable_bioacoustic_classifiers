@@ -65,12 +65,9 @@ class ShiftHead(torch.nn.Module):
         direction = v / (v.norm(dim=-1, keepdim=True) + self.epsilon)
         # cos(theta), sin(theta)
         dx, dy = direction.chunk(2, dim=-1)
-        # normalise time projection direction
-        # cos(phi), sin(phi)
-        wx, wy = (self.w / (self.w.norm() + 1e-8)).chunk(2, dim=-1)
         # project onto shift axis
-        delta = dx * wx + dy * wy
-        return delta, dx, dy, wx, wy
+        delta = dy # dx * wx + dy * wy
+        return delta, dx, dy
 
 class AlignmentEncoder(nn.Module):
     def __init__(
@@ -85,8 +82,8 @@ class AlignmentEncoder(nn.Module):
         weight_init_std: float = 1e-1,
     ) -> None:
         super().__init__()
-        # self.u_ln = torch.nn.LayerNorm([u_channels, u_time_dim, u_freq_dim])
-        # self.x_ln = torch.nn.LayerNorm([x_channels, x_time_dim, x_freq_dim])
+        self.u_norm = torch.nn.LayerNorm([u_channels, u_time_dim, u_freq_dim])
+        self.x_norm = torch.nn.LayerNorm([x_channels, x_time_dim, x_freq_dim])
         self.x_conv_freq = torch.nn.Conv2d(x_channels, x_channels // 4, kernel_size=(1, x_freq_dim))
         self.u_conv_freq = torch.nn.Conv2d(u_channels, u_channels // 4, kernel_size=(1, u_freq_dim))
         self.x_proj = nn.Linear(x_channels // 4 * x_time_dim, proj_dim)
@@ -98,23 +95,25 @@ class AlignmentEncoder(nn.Module):
             torch.nn.Linear(in_features, 2, bias=False),
         )
         with torch.no_grad():
-            mlp[-1].weight.mul_(weight_init_std)
+            self.mlp[-1].weight.mul_(weight_init_std)
         self.head = ShiftHead()
 
     def forward(self, x: torch.Tensor, u: torch.Tensor, t: int | None = None):
         bs, seq, *_ = u.shape
         x = x.flatten(end_dim=1)
+        x = self.x_norm(x)
         x = self.x_conv_freq(x).squeeze(-1)
         x = x.unflatten(0, (bs, seq)).flatten(start_dim=-2)
         u = u.flatten(end_dim=1)
+        u = self.u_norm(u)
         u = self.u_conv_freq(u).squeeze(-1)
         u = u.unflatten(0, (bs, seq)).flatten(start_dim=-2)
         x = self.x_proj(x) # (bs, seq, d)
         u = self.u_proj(u) # (bs, seq, d)
         h = torch.cat([x, u], dim=-1)
         h = self.mlp(h)
-        delta, dx, dy, wx, wy = self.head(h)
-        return delta, (dx, dy, wx, wy)
+        delta, dx, dy = self.head(h)
+        return delta, (dx, dy)
 
 class SIVAE(L.LightningModule):
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
@@ -172,6 +171,7 @@ class SIVAE(L.LightningModule):
         scheduler_interval: str = "step",
         scheduler_frequency: int = 1,
         translation_mode: str = "bicubic",
+        delta_weight_init_std: float = 1e-1,
         delta_prob_step_start: int = 0,
         delta_prob_step_end: int = 20000,
         delta_prob_min: float = 0.0,
@@ -223,6 +223,7 @@ class SIVAE(L.LightningModule):
         self.scheduler_interval = scheduler_interval
         self.scheduler_frequency = scheduler_frequency
         self.translation_mode = translation_mode
+        self.delta_weight_init_std = delta_weight_init_std
         self.delta_prob_step_start = delta_prob_step_start
         self.delta_prob_step_end = delta_prob_step_end
         self.delta_prob_min = delta_prob_min
@@ -247,6 +248,7 @@ class SIVAE(L.LightningModule):
             u_freq_dim=self.num_mel_bins // 2**1,
             u_time_dim=self.frame_window_length // 2**2,
             proj_dim=384,
+            weight_init_std=self.delta_weight_init_std,
         )
         self.feature_decoder = init_cnn_feature_decoder(**self.cnn_decoder_params)
         self.content_decoder = init_mlp_content_decoder(**self.content_mlp_decoder_params)
@@ -524,21 +526,25 @@ class SIVAE(L.LightningModule):
         theta_i, theta_j = torch.pi * delta_i, torch.pi * delta_j
         theta_hat_i, theta_hat_j = torch.pi * delta_hat_i, torch.pi * delta_hat_j
         theta_hat = torch.cat([theta_hat_i, theta_hat_j.view(theta_hat_i.size())])
-        theta_hat_var, theta_hat_seq_var = circular_variance(theta_hat, dim=None).mean(), circular_variance(theta_hat, dim=1).mean()
-        angular_error = 1 - torch.cos(theta_j - theta_hat_j)
-        dx_i, dy_i, wx_i, wy_i = dxdy_i
-        dx_j, dy_j, wx_j, wy_j = dxdy_j
-        dx = torch.cat([dx_i, dx_j.view(dx_i.size())], dim=0)
-        dy = torch.cat([dy_i, dy_j.view(dy_i.size())], dim=0)
-        theta = torch.atan2(dy, dx)
-        wx = torch.cat([wx_i, wx_j.view(wx_i.size())], dim=0)
-        wy = torch.cat([wy_i, wy_j.view(wy_i.size())], dim=0)
-        phi = torch.atan2(wy, wx)
-        relative_angle = theta - phi
-        relative_angle = (relative_angle + torch.pi) % (2 * torch.pi) - torch.pi
-        relative_angle_hist = np.histogram(relative_angle.cpu(), bins=32, range=[-torch.pi, torch.pi])
-        p = relative_angle_hist[0] / relative_angle_hist[0].sum()
-        relative_angle_entropy = -np.sum(p * np.log(p + 1e-8))
+        theta_hat_var = circular_variance(theta_hat, dim=None).mean()
+        theta_hat_seq_var = circular_variance(theta_hat, dim=1).mean()
+        diff = torch.pi * (delta_hat_j - delta_j)
+        angular_distance = torch.atan2(torch.sin(diff), torch.cos(diff))
+        angular_error = angular_distance.abs().mean()
+        angular_distance = angular_distance.mean()
+        # dx_i, dy_i = dxdy_i
+        # dx_j, dy_j = dxdy_j
+        # dx = torch.cat([dx_i, dx_j.view(dx_i.size())], dim=0)
+        # dy = torch.cat([dy_i, dy_j.view(dy_i.size())], dim=0)
+        # theta = torch.atan2(dy, dx)
+        # wx = torch.cat([wx_i, wx_j.view(wx_i.size())], dim=0)
+        # wy = torch.cat([wy_i, wy_j.view(wy_i.size())], dim=0)
+        # phi = torch.atan2(wy, wx)
+        # relative_angle = theta - phi
+        # relative_angle = (relative_angle + torch.pi) % (2 * torch.pi) - torch.pi
+        # relative_angle_hist = np.histogram(relative_angle.cpu(), bins=32, range=[-torch.pi, torch.pi])
+        # p = relative_angle_hist[0] / relative_angle_hist[0].sum()
+        # relative_angle_entropy = -np.sum(p * np.log(p + 1e-8))
         mae = (x_hat - x).abs().flatten(start_dim=-3).mean(dim=-1).mean()
         mse = (x_hat - x).pow(2).flatten(start_dim=-3).mean(dim=-1).mean()
         dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / self.latent_dim).mean()
@@ -553,9 +559,10 @@ class SIVAE(L.LightningModule):
             delta_hat_hist=wandb.Histogram(np_histogram=delta_hat_hist),
             theta_hat_var=theta_hat_var,
             theta_hat_seq_var=theta_hat_seq_var,
+            angular_distance=angular_distance,
             angular_error=angular_error,
-            relatuve_angle_entropy=relative_angle_entropy,
-            relative_angle_hist=wandb.Histogram(np_histogram=relative_angle_hist),
+            # relatuve_angle_entropy=relative_angle_entropy,
+            # relative_angle_hist=wandb.Histogram(np_histogram=relative_angle_hist),
             dkl_norm=dkl_norm,
             delta_sigma=delta_sigma,
         )
