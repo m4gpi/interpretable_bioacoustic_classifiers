@@ -30,8 +30,8 @@ x_i_frame_prob: 0.0
 translation_idx: 0
 delta_prob_step_start: 0
 delta_prob_step_end: 20000
-delta_prob_min: 0.2
-delta_prob_max: 0.2
+delta_prob_min: 0.5
+delta_prob_max: 0.5
 delta_sigma_min: 1.0
 delta_sigma_max: 1.0
 delta_sigma_step_slope: 0.4

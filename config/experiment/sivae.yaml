@@ -1,8 +1,6 @@
 # @package _global_
 
 # python main.py +experiment=sivae
-version: v101
-
 defaults:
   - override /model: sivae
   - override /trainer: gpu
@@ -17,13 +15,13 @@ trainer:
 callbacks:
   primary_model_checkpoint:
     _target_: lightning.pytorch.callbacks.ModelCheckpoint
-    dirpath: ./checkpoints/sivae.pt:v1
+    dirpath: ${paths.checkpoint_dir}/${version}
     filename: '{step}'
-    every_n_train_steps: 60_000
+    every_n_train_steps: 40_000
     save_top_k: -1
   secondary_model_checkpoint:
     _target_: lightning.pytorch.callbacks.ModelCheckpoint
-    dirpath: ./checkpoints/sivae.pt:v1/intervals
+    dirpath: ${paths.checkpoint_dir}/${version}/intervals
     filename: '{step}'
     every_n_train_steps: 5_000
     save_top_k: 1
@@ -46,5 +44,5 @@ callbacks:
 logger:
   wandb:
     id: ${run_id}
-    project: species_detector_pretraining
+    project: spectral_bias_adjustment
     group: sivae

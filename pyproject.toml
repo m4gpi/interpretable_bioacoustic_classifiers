@@ -44,6 +44,7 @@ dependencies = [
   "birdnetlib>=0.18.0",
   "kaggle>=1.7.4.5",
   "duckdb>=1.5.2",
+  "nemony>=0.0.2",
 ]
 
 [dependency-groups]

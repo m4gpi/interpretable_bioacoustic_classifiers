@@ -15,10 +15,12 @@ from typing import Any, List, Dict, Tuple
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.cli.utils.instantiators import instantiate_callbacks, instantiate_loggers
-from src.cli.utils import filter_kwargs_for_callable
+from src.cli.utils import filter_kwargs_for_callable, mnemonic
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+OmegaConf.register_new_resolver("mnemonic", lambda: mnemonic(os.urandom(8).hex()))
 
 def evaluate(cfg):
     OmegaConf.update(cfg, "run_id", os.urandom(16).hex(), force_add=True)

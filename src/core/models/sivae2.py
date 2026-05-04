@@ -340,9 +340,9 @@ class SIVAE(L.LightningModule):
 
         if self.training:
             # during training, occasionally aid the decoder by providing the true delta
-            true_delta_prob = linear_decay(t, **self.delta_prob_params)
-            mask_i = torch.bernoulli(torch.full((delta_i.size(0), delta_i.size(1), 1), true_delta_prob, device=delta_i.device))
-            mask_j = torch.bernoulli(torch.full((delta_j.size(0), delta_j.size(1), 1), true_delta_prob, device=delta_i.device))
+            delta_prob = self.delta_prob_current(t)
+            mask_i = torch.bernoulli(torch.full((delta_i.size(0), delta_i.size(1), 1), delta_prob, device=delta_i.device))
+            mask_j = torch.bernoulli(torch.full((delta_j.size(0), delta_j.size(1), 1), delta_prob, device=delta_i.device))
             delta_i_mixed = mask_i * delta_i + (1 - mask_i) * delta_hat_i
             delta_j_mixed = mask_j * delta_j + (1 - mask_j) * delta_hat_j
             # reconstruct a contiguous sequence
@@ -577,6 +577,10 @@ class SIVAE(L.LightningModule):
         if self.delta_sigma_min is None: return self.delta_sigma_max
         return torch.tensor(bounded_sigmoid(t, **self.delta_sigma_params))
 
+    def delta_prob_current(self, t: int) -> float:
+        if self.delta_prob_min is None: return self.delta_prob_max
+        return linear_decay(t, **self.delta_prob_params)
+
     @torch.no_grad()
     def metrics(
         self,
@@ -626,7 +630,7 @@ class SIVAE(L.LightningModule):
         # normalised KL
         dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / self.latent_dim).mean()
         # current probability of observing true shift
-        true_delta_prob = linear_decay(self.trainer.global_step, **self.delta_prob_params)
+        true_delta_prob = self.delta_prob_current(self.trainer.global_step)
         return dict(
             mae=mae,
             mse=mse,

@@ -15,13 +15,20 @@ from typing import Any, List, Dict, Tuple
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.cli.utils.instantiators import instantiate_callbacks, instantiate_loggers, instantiate_transforms
-from src.cli.utils import filter_kwargs_for_callable
+from src.cli.utils import filter_kwargs_for_callable, mnemonic
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+OmegaConf.register_new_resolver("mnemonic", lambda: mnemonic(os.urandom(8).hex()))
+
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     OmegaConf.update(cfg, "run_id", os.urandom(16).hex(), force_add=True)
+    raw_config = OmegaConf.to_container(cfg, resolve=True)
+    log.info(json.dumps(raw_config, indent=1))
+    # results_dir = pathlib.Path(cfg.get("paths").get("results_dir")).expanduser()
+    # (results_dir / "config").mkdir(parents=True, exist_ok=True)
+    # OmegaConf.save(raw_config, results_dir / "config" / f"{cfg.get('run_id')}.yaml")
 
     if cfg.get("seed"):
         L.seed_everything(cfg.seed, workers=True)
@@ -49,18 +56,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     if loggers:
         for logger in loggers:
-            logger.log_hyperparams({
-                "data": dict(cfg.data),
-                "model": dict(cfg.model),
-                "logger": dict(cfg.logger),
-                "trainer": dict(cfg.trainer),
-            })
-
-    results_dir = pathlib.Path(cfg.get("paths").get("results_dir")).expanduser()
-    (results_dir / "config").mkdir(parents=True, exist_ok=True)
-    raw_config = OmegaConf.to_container(cfg, resolve=True)
-    OmegaConf.save(raw_config, results_dir / "config" / f"{cfg.get('run_id')}.yaml")
-    log.info(json.dumps(raw_config, indent=1))
+            logger.log_hyperparams(raw_config)
 
     try:
         model.run(
