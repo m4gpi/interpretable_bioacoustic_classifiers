@@ -195,6 +195,7 @@ class SIVAE(L.LightningModule):
         scheduler_frequency: int = 1,
         translation_mode: str = "bicubic",
         x_i_frame_prob: float = 0.0,
+        translation_idx: int = 0,
         delta_weight_init_std: float = 1e-1,
         delta_prob_step_start: int = 0,
         delta_prob_step_end: int = 20000,
@@ -248,6 +249,7 @@ class SIVAE(L.LightningModule):
         self.scheduler_frequency = scheduler_frequency
         self.translation_mode = translation_mode
         self.x_i_frame_prob = x_i_frame_prob
+        self.translation_idx = translation_idx
         self.delta_weight_init_std = delta_weight_init_std
         self.delta_prob_step_start = delta_prob_step_start
         self.delta_prob_step_end = delta_prob_step_end
@@ -485,10 +487,11 @@ class SIVAE(L.LightningModule):
         return x_hat
 
     def cnn_decode(self, U: Tensor, delta: Tensor) -> Tensor:
-        U = U.transpose(-1, -2).contiguous()
-        U = self.translation(U, delta.view(delta.size(0) * delta.size(1)), mode=self.translation_mode)
-        U = U.transpose(-1, -2).contiguous()
         for i, block in enumerate(self.feature_decoder):
+            if i == self.translation_idx:
+                U = U.transpose(-1, -2).contiguous()
+                U = self.translation(U, delta.view(delta.size(0) * delta.size(1)), mode=self.translation_mode)
+                U = U.transpose(-1, -2).contiguous()
             if i == len(self.feature_decoder) - 1:
                 U = U.unflatten(0, (delta.size(0), delta.size(1))).transpose(1, 2).flatten(start_dim=2, end_dim=3)
             U = block(U)
