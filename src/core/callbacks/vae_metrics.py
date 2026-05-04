@@ -41,7 +41,8 @@ class VAEMetrics(L.Callback):
         dkl_norm = dkl.mean(dim=-1)
         dkl = dkl.sum(dim=-1)
         # frame-wise full elbo
-        nll = (1/2 * (2 * pl_module.sigma_recon.log() + ((x_framed - x_hat_framed) / pl_module.sigma_recon).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
+        sigma_recon = torch.tensor(pl_module.sigma_x, dtype=torch.float32, device=x_framed.device)
+        nll = (1/2 * (2 * sigma_recon.log() + ((x_framed - x_hat_framed) / sigma_recon).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
         elbo = nll + dkl
         # calculate timestamps
         frame_hop_samples = pl_module.fft_hop_length * pl_module.frame_window_length

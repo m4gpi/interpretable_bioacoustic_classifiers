@@ -25,6 +25,7 @@ latent_dim: 128
 beta: 1.0
 sigma_x: 0.2
 sigma_z_min: 1.e-5
+x_i_frame_prob: 0.0
 delta_prob_step_start: 0
 delta_prob_step_end: 20000
 delta_prob_min: 0.2

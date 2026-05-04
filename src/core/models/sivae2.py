@@ -36,36 +36,28 @@ from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
 from src.core.transforms.translation import translation, circular_boundary
 from src.core.utils import Batch, soft_clip, detach_values, prefix_keys, bounded_sigmoid, linear_schedule, linear_decay
-from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior
+from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, circular_variance
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 __all__ = ["SIVAE"]
 
-def circular_variance(theta, dim=1, keepdim=False):
-    sin_mean = torch.sin(theta).mean(dim=dim, keepdim=keepdim)
-    cos_mean = torch.cos(theta).mean(dim=dim, keepdim=keepdim)
-    R = torch.sqrt(sin_mean**2 + cos_mean**2)
-    return 1 - R
-
 class ArcTan2(torch.nn.Module):
     def __init__(self, epsilon: float = 1e-8):
         super().__init__()
         self.epsilon = epsilon
-        self.reference_axis = torch.nn.Parameter(torch.randn(2), requires_grad=True)
+        self.register_buffer("identity", torch.tensor([1.0, 0.0]))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.identity
         dx, dy = x.chunk(2, dim=-1)
         # normalise to unit circle (S¹), detach so the model cannot simply reduce magnitude
-        norm = (dx.pow(2) + dy.pow(2)).sqrt().detach()
-        dx = dx / norm
-        dy = dy / norm
-        # direction = x / (x.norm(dim=-1, keepdim=True).detach() + self.epsilon)
-        # fetch the two sides of the triangle, cos(theta), sin(theta)
-        # dx, dy = direction.chunk(2, dim=-1)
+        norm = (dx.pow(2) + dy.pow(2) + self.epsilon).sqrt().detach()
+        dx, dy = dx / norm, dy / norm
         # calculate the angle
-        return torch.atan2(dy, dx)
+        theta = torch.atan2(dy, dx)
+        return theta, dx, dy
 
 # class AlignmentEncoder(nn.Module):
 #     def __init__(
@@ -86,32 +78,32 @@ class ArcTan2(torch.nn.Module):
 #         self.u_conv_freq = torch.nn.Conv2d(u_channels, u_channels // 4, kernel_size=(1, u_freq_dim))
 #         self.x_proj = nn.Linear(x_channels // 4 * x_time_dim, proj_dim)
 #         self.u_proj = nn.Linear(u_channels // 4 * u_time_dim, proj_dim)
+#         self.u_proj.weight.data *= weight_init_std # try to reduce noise in u contributing early in training
 #         in_features = proj_dim * 2
 #         self.mlp = nn.Sequential(
 #             nn.Linear(in_features, in_features),
 #             nn.LeakyReLU(),
 #             torch.nn.Linear(in_features, 2, bias=False),
 #         )
-#         with torch.no_grad():
-#             self.mlp[-1].weight.mul_(weight_init_std)
-#         self.head = ArcTan2()
+#         self.atan2 = ArcTan2()
 
 #     def forward(self, x: torch.Tensor, u: torch.Tensor, t: int | None = None):
 #         bs, seq, *_ = u.shape
 #         x = x.flatten(end_dim=1)
-#         x = self.x_norm(x)
+#         # x = self.x_norm(x)
 #         x = self.x_conv_freq(x).squeeze(-1)
 #         x = x.unflatten(0, (bs, seq)).flatten(start_dim=-2)
 #         u = u.flatten(end_dim=1)
-#         u = self.u_norm(u)
+#         # u = self.u_norm(u)
 #         u = self.u_conv_freq(u).squeeze(-1)
 #         u = u.unflatten(0, (bs, seq)).flatten(start_dim=-2)
 #         x = self.x_proj(x) # (bs, seq, d)
 #         u = self.u_proj(u) # (bs, seq, d)
 #         h = torch.cat([x, u], dim=-1)
 #         h = self.mlp(h)
-#         delta, dx, dy = self.head(h)
-#         return delta, (dx, dy)
+#         theta, dx, dy = self.atan2(h)
+#         delta = theta / torch.pi
+#         return delta, theta, dx, dy
 
 class AlignmentEncoder(torch.nn.Module):
     def __init__(
@@ -122,13 +114,13 @@ class AlignmentEncoder(torch.nn.Module):
         weight_init_std: float = 1e-1,
     ) -> nn.Module:
         super().__init__()
-        self.x_norm = torch.nn.LayerNorm([x_channels, x_time_dim, x_freq_dim])
+        # self.x_norm = torch.nn.LayerNorm([x_channels, x_time_dim, x_freq_dim])
         self.x_conf_freq = torch.nn.Conv2d(x_channels, x_channels // 4, kernel_size=(1, x_freq_dim))
         in_features = x_channels // 4 * x_time_dim
         self.mlp = torch.nn.Sequential(
             torch.nn.Linear(in_features, in_features // 2),
             torch.nn.LeakyReLU(),
-            torch.nn.Linear(in_features // 2, 2)
+            torch.nn.Linear(in_features // 2, 2, bias=False)
         )
         # # bias the network to predict small angles to start with
         # self.mlp[-1].bias.data = torch.tensor([1.0, 0.0], requires_grad=True)
@@ -140,10 +132,11 @@ class AlignmentEncoder(torch.nn.Module):
         # x = self.x_norm(x)
         x = self.x_conf_freq(x).squeeze(-1)
         x = x.unflatten(0, (bs, seq)).flatten(start_dim=-2)
-        theta = self.atan2(self.mlp(x))
+        dxdy = self.mlp(x)
+        theta, dx, dy = self.atan2(dxdy)
         # map to translation co-ordinates [-1, 1]
         delta = theta / torch.pi
-        return delta
+        return delta, theta, dx, dy
 
 class SIVAE(L.LightningModule):
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
@@ -201,6 +194,7 @@ class SIVAE(L.LightningModule):
         scheduler_interval: str = "step",
         scheduler_frequency: int = 1,
         translation_mode: str = "bicubic",
+        x_i_frame_prob: float = 0.0,
         delta_weight_init_std: float = 1e-1,
         delta_prob_step_start: int = 0,
         delta_prob_step_end: int = 20000,
@@ -214,8 +208,8 @@ class SIVAE(L.LightningModule):
         cross_decode_method: str = "soft",
     ) -> None:
         super().__init__()
-        assert 1e-3 < delta_sigma_min <= 1, "delta sigma min cannot be greater than 1 or less than 1e-3"
-        assert 1e-3 < delta_sigma_max <= 1, "delta sigma max cannot be greater than 1 or less than 1e-3"
+        # assert 1e-3 < delta_sigma_min <= 1, "delta sigma min cannot be greater than 1 or less than 1e-3"
+        # assert 1e-3 < delta_sigma_max <= 1, "delta sigma max cannot be greater than 1 or less than 1e-3"
         self.save_hyperparameters()
         self.sample_rate = sample_rate
         self.num_fft = num_fft
@@ -253,6 +247,7 @@ class SIVAE(L.LightningModule):
         self.scheduler_interval = scheduler_interval
         self.scheduler_frequency = scheduler_frequency
         self.translation_mode = translation_mode
+        self.x_i_frame_prob = x_i_frame_prob
         self.delta_weight_init_std = delta_weight_init_std
         self.delta_prob_step_start = delta_prob_step_start
         self.delta_prob_step_end = delta_prob_step_end
@@ -291,21 +286,35 @@ class SIVAE(L.LightningModule):
         self._reset_cache()
 
     def forward(self, x: Tensor, *args: Any, t: int | None = None, **kwargs: Any) -> Dict[str, Tensor]:
-        # ensure x_i is a full sequence that can be divided into equal length frames
-        x_i = self.log_mel_spectrogram(x)
-        x_i = T.center_crop(x_i, [(x_i.size(-2) - (x_i.size(-2) % self.frame_window_length)), self.num_mel_bins])
-        # encode posterior for full sequence
-        q_z_i, delta_hat_i = self.encode(x_i, t=t) # (bs, seq, ld)
-        mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
-        # x_j is x_i chunked into independently translated frames
-        x_i_framed = self.frame(x_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
         delta_sigma = self.delta_sigma_current(self.trainer.global_step)
-        delta_i = torch.zeros(x_i_framed.size(0), 1, 1, device=x.device)
-        bound = torch.ones(x_i_framed.size(0), 1, 1, device=x.device)
-        delta_j = torch.distributions.Uniform(low=-bound, high=bound).sample() * delta_sigma
+        # log mel is our acoustic front-end, but doesnt have to be...
+        x = self.log_mel_spectrogram(x)
+        # ensure x is a full sequence that can be divided into equal length frames
+        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), self.num_mel_bins])
+        # framed spectorgrams are target signal
+        x_i = x
+        x_i_framed = self.frame(x_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length)
+        seq_len = x_i_framed.size(1)
+        # coin flip to determine whether to encode full or translated spectrograms for target 1 (x_i)
+        if torch.bernoulli(torch.tensor(1), self.x_i_frame_prob):
+            x_i_framed = x_i_framed.flatten(end_dim=1)
+            delta_i, theta_i, dx_i, dy_i = self.sample_circle(x_i_framed.size(0), 1, 1, scaling_factor=delta_sigma, device=x.device)
+            x_i_framed = self.translation(x_i_framed.transpose(-1, -2).contiguous(), delta_i, mode=self.translation_mode).transpose(-1, -2).contiguous()
+            x_i = x_i_framed
+            q_z_i, delta_hat_i, theta_hat_i, dx_hat_i, dy_hat_i = self.encode(x_i, t=t) # (bs * seq, 1, ld)
+            mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
+        else:
+            # when full spectrograms are used, delta / theta is necessarily zero
+            delta_i, theta_i = torch.zeros(x_i_framed.size(0), x_i_framed.size(1), 1, device=x.device), torch.zeros(x_i_framed.size(0), x_i_framed.size(1), 1, device=x.device)
+            dx_i, dy_i = torch.ones(x_i_framed.size(0), x_i_framed.size(1), 1, device=x.device), torch.zeros(x_i_framed.size(0), x_i_framed.size(1), 1, device=x.device)
+            x_i_framed = x_i_framed.flatten(end_dim=1)
+            q_z_i, delta_hat_i, theta_hat_i, dx_hat_i, dy_hat_i = self.encode(x_i, t=t) # (bs, seq, ld)
+            mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
+        # always randomly translated frames for target 2 (x_j)
+        delta_j, theta_j, dx_j, dy_j = self.sample_circle(x_i_framed.size(0), 1, 1, scaling_factor=delta_sigma, device=x.device)
         x_j = self.translation(x_i_framed.transpose(-1, -2).contiguous(), delta_j, mode=self.translation_mode).transpose(-1, -2).contiguous()
         # encode posterior for translated frames separately
-        q_z_j, delta_hat_j = self.encode(x_j, t=t) # (bs * seq, 1, ld)
+        q_z_j, delta_hat_j, theta_hat_j, dx_hat_j, dy_hat_j = self.encode(x_j, t=t) # (bs * seq, 1, ld)
         mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
         # decode to feature maps
         if self.cross_decode_method == "soft":
@@ -329,9 +338,10 @@ class SIVAE(L.LightningModule):
         if self.training:
             # during training, occasionally aid the decoder by providing the true delta
             true_delta_prob = linear_decay(t, **self.delta_prob_params)
-            mask = torch.bernoulli(torch.full((delta_i.size(0), 1, 1), true_delta_prob, device=delta_i.device))
-            delta_i_mixed = (mask * delta_i + (1 - mask) * delta_hat_i.view(delta_i.size())).view(delta_hat_i.size())
-            delta_j_mixed = (mask * delta_j + (1 - mask) * delta_hat_j.view(delta_j.size())).view(delta_hat_j.size())
+            mask_i = torch.bernoulli(torch.full((delta_i.size(0), delta_i.size(1), 1), true_delta_prob, device=delta_i.device))
+            mask_j = torch.bernoulli(torch.full((delta_j.size(0), delta_j.size(1), 1), true_delta_prob, device=delta_i.device))
+            delta_i_mixed = mask_i * delta_i + (1 - mask_i) * delta_hat_i
+            delta_j_mixed = mask_j * delta_j + (1 - mask_j) * delta_hat_j
             # reconstruct a contiguous sequence
             x_hat_i = self.cnn_decode(U_hat_j, delta_i_mixed) # (bs, 1, fr * seq, fq)
             # reconstruct independent translations
@@ -343,14 +353,19 @@ class SIVAE(L.LightningModule):
             x_hat_j = self.cnn_decode(U_hat_i, delta_hat_j) # (bs * seq, 1, fr, fq)
         # frame for frame-wise loss
         x_hat_i_framed = self.frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_hop_length).flatten(end_dim=1)
-        x = torch.cat([x_i_framed, x_j], dim=0)
-        x_hat = torch.cat([x_hat_i_framed, x_hat_j], dim=0)
+        x_framed = torch.cat([x_i_framed, x_j], dim=0)
+        x_hat_framed = torch.cat([x_hat_i_framed, x_hat_j], dim=0)
         return dict(
-            x=x, x_i=x_i, x_j=x_j,
-            x_hat=x_hat, x_hat_i=x_hat_i, x_hat_j=x_hat_j,
+            x=x,
+            x_framed=x_framed, x_i=x_i, x_j=x_j,
+            x_hat_framed=x_hat_framed, x_hat_i=x_hat_i, x_hat_j=x_hat_j,
             q_z=q_z, q_z_i=q_z_i, q_z_j=q_z_j,
             delta_i=delta_i, delta_j=delta_j, delta_hat_i=delta_hat_i, delta_hat_j=delta_hat_j,
+            theta_i=theta_i, theta_j=theta_j, theta_hat_i=theta_hat_i, theta_hat_j=theta_hat_j,
+            dx_i=dx_i, dx_j=dx_j, dx_hat_i=dx_hat_i, dx_hat_j=dx_hat_j,
+            dy_i=dy_i, dy_j=dy_j, dy_hat_i=dy_hat_i, dy_hat_j=dy_hat_j,
             delta_sigma=delta_sigma,
+            seq_len=seq_len,
         )
 
     def predict(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
@@ -370,6 +385,13 @@ class SIVAE(L.LightningModule):
             q_z=q_z,
             delta_hat=delta_hat,
         )
+
+    def sample_circle(self, *args: Any, scaling_factor: float = 1.0, **kwargs: Any):
+        # sample points uniformly from an arc of the circle, set by scaling factor
+        delta = scaling_factor * ((torch.rand(*args, **kwargs) * 2) - 1)
+        theta = torch.pi * delta
+        dx, dy = torch.cos(theta), torch.sin(theta)
+        return delta, theta, dx, dy
 
     @torch.no_grad()
     def predict_delta(self, x: torch.Tensor, num_samples: int = 10):
@@ -447,8 +469,8 @@ class SIVAE(L.LightningModule):
             sigma_latent = torch.tensor(self.sigma_z_min, dtype=torch.float32, requires_grad=False, device=mu_z.device)
             log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*sigma_latent.pow(2).log())
             q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
-        delta_hat = self.alignment_encoder(x, u)
-        return q_z, delta_hat
+        delta_hat, theta_hat, dx_hat, dy_hat = self.alignment_encoder(x, u)
+        return q_z, delta_hat, theta_hat, dx_hat, dy_hat
 
     def cnn_encode(self, x: Tensor) -> Tensor:
         us = []
@@ -481,7 +503,7 @@ class SIVAE(L.LightningModule):
         grid_y = torch.zeros_like(grid_x)
         grid = torch.stack((grid_x, grid_y), dim=-1)
         xx = grid[..., 0] + delta.view(bs, 1, 1)
-        grid[..., 0] = circular_boundary(xx)
+        grid[..., 0] = circular_boundary(xx) # FIXME we dont need modulo under this parametrisation, its implicit in atan2
         x_tilde = F.grid_sample(x_flat, grid, mode=mode, padding_mode="zeros", align_corners=True)
         return x_tilde.view(bs, ch, fq, ts)
 
@@ -495,22 +517,35 @@ class SIVAE(L.LightningModule):
 
     def loss(
         self,
-        x: Tensor,
-        x_hat: Tensor,
+        x_framed: Tensor,
+        x_hat_framed: Tensor,
         q_z: Tensor,
         q_z_i: Tensor,
         q_z_j: Tensor,
+        delta_i: Tensor,
         delta_j: Tensor,
         delta_hat_i: Tensor,
         delta_hat_j: Tensor,
+        theta_i: Tensor,
+        theta_j: Tensor,
+        theta_hat_i: Tensor,
+        theta_hat_j: Tensor,
+        dx_i: Tensor,
+        dx_j: Tensor,
+        dx_hat_i: Tensor,
+        dx_hat_j: Tensor,
+        dy_i: Tensor,
+        dy_j: Tensor,
+        dy_hat_i: Tensor,
+        dy_hat_j: Tensor,
         delta_sigma: Tensor,
         **kwargs: Any,
     ) -> Dict[str, Tensor]:
         outputs = dict()
         losses = []
         # maximise likelihood p(x_i|z_j) framewise to ensure invariance to sequence length
-        sigma_recon = torch.tensor(self.sigma_x, dtype=torch.float32, requires_grad=False, device=x.device)
-        nll = negative_log_likelihood(x, x_hat, sigma_recon.pow(2).log()).flatten(start_dim=-3).sum(dim=-1)
+        sigma_recon = torch.tensor(self.sigma_x, dtype=torch.float32, requires_grad=False, device=x_framed.device)
+        nll = negative_log_likelihood(x_framed, x_hat_framed, sigma_recon.pow(2).log()).flatten(start_dim=-3).sum(dim=-1)
         losses.append(nll.mean())
         outputs |= dict(log_likelihood_x=-nll.detach().mean())
         # zero-centered prior for delta_hat
@@ -518,13 +553,14 @@ class SIVAE(L.LightningModule):
         # nll_delta = negative_log_likelihood(delta_hat, torch.zeros(1).to(delta_hat.device), delta_sigma.pow(2).log())
         # losses.append(nll_delta.mean())
         # outputs |= dict(nll_delta=nll_delta.detach().mean())
-        # additional supervision signal for delta
         # sigma_trans = torch.tensor(self.sigma_delta, dtype=torch.float32, requires_grad=False, device=delta_j.device)
         # nll_delta_j = negative_log_likelihood(delta_hat_j, delta_j, sigma_trans.pow(2).log())
-        diff = torch.pi * (delta_hat_j - delta_j)
-        angular_error = torch.atan2(torch.sin(diff), torch.cos(diff)).pow(2)
-        losses.append(angular_error.mean())
-        outputs |= dict(angular_error=angular_error.detach().mean())
+        # additional supervision signal for delta, minimise relative angular difference
+        angular_error_i = 2 * (1 - (dx_hat_i * dx_i + dy_hat_i * dy_i))
+        angular_error_j = 2 * (1 - (dx_hat_j * dx_j + dy_hat_j * dy_j))
+        angular_error = torch.stack([angular_error_i, angular_error_j.view(angular_error_i.size())]).mean()
+        losses.append(angular_error)
+        outputs |= dict(angular_error=angular_error.detach())
         # standard normal dkl
         dkl = self.beta * gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
         losses.append(dkl.mean())
@@ -540,8 +576,8 @@ class SIVAE(L.LightningModule):
     @torch.no_grad()
     def metrics(
         self,
-        x: Tensor,
-        x_hat: Tensor,
+        x_framed: Tensor,
+        x_hat_framed: Tensor,
         q_z_i: Tensor,
         q_z_j: Tensor,
         delta_i: torch.Tensor,
@@ -558,6 +594,8 @@ class SIVAE(L.LightningModule):
         sigma_hist = np.histogram(sigma_z.flatten().cpu().numpy(), bins=32, range=[0.0, 2.0])
         mu_z_i, mu_z_j = q_z_i.chunk(2, dim=-1)[0], q_z_j.view(q_z_i.size()).chunk(2, dim=-1)[0]
         z_dist = (mu_z_j - mu_z_i).abs().mean()
+        delta = torch.cat([delta_i, delta_j.view(delta_i.size())])
+        delta_hist = np.histogram(delta.flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
         delta_hat = torch.cat([delta_hat_i, delta_hat_j.view(delta_hat_i.size())])
         delta_hat_hist = np.histogram(delta_hat.flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
         theta_i, theta_j = torch.pi * delta_i, torch.pi * delta_j
@@ -571,8 +609,9 @@ class SIVAE(L.LightningModule):
         angular_distance_std = angular_distance.std()
         angular_error_mean = angular_distance.pow(2).mean()
         angular_error_std = angular_distance.pow(2).std()
-        mae = (x_hat - x).abs().flatten(start_dim=-3).mean(dim=-1).mean()
-        mse = (x_hat - x).pow(2).flatten(start_dim=-3).mean(dim=-1).mean()
+        diff = (x_hat_framed - x_framed).flatten(start_dim=-3)
+        mae = diff.abs().mean(dim=-1).mean()
+        mse = diff.pow(2).mean(dim=-1).mean()
         dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / self.latent_dim).mean()
         true_delta_prob = linear_decay(self.trainer.global_step, **self.delta_prob_params)
         return dict(
@@ -582,6 +621,7 @@ class SIVAE(L.LightningModule):
             sigma_z=wandb.Histogram(np_histogram=sigma_hist),
             true_delta_prob=true_delta_prob,
             z_dist=z_dist,
+            delta_hist=wandb.Histogram(np_histogram=delta_hist),
             delta_hat_hist=wandb.Histogram(np_histogram=delta_hat_hist),
             theta_hat_var=theta_hat_var,
             theta_hat_seq_var=theta_hat_seq_var,
@@ -645,21 +685,37 @@ class SIVAE(L.LightningModule):
 
     def on_batch_end(self, step_outputs, stage: str, min_num_samples: int = 6):
         num_samples = min(min_num_samples, step_outputs["x"].size(0))
+        seq_len = step_outputs["seq_len"]
         num_frames = 6
-        specs = step_outputs["x_i"].squeeze().cpu().numpy()
-        recons = step_outputs["x_hat_i"].squeeze().cpu().numpy()
-        for i in range(num_samples):
-            fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), width_ratios=[0.97, 0.03], constrained_layout=True)
-            mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
-            mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
-            axes[0, 0].set_title("Original")
-            axes[1, 0].set_title("Reconstruction")
-            fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
-            fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
-            self.logger.experiment.log({f"{stage}/spectrogram": wandb.Image(fig)})
-            plt.close(fig)
+        if step_outputs["q_z_i"].size(1) == seq_len:
+            specs = step_outputs["x_i"].squeeze().cpu().numpy()
+            recons = step_outputs["x_hat_i"].squeeze().cpu().numpy()
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), width_ratios=[0.97, 0.03], constrained_layout=True)
+                mesh = self.log_mel_spectrogram.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
+                mesh = self.log_mel_spectrogram.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
+                axes[0, 0].set_title("Original")
+                axes[1, 0].set_title("Reconstruction")
+                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+                self.logger.experiment.log({f"{stage}/spectrogram": wandb.Image(fig)})
+                plt.close(fig)
+        else:
+            import code; code.interact(local=locals())
+            specs = step_outputs["x_i"].view(-1, seq_len, self.frame_window_length, self.num_mel_bins).cpu().numpy()
+            recons = step_outputs["x_hat_i"].view(-1, seq_len, self.frame_window_length, self.num_mel_bins).cpu().numpy()
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=(10, 6), width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True)
+                for j in range(num_frames):
+                    mesh = self.log_mel_spectrogram.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max())
+                    mesh = self.log_mel_spectrogram.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max())
+                axes[0, 0].set_title("Original")
+                axes[1, 0].set_title("Reconstruction")
+                fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
+                self.logger.experiment.log({f"{stage}/frames/i": wandb.Image(fig)})
+                plt.close(fig)
         # plot translated frames
-        seq_len = step_outputs["q_z"].size(1)
         specs = step_outputs["x_j"].view(-1, seq_len, self.frame_window_length, self.num_mel_bins).cpu().numpy()
         recons = step_outputs["x_hat_j"].view(-1, seq_len, self.frame_window_length, self.num_mel_bins).cpu().numpy()
         for i in range(num_samples):
@@ -671,7 +727,7 @@ class SIVAE(L.LightningModule):
             axes[1, 0].set_title("Reconstruction")
             fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
             fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
-            self.logger.experiment.log({f"{stage}/frames/0": wandb.Image(fig)})
+            self.logger.experiment.log({f"{stage}/frames/j": wandb.Image(fig)})
             plt.close(fig)
 
     def configure_optimizers(self) -> Optimizer:

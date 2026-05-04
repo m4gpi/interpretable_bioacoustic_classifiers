@@ -128,3 +128,10 @@ def score(results: pd.DataFrame) -> pd.DataFrame:
             auROC=sklearn.metrics.roc_auc_score(y, y_prob),
         ))
     return pd.DataFrame(data=scores).set_index("species_name")
+
+def circular_variance(theta: torch.Tensor, dim: int = 1, keepdim: bool = False) -> torch.Tensor:
+    sin_mean = torch.sin(theta).mean(dim=dim, keepdim=keepdim)
+    cos_mean = torch.cos(theta).mean(dim=dim, keepdim=keepdim)
+    R = torch.sqrt(sin_mean**2 + cos_mean**2)
+    return 1 - R
+
