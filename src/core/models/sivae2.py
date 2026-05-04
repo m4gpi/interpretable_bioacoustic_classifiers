@@ -715,7 +715,6 @@ class SIVAE(L.LightningModule):
                 self.logger.experiment.log({f"{stage}/spectrogram": wandb.Image(fig)})
                 plt.close(fig)
         else:
-            import code; code.interact(local=locals())
             specs = step_outputs["x_i"].view(-1, seq_len, self.frame_window_length, self.num_mel_bins).cpu().numpy()
             recons = step_outputs["x_hat_i"].view(-1, seq_len, self.frame_window_length, self.num_mel_bins).cpu().numpy()
             for i in range(num_samples):
