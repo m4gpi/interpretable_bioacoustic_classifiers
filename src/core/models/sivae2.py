@@ -171,6 +171,7 @@ class SIVAE(L.LightningModule):
         num_mel_bins: int = 64,
         latent_dim: int = 128,
         beta: float = 0.2,
+        gamma: float = 1.0,
         sigma_x: float = 1.0,
         sigma_z_min: float = 0.0498,
         sigma_delta: float = 0.01,
@@ -225,6 +226,7 @@ class SIVAE(L.LightningModule):
         self.num_mel_bins = num_mel_bins
         self.latent_dim = latent_dim
         self.beta = beta
+        self.gamma = gamma
         self.sigma_x = sigma_x
         self.sigma_z_min = sigma_z_min
         self.sigma_delta = sigma_delta
@@ -561,9 +563,9 @@ class SIVAE(L.LightningModule):
         # additional supervision signal for delta, minimise relative angular difference
         angular_error_i = 2 * (1 - (dx_hat_i * dx_i + dy_hat_i * dy_i))
         angular_error_j = 2 * (1 - (dx_hat_j * dx_j + dy_hat_j * dy_j))
-        angular_error = torch.stack([angular_error_i, angular_error_j.view(angular_error_i.size())]).mean()
-        losses.append(angular_error)
-        outputs |= dict(angular_error=angular_error.detach())
+        alignment_loss = self.gamma * torch.stack([angular_error_i, angular_error_j.view(angular_error_i.size())]).mean()
+        losses.append(alignment_loss)
+        outputs |= dict(alignment_loss=alignment_loss.detach())
         # standard normal dkl
         dkl = self.beta * gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
         losses.append(dkl.mean())
@@ -588,34 +590,43 @@ class SIVAE(L.LightningModule):
         delta_hat_i: Tensor,
         delta_hat_j: Tensor,
         delta_sigma: Tensor,
+        theta_i: Tensor,
+        theta_j: Tensor,
+        theta_hat_i: Tensor,
+        theta_hat_j: Tensor,
         **kwargs: Any
     ) -> Dict[str, Any]:
+        # distribution of z mean and varaince
         q_z = torch.cat([q_z_i, q_z_j.view(q_z_i.size())], dim=0)
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
         sigma_z = (0.5 * log_sigma_sq_z).exp()
         mu_hist = np.histogram(mu_z.flatten().cpu().numpy(), bins=32, range=[-5.0, 5.0])
         sigma_hist = np.histogram(sigma_z.flatten().cpu().numpy(), bins=32, range=[0.0, 2.0])
         mu_z_i, mu_z_j = q_z_i.chunk(2, dim=-1)[0], q_z_j.view(q_z_i.size()).chunk(2, dim=-1)[0]
+        # mean distance between shifted embeddings
         z_dist = (mu_z_j - mu_z_i).abs().mean()
+        # distribution of delta predictions
         delta = torch.cat([delta_i, delta_j.view(delta_i.size())])
         delta_hist = np.histogram(delta.flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
         delta_hat = torch.cat([delta_hat_i, delta_hat_j.view(delta_hat_i.size())])
         delta_hat_hist = np.histogram(delta_hat.flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
-        theta_i, theta_j = torch.pi * delta_i, torch.pi * delta_j
-        theta_hat_i, theta_hat_j = torch.pi * delta_hat_i, torch.pi * delta_hat_j
+        # variance of predicted theta both independently and across sequence
+        theta = torch.cat([theta_i, theta_j.view(theta_i.size())])
         theta_hat = torch.cat([theta_hat_i, theta_hat_j.view(theta_hat_i.size())])
         theta_hat_var = circular_variance(theta_hat, dim=None).mean()
         theta_hat_seq_var = circular_variance(theta_hat, dim=1).mean()
-        diff = torch.pi * (delta_hat_j - delta_j)
-        angular_distance = torch.atan2(torch.sin(diff), torch.cos(diff))
-        angular_distance_mean = angular_distance.mean()
-        angular_distance_std = angular_distance.std()
-        angular_error_mean = angular_distance.pow(2).mean()
-        angular_error_std = angular_distance.pow(2).std()
-        diff = (x_hat_framed - x_framed).flatten(start_dim=-3)
-        mae = diff.abs().mean(dim=-1).mean()
-        mse = diff.pow(2).mean(dim=-1).mean()
+        # anglular error
+        d_theta = theta_hat - theta
+        angular_distance = torch.atan2(torch.sin(d_theta), torch.cos(d_theta))
+        angular_error = 1 - torch.cos(d_theta)
+        d_theta_hist = np.histogram(d_theta.flatten().cpu().numpy(), bins=128, range=[0.0, 2.0])
+        # reconstruction error
+        d_x = (x_hat_framed - x_framed).flatten(start_dim=-3)
+        mae = d_x.abs().mean(dim=-1).mean()
+        mse = d_x.pow(2).mean(dim=-1).mean()
+        # normalised KL
         dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / self.latent_dim).mean()
+        # current probability of observing true shift
         true_delta_prob = linear_decay(self.trainer.global_step, **self.delta_prob_params)
         return dict(
             mae=mae,
@@ -628,10 +639,10 @@ class SIVAE(L.LightningModule):
             delta_hat_hist=wandb.Histogram(np_histogram=delta_hat_hist),
             theta_hat_var=theta_hat_var,
             theta_hat_seq_var=theta_hat_seq_var,
-            angular_distance_mean=angular_distance_mean,
-            angular_distance_std=angular_distance_std,
-            angular_error_mean=angular_error_mean,
-            angular_error_std=angular_error_std,
+            angular_distance_mean=angular_distance.mean(),
+            angular_distance_std=angular_distance.std(),
+            angular_error_mean=angular_error.mean(),
+            angular_error_std=angular_error.std(),
             dkl_norm=dkl_norm,
             delta_sigma=delta_sigma,
         )
