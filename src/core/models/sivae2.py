@@ -34,7 +34,6 @@ from src.core.models.components import (
 )
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
-from src.core.transforms.translation import translation, circular_boundary
 from src.core.utils import Batch, soft_clip, detach_values, prefix_keys, bounded_sigmoid, linear_schedule, linear_decay
 from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, circular_variance
 
@@ -508,7 +507,7 @@ class SIVAE(L.LightningModule):
         grid_y = torch.zeros_like(grid_x)
         grid = torch.stack((grid_x, grid_y), dim=-1)
         xx = grid[..., 0] + delta.view(bs, 1, 1)
-        grid[..., 0] = circular_boundary(xx) # FIXME we dont need modulo under this parametrisation, its implicit in atan2
+        grid[..., 0] = ((xx + 1) % 2) - 1
         x_tilde = F.grid_sample(x_flat, grid, mode=mode, padding_mode="zeros", align_corners=True)
         return x_tilde.view(bs, ch, fq, ts)
 
