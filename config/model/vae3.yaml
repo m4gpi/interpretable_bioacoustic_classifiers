@@ -12,7 +12,7 @@ front_end:
   num_fft: 512
   fft_window_length: 512
   fft_hop_length: 384
-  num_mel_bins: ${algorithm.model.frequency_dim}
+  num_mel_bins: ${model.frequency_dim}
   mel_min_hertz: 150
   mel_max_hertz: 15_000
   mel_scaling_factor: 4581.0
@@ -30,24 +30,24 @@ feature_encoder:
   dropout_prob: 0.2
 content_encoder:
   _target_: src.core.models.components.ContentEncoder
-  in_channels: ${mul:${algorithm.model.feature_encoder.block_sizes.4}, ${algorithm.model.feature_encoder.block_width}}
-  out_channels: ${div:${mul:${algorithm.model.feature_encoder.block_sizes.4}, ${algorithm.model.feature_encoder.block_width}},4}
+  in_channels: ${mul:${model.feature_encoder.block_sizes.4}, ${model.feature_encoder.block_width}}
+  out_channels: ${div:${mul:${model.feature_encoder.block_sizes.4}, ${model.feature_encoder.block_width}},4}
   layer_sizes:
-    - ${div:${mul:${mul:${div:${algorithm.model.front_end.num_mel_bins},${pow:2,${sub:${len:${algorithm.model.feature_encoder.block_sizes}},1}}},${div:${algorithm.model.frame_window_length},${pow:2,${len:${algorithm.model.feature_encoder.block_sizes}}}}},${mul:${algorithm.model.feature_encoder.block_sizes.4}, ${algorithm.model.feature_encoder.block_width}}},4}
-    - ${div:${div:${mul:${mul:${div:${algorithm.model.front_end.num_mel_bins},${pow:2,${sub:${len:${algorithm.model.feature_encoder.block_sizes}},1}}},${div:${algorithm.model.frame_window_length},${pow:2,${len:${algorithm.model.feature_encoder.block_sizes}}}}},${mul:${algorithm.model.feature_encoder.block_sizes.4}, ${algorithm.model.feature_encoder.block_width}}},4},4}
-    - "${mul:${algorithm.model.latent_dim},2}"
+    - ${div:${mul:${mul:${div:${model.front_end.num_mel_bins},${pow:2,${sub:${len:${model.feature_encoder.block_sizes}},1}}},${div:${model.frame_window_length},${pow:2,${len:${model.feature_encoder.block_sizes}}}}},${mul:${model.feature_encoder.block_sizes.4}, ${model.feature_encoder.block_width}}},4}
+    - ${div:${div:${mul:${mul:${div:${model.front_end.num_mel_bins},${pow:2,${sub:${len:${model.feature_encoder.block_sizes}},1}}},${div:${model.frame_window_length},${pow:2,${len:${model.feature_encoder.block_sizes}}}}},${mul:${model.feature_encoder.block_sizes.4}, ${model.feature_encoder.block_width}}},4},4}
+    - "${mul:${model.latent_dim},2}"
   dropout_prob: 0.1
   activation: LEAK
 content_decoder:
   _target_: src.core.models.components.ContentDecoder
-  in_channels: ${div:${mul:${algorithm.model.feature_encoder.block_sizes.4}, ${algorithm.model.feature_encoder.block_width}},4}
-  out_channels: ${mul:${algorithm.model.feature_encoder.block_sizes.4}, ${algorithm.model.feature_encoder.block_width}}
-  out_height: ${div:${algorithm.model.frame_window_length},${pow:2,${len:${algorithm.model.feature_encoder.block_sizes}}}}
-  out_width: ${div:${algorithm.model.front_end.num_mel_bins},${pow:2,${sub:${len:${algorithm.model.feature_encoder.block_sizes}},1}}}
+  in_channels: ${div:${mul:${model.feature_encoder.block_sizes.4}, ${model.feature_encoder.block_width}},4}
+  out_channels: ${mul:${model.feature_encoder.block_sizes.4}, ${model.feature_encoder.block_width}}
+  out_height: ${div:${model.frame_window_length},${pow:2,${len:${model.feature_encoder.block_sizes}}}}
+  out_width: ${div:${model.front_end.num_mel_bins},${pow:2,${sub:${len:${model.feature_encoder.block_sizes}},1}}}
   layer_sizes:
-    - "${algorithm.model.latent_dim}"
-    - ${div:${div:${mul:${mul:${div:${algorithm.model.front_end.num_mel_bins},${pow:2,${sub:${len:${algorithm.model.feature_encoder.block_sizes}},1}}},${div:${algorithm.model.frame_window_length},${pow:2,${len:${algorithm.model.feature_encoder.block_sizes}}}}},${mul:${algorithm.model.feature_encoder.block_sizes.4}, ${algorithm.model.feature_encoder.block_width}}},4},4}
-    - ${div:${mul:${mul:${div:${algorithm.model.front_end.num_mel_bins},${pow:2,${sub:${len:${algorithm.model.feature_encoder.block_sizes}},1}}},${div:${algorithm.model.frame_window_length},${pow:2,${len:${algorithm.model.feature_encoder.block_sizes}}}}},${mul:${algorithm.model.feature_encoder.block_sizes.4}, ${algorithm.model.feature_encoder.block_width}}},4}
+    - "${model.latent_dim}"
+    - ${div:${div:${mul:${mul:${div:${model.front_end.num_mel_bins},${pow:2,${sub:${len:${model.feature_encoder.block_sizes}},1}}},${div:${model.frame_window_length},${pow:2,${len:${model.feature_encoder.block_sizes}}}}},${mul:${model.feature_encoder.block_sizes.4}, ${model.feature_encoder.block_width}}},4},4}
+    - ${div:${mul:${mul:${div:${model.front_end.num_mel_bins},${pow:2,${sub:${len:${model.feature_encoder.block_sizes}},1}}},${div:${model.frame_window_length},${pow:2,${len:${model.feature_encoder.block_sizes}}}}},${mul:${model.feature_encoder.block_sizes.4}, ${model.feature_encoder.block_width}}},4}
   dropout_prob: 0.1
   activation: LEAK
 feature_decoder:

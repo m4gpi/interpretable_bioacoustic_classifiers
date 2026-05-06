@@ -3,6 +3,7 @@
 defaults:
   - data: null
   - algorithm: null
+  - model: null
   - transforms: default
   - evaluator: lightning_test
   - callbacks: null

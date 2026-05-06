@@ -65,24 +65,29 @@ def mel_filterbanks(
     # return the filterbank
     return filterbank.T
 
-@dataclass(kw_only=True, unsafe_hash=True)
 class LogMelSpectrogram(torch.nn.Module):
-    sample_rate: int = 48_000
-    num_fft: int = 512
-    fft_window_length: int = 512
-    fft_hop_length: int = 384
-    num_mel_bins: int = 64
-    mel_min_hertz: float = 150
-    mel_max_hertz: float = 15000
-    mel_scaling_factor: float = 4581.0
-    mel_break_frequency: float = 1750.0
-
-    def __new__(cls, *args: Any, **kwargs: Any):
-        obj = object.__new__(cls)
-        torch.nn.Module.__init__(obj)
-        return obj
-
-    def __post_init__(self):
+    def __init__(
+        self,
+        sample_rate: int = 48_000,
+        num_fft: int = 512,
+        fft_window_length: int = 512,
+        fft_hop_length: int = 384,
+        num_mel_bins: int = 64,
+        mel_min_hertz: float = 150,
+        mel_max_hertz: float = 1500,
+        mel_scaling_factor: float = 4581.0,
+        mel_break_frequency: float = 1750.0,
+    ) -> None:
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.num_fft = num_fft
+        self.fft_window_length = fft_window_length
+        self.fft_hop_length = fft_hop_length
+        self.num_mel_bins = num_mel_bins
+        self.mel_min_hertz = mel_min_hertz
+        self.mel_max_hertz = mel_max_hertz
+        self.mel_scaling_factor = mel_scaling_factor
+        self.mel_break_frequency = mel_break_frequency
         mel_basis = mel_filterbanks(**self.mel_params, linear_frequencies=self.fft_frequencies)
         self.register_buffer("mel_basis", torch.tensor(mel_basis, requires_grad=False), persistent=False)
 
@@ -95,12 +100,14 @@ class LogMelSpectrogram(torch.nn.Module):
         x = torch.stft(x, self.num_fft, window=window, **self.stft_params)
         # discard phase
         x = x.abs()
-        # transpose time on inner axes
+        # transpose freq on outer axes
         x = x.transpose(-1, -2)
         # apply mel
         x = x @ self.mel_basis.t()
         # apply log
         x = torch.clamp(x, min=1e-6).log()
+        # return time to outer axes
+        x = x.transpose(-1, -2)
         # add a channel dimension
         x = x.unsqueeze(1)
         return x

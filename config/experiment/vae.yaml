@@ -3,7 +3,8 @@
 # python main.py +experiment=vae
 
 defaults:
-  - override /algorithm: vae
+  - override /algorithm: soundscape_vae
+  - override /model: vae3
   - override /trainer: gpu
   - override /logger: wandb
 
@@ -14,11 +15,18 @@ trainer:
   val_check_interval: 2500
 
 callbacks:
-  model_checkpoint:
-    dirpath: ./checkpoints/vae.pt:v0
-    filename: model_{step}
-    every_n_train_steps: 60_000
+  primary_model_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ${paths.checkpoint_dir}/${version}
+    filename: '{step}'
+    every_n_train_steps: 40_000
     save_top_k: -1
+  secondary_model_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ${paths.checkpoint_dir}/${version}/intervals
+    filename: '{step}'
+    every_n_train_steps: 5_000
+    save_top_k: 1
   vae_metrics:
     _target_: src.core.callbacks.vae_metrics.VAEMetrics
     save_path: ${paths.results_dir}/metrics.parquet

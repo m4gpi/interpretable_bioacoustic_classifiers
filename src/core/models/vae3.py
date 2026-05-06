@@ -51,6 +51,7 @@ class VAE(torch.nn.Module):
 
     def pre_process(self, wav: torch.Tensor) -> torch.Tensor:
         x = self.front_end(wav)
+        x = x.transpose(-1, -2) # transpose time to inner axis
         return T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
 
     def forward(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
@@ -169,8 +170,8 @@ class VAE(torch.nn.Module):
         self,
         x: torch.Tensor,
         x_hat: torch.Tensor,
-        figsize: Tuple[int, int] = (5, 3),
-        dpi: int = 50,
+        figsize: Tuple[int, int] = (10, 6),
+        dpi: int = 100,
         num_samples: int = 6,
         num_frames: int = 6,
         **kwargs: Any,
@@ -180,7 +181,7 @@ class VAE(torch.nn.Module):
         xs = x.squeeze().cpu().numpy()
         x_hats = x_hat.squeeze().cpu().numpy()
         for i in range(num_samples):
-            fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), width_ratios=[0.97, 0.03], constrained_layout=True, dpi=dpi)
+            fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize, width_ratios=[0.97, 0.03], constrained_layout=True, dpi=dpi)
             mesh = self.front_end.plot(xs[i].T, ax=axes[0, 0], vmin=x.min(), vmax=x.max())
             mesh = self.front_end.plot(x_hats[i].T, ax=axes[1, 0], vmin=x.min(), vmax=x.max())
             axes[0, 0].set_title("Original")

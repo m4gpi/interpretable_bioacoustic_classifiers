@@ -1,7 +1,4 @@
-defaults:
-  - /model: sivae3
-
-_target_: src.core.algorithms.vae.SoundscapeVAE
+_target_: src.core.algorithms.soundscape_vae.SoundscapeVAE
 learning_rate: 4.e-5
 optimiser_cls: torch.optim.AdamW
 scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR

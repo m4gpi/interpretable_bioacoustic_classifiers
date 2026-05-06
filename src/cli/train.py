@@ -8,6 +8,7 @@ import pathlib
 import rootutils
 import torch
 import wandb
+import yaml
 
 from omegaconf import DictConfig, OmegaConf
 from typing import Any, List, Dict, Tuple
@@ -15,7 +16,7 @@ from typing import Any, List, Dict, Tuple
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.cli.utils.instantiators import instantiate_callbacks, instantiate_loggers, instantiate_transforms
-from src.cli.utils import filter_kwargs_for_callable, mnemonic
+from src.cli.utils import filter_kwargs_for_callable, mnemonic, load_yaml
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -27,14 +28,12 @@ OmegaConf.register_new_resolver("mul", lambda x, y: int(x) * int(y))
 OmegaConf.register_new_resolver("div", lambda x, y: int(x) // int(y))
 OmegaConf.register_new_resolver("len", lambda x: len(x))
 OmegaConf.register_new_resolver("pow", lambda x, y: int(x) ** int(y))
+OmegaConf.register_new_resolver("yaml_load", load_yaml)
 
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     OmegaConf.update(cfg, "run_id", os.urandom(16).hex(), force_add=True)
     raw_config = OmegaConf.to_container(cfg, resolve=True)
     log.info(json.dumps(raw_config, indent=1))
-    # results_dir = pathlib.Path(cfg.get("paths").get("results_dir")).expanduser()
-    # (results_dir / "config").mkdir(parents=True, exist_ok=True)
-    # OmegaConf.save(raw_config, results_dir / "config" / f"{cfg.get('run_id')}.yaml")
 
     if cfg.get("seed"):
         L.seed_everything(cfg.seed, workers=True)
@@ -46,10 +45,14 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     data_module: L.LightningDataModule = hydra.utils.instantiate(cfg.data, transforms=transforms)
     data_module.setup(stage="fit")
 
+    log.info(f"Instantiating model <{cfg.model._target_}>")
+    model_cls = hydra.utils.get_class(cfg.model._target_)
+    filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.data.model_params)
+    model: L.LightningModule = hydra.utils.instantiate(cfg.model, **filtered_params)
+
     log.info(f"Instantiating algorithm <{cfg.algorithm._target_}>")
     alg_cls = hydra.utils.get_class(cfg.algorithm._target_)
-    filtered_params = filter_kwargs_for_callable(alg_cls.__init__, data_module.data.model_params)
-    algorithm: L.LightningModule = hydra.utils.instantiate(cfg.algorithm, **filtered_params)
+    algorithm: L.LightningModule = hydra.utils.instantiate(cfg.algorithm, model=model, **filtered_params)
 
     log.info("Instantiating callbacks...")
     callbacks: List[L.Callback] = instantiate_callbacks(cfg.get("callbacks"))

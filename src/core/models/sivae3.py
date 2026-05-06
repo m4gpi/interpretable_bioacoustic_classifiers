@@ -48,6 +48,7 @@ class SIVAE(torch.nn.Module):
         delta_sigma_step_slope: float = 0.4,
         delta_sigma_step_start: int = 0,
         delta_sigma_step_end: int = 0,
+        align_only: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -72,6 +73,7 @@ class SIVAE(torch.nn.Module):
         self.delta_sigma_step_slope = delta_sigma_step_slope
         self.delta_sigma_step_start = delta_sigma_step_start
         self.delta_sigma_step_end = delta_sigma_step_end
+        self.align_only = align_only
 
         self.front_end = front_end
         self.feature_encoder = feature_encoder
@@ -80,16 +82,21 @@ class SIVAE(torch.nn.Module):
         self.content_decoder = content_decoder
         self.alignment_encoder = alignment_encoder
 
+        if self.align_only:
+            log.info("Freezing feature and content networks")
+            params = list(self.feature_encoder.parameters()) + list(self.feature_decoder.parameters()) + \
+                list(self.content_encoder.parameters()) + list(self.content_decoder.parameters())
+            for param in params:
+                param.requires_grad = False
         # if ground truth is always shown, freeze the alignment encoder
         if self.delta_prob_min == 1 and self.delta_prob_max == 1:
             log.info("Freezing alignment encoder")
             for param in self.alignment_encoder.parameters():
                 param.requires_grad = False
 
-        self.strict_loading = False
-
     def pre_process(self, wav: torch.Tensor) -> torch.Tensor:
         x = self.front_end(wav)
+        x = x.transpose(-1, -2) # transpose time to inner axis
         return T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
 
     def forward(self, x: Tensor, *args: Any, t: int | None = None, **kwargs: Any) -> Dict[str, Tensor]:
@@ -432,8 +439,8 @@ class SIVAE(torch.nn.Module):
         x_hat_j: torch.Tensor,
         q_z_i: torch.Tensor,
         seq_len: int,
-        figsize: Tuple[int, int] = (5, 3),
-        dpi: int = 50,
+        figsize: Tuple[int, int] = (10, 6),
+        dpi: int = 100,
         num_samples: int = 6,
         num_frames: int = 6,
         **kwargs: Any,
@@ -444,7 +451,7 @@ class SIVAE(torch.nn.Module):
             specs = x_i.squeeze().cpu().numpy()
             recons = x_hat_i.squeeze().cpu().numpy()
             for i in range(num_samples):
-                fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), width_ratios=[0.97, 0.03], constrained_layout=True, dpi=dpi)
+                fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize, width_ratios=[0.97, 0.03], constrained_layout=True, dpi=dpi)
                 mesh = self.front_end.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
                 mesh = self.front_end.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
                 axes[0, 0].set_title("Original")

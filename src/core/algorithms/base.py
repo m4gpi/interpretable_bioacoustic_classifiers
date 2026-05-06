@@ -14,41 +14,17 @@ from src.core.utils import Batch, detach_values, prefix_keys
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-def process_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
-    results = {}
-    for k, v in metrics.items():
-        if k.endswith("hist"):
-            v = wandb.Histogram(np_histogram=v)
-            results[k] = v
-    return results
-
 class Algorithm(L.LightningModule):
-    def __init__(
-        self,
-        model: torch.nn.Module,
-        learning_rate: float,
-        optimiser_cls: str,
-        optimiser_config: omegaconf.DictConfig | None = None,
-        scheduler_cls: str | None = None,
-        scheduler_config: omegaconf.DictConfig | None = None,
-        scheduler_interval: str = "step",
-        scheduler_frequency: int = 1,
-    ) -> None:
+    def __init__(self, model: torch.nn.Module, *args: Any, **kwargs: Any) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
         self.model = model
-        self.learning_rate = learning_rate
-        self.optimiser_cls = optimiser_cls
-        self.optimiser_config = optimiser_config
-        self.scheduler_cls = scheduler_cls
-        self.scheduler_config = scheduler_config
-        self.scheduler_interval = scheduler_interval
-        self.scheduler_frequency = scheduler_frequency
         self.strict_loading = False
         self._reset_cache()
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         plt.switch_backend('agg')
+        # run training
         log.info(f"Training <{config.algorithm.get('_target_')}> on <{config.data.get('_target_')}>")
         checkpoint_path, resume = config.get("ckpt_path"), config.get("resume")
         if checkpoint_path is not None and resume:
@@ -61,6 +37,11 @@ class Algorithm(L.LightningModule):
             trainer.fit(self, datamodule=data_module)
         else:
             trainer.fit(self, datamodule=data_module)
+        # persist the model configuration
+        config_path = pathlib.Path(trainer.checkpoint_callback.dirpath) / "config.yaml"
+        log.info(f"Saving model configuration to {config_path}")
+        omegaconf.OmegaConf.save(config, config_path)
+        # running test
         log.info(f"Testing <{config.algorithm.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.test(self, dataloaders=data_module.predict_dataloader())
 
@@ -68,7 +49,7 @@ class Algorithm(L.LightningModule):
         step_outputs = self.model(**batch, t=self.trainer.global_step, **kwargs)
         loss_outputs = self.model.loss(**step_outputs)
         step_outputs = detach_values(step_outputs)
-        metrics = process_metrics(self.model.metrics(**step_outputs))
+        metrics = self._process_metrics(self.model.metrics(**step_outputs))
         self.log_dict(prefix_keys(loss_outputs, stage), batch_size=batch.x.size(0), prog_bar=True, logger=False)
         if self.logger is not None and getattr(self.logger, "experiment") is not None:
             self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
@@ -109,18 +90,14 @@ class Algorithm(L.LightningModule):
     def predict_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
         return self.model.predict(**batch, **kwargs)
 
-    def configure_optimizers(self) -> Optimizer:
-        optimiser_config = omegaconf.DictConfig(dict(_target_=self.hparams.optimiser_cls, **(self.hparams.get("optimiser_config") or {})))
-        optimiser = hydra.utils.instantiate(optimiser_config, params=self.parameters(), lr=self.hparams.learning_rate)
-        if self.hparams.get("scheduler_cls") is not None:
-            scheduler_config = omegaconf.DictConfig(dict(_target_=self.hparams.scheduler_cls, **(self.hparams.get("scheduler_config") or {})))
-            scheduler = hydra.utils.instantiate(scheduler_config, optimizer=optimiser)
-            return [optimiser], [dict(
-                scheduler=scheduler,
-                interval=self.hparams.scheduler_interval,
-                frequency=self.hparams.scheduler_frequency
-            )]
-        return optimiser
+    @staticmethod
+    def _process_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
+        results = {}
+        for k, v in metrics.items():
+            if k.endswith("hist"):
+                v = wandb.Histogram(np_histogram=v)
+            results[k] = v
+        return results
 
     def _reset_cache(self):
         self.training_step_outputs = []
