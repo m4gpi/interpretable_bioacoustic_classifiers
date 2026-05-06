@@ -3,9 +3,9 @@ import lightning as L
 import torch
 import logging
 import omegaconf
+import pathlib
 import wandb
 
-from matplotlib import pyplot as plt
 from torch.optim import Optimizer
 from typing import Any, Dict, Tuple, List
 
@@ -23,7 +23,6 @@ class Algorithm(L.LightningModule):
         self._reset_cache()
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
-        plt.switch_backend('agg')
         # run training
         log.info(f"Training <{config.algorithm.get('_target_')}> on <{config.data.get('_target_')}>")
         checkpoint_path, resume = config.get("ckpt_path"), config.get("resume")
@@ -38,49 +37,39 @@ class Algorithm(L.LightningModule):
         else:
             trainer.fit(self, datamodule=data_module)
         # persist the model configuration
-        config_path = pathlib.Path(trainer.checkpoint_callback.dirpath) / "config.yaml"
-        log.info(f"Saving model configuration to {config_path}")
-        omegaconf.OmegaConf.save(config, config_path)
+        checkpoint_dir = pathlib.Path(trainer.checkpoint_callback.dirpath)
+        if checkpoint_dir.exists():
+            config_path = checkpoint_dir / "config.yaml"
+            log.info(f"Saving model configuration to {config_path}")
+            omegaconf.OmegaConf.save(config, config_path)
         # running test
         log.info(f"Testing <{config.algorithm.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.test(self, dataloaders=data_module.predict_dataloader())
+        trainer.test(self, datamodule=data_module)
 
     def forward(self, batch: Batch, batch_idx: int, stage: str, **kwargs: Any) -> Dict[str, torch.Tensor]:
         step_outputs = self.model(**batch, t=self.trainer.global_step, **kwargs)
         loss_outputs = self.model.loss(**step_outputs)
         step_outputs = detach_values(step_outputs)
-        metrics = self._process_metrics(self.model.metrics(**step_outputs))
         self.log_dict(prefix_keys(loss_outputs, stage), batch_size=batch.x.size(0), prog_bar=True, logger=False)
-        if self.logger is not None and getattr(self.logger, "experiment") is not None:
-            self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(metrics | loss_outputs, stage)))
         return {**loss_outputs, **step_outputs}
 
     def training_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
         outputs = self.forward(batch, batch_idx, "train")
-        self.training_step_outputs.append(outputs)
         return outputs
 
     @torch.no_grad()
     def validation_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
         outputs = self.forward(batch, batch_idx, "val")
-        self.validation_step_outputs.append(outputs)
         return outputs
 
     def on_train_batch_end(self, outputs: Dict[str, torch.Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
-        self.training_step_outputs.clear()
+        if self.logger is not None and getattr(self.logger, "experiment") is not None and self.trainer.global_step % self.trainer.log_every_n_steps == 0:
+            metrics = self._process_metrics(self.model.metrics(**outputs))
+            self.logger.experiment.log(dict(step=self.trainer.global_step, **prefix_keys(metrics, "train")))
 
     def on_validation_batch_end(self, outputs: Dict[str, torch.Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
-        if batch_idx < 4 and len(self.validation_step_outputs):
-            step_outputs = self.validation_step_outputs[0]
-            self.on_batch_end(step_outputs, "val")
-        self.validation_step_outputs.clear()
-
-    def on_batch_end(self, step_outputs, stage: str, min_num_samples: int = 6):
-        figures = self.model.tracking_figures(**step_outputs)
-        for fig_name, fig in figures:
-            if self.logger is not None and getattr(self.logger, "experiment") is not None:
-                self.logger.experiment.log({f"{stage}/{fig_name}": wandb.Image(fig)})
-            plt.close(fig)
+        metrics = self._process_metrics(self.model.metrics(**outputs))
+        self.logger.experiment.log(dict(step=self.trainer.global_step, **prefix_keys(metrics, "val")))
 
     @torch.no_grad()
     def test_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:

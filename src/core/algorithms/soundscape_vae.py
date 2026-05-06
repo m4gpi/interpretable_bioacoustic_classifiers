@@ -4,7 +4,6 @@ import torch
 import logging
 import omegaconf
 
-from matplotlib import pyplot as plt
 from torchvision.transforms import functional as T
 from typing import Any, Dict, Tuple, List
 

@@ -17,4 +17,3 @@ tags: ["dev"]
 resume: false
 ckpt_path: null
 seed: 42
-version: ${mnemonic:}

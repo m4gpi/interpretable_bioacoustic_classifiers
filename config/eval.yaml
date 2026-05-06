@@ -17,4 +17,3 @@ task_name: test
 tags: ["dev"]
 ckpt_path: null
 seed: null
-version: ${mnemonic:}

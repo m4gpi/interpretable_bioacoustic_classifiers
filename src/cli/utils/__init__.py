@@ -4,7 +4,6 @@ import os
 import nemony as nm
 import yaml
 
-@functools.cache
 def run_id():
     return os.urandom(6).hex()
 
