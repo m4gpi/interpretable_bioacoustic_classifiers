@@ -29,7 +29,7 @@ OmegaConf.register_new_resolver("len", lambda x: len(x))
 OmegaConf.register_new_resolver("pow", lambda x, y: int(x) ** int(y))
 
 def evaluate(cfg):
-    OmegaConf.update(cfg, "run_id", os.urandom(16).hex(), force_add=True)
+    OmegaConf.update(cfg, "run_id", mnemonic(os.urandom(16).hex()), force_add=True)
     raw_config = OmegaConf.to_container(cfg, resolve=True)
     log.info(json.dumps(raw_config, indent=1))
 
