@@ -1,5 +1,5 @@
 _target_: src.core.data.soundscape_embeddings.SoundscapeEmbeddingsDataModule
-root:
+root: ${paths.data_dir}/soundscape_vae_embeddings
 model:
 version:
 scope:

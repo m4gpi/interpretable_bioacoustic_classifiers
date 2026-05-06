@@ -1,5 +1,5 @@
 _target_: src.core.data.sounding_out_chorus.SoundingOutChorusDataModule
-root: ${oc.env:HOME}/data/sounding_out
+root: ${paths.data_dir}/sounding_out
 scope:
 training_mode: step
 train_batch_size: 6
@@ -7,7 +7,7 @@ eval_batch_size: 6
 val_prop: 0.2
 test_prop: 0.2
 num_workers: 8
-seed: 42
+seed: ${seed}
 persist_workers: false
 pin_memory: true
 segment_len: 59.904

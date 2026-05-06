@@ -27,13 +27,8 @@ trainer:
 
 callbacks:
   model_checkpoint:
-    dirpath: ${paths.results_dir}/checkpoints/${run_id}
-    filename: epoch_{epoch:03d}
-    monitor: val/loss
-    mode: min
-    save_top_k: 1
-    auto_insert_metric_name: False
-    save_last: True
+    dirpath: ${paths.results_dir}/checkpoints
+    filename: ${data.scope}_${data.model}.pt:${data.version}
   species_scores:
     _target_: src.core.callbacks.species_scores.SpeciesScores
     model: ${data.model}
