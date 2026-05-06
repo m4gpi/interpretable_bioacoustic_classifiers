@@ -2,6 +2,7 @@ import enum
 import functools
 import librosa
 import numpy as np
+import matplotlib.pyplot as plt
 import torch
 
 from dataclasses import dataclass
@@ -67,14 +68,14 @@ def mel_filterbanks(
 @dataclass(kw_only=True, unsafe_hash=True)
 class LogMelSpectrogram(torch.nn.Module):
     sample_rate: int = 48_000
-    n_fft: int = 512
+    num_fft: int = 512
     fft_window_length: int = 512
     fft_hop_length: int = 384
     num_mel_bins: int = 64
-    mel_min_hertz: float | None = 0.0
-    mel_max_hertz: float | None = None
-    mel_scaling_factor: float | None = 4581.0
-    mel_break_frequency: float | None = 1750.0
+    mel_min_hertz: float = 150
+    mel_max_hertz: float = 15000
+    mel_scaling_factor: float = 4581.0
+    mel_break_frequency: float = 1750.0
 
     def __new__(cls, *args: Any, **kwargs: Any):
         obj = object.__new__(cls)
@@ -91,7 +92,7 @@ class LogMelSpectrogram(torch.nn.Module):
         x = x - x.mean(dim=-1, keepdims=True)
         # apply fourier transform
         window = torch.hann_window(self.fft_window_length).to(x.device)
-        x = torch.stft(x, self.n_fft, window=window, **self.stft_params)
+        x = torch.stft(x, self.num_fft, window=window, **self.stft_params)
         # discard phase
         x = x.abs()
         # transpose time on inner axes
@@ -136,7 +137,7 @@ class LogMelSpectrogram(torch.nn.Module):
 
     @property
     def fft_frequencies(self):
-        return torch.linspace(0.0, self.sample_rate / 2, (self.n_fft // 2) + 1)
+        return torch.linspace(0.0, self.sample_rate / 2, (self.num_fft // 2) + 1)
 
     @property
     def mel_frequencies(self):

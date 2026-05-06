@@ -21,34 +21,35 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 OmegaConf.register_new_resolver("mnemonic", lambda: mnemonic(os.urandom(8).hex()))
+OmegaConf.register_new_resolver("add", lambda x, y: int(x) + int(y))
+OmegaConf.register_new_resolver("sub", lambda x, y: int(x) - int(y))
+OmegaConf.register_new_resolver("mul", lambda x, y: int(x) * int(y))
+OmegaConf.register_new_resolver("div", lambda x, y: int(x) // int(y))
+OmegaConf.register_new_resolver("len", lambda x: len(x))
+OmegaConf.register_new_resolver("pow", lambda x, y: int(x) ** int(y))
 
 def evaluate(cfg):
     OmegaConf.update(cfg, "run_id", os.urandom(16).hex(), force_add=True)
+    raw_config = OmegaConf.to_container(cfg, resolve=True)
+    log.info(json.dumps(raw_config, indent=1))
 
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     data_module = hydra.utils.instantiate(cfg.data)
     data_module.setup()
 
-    log.info(f"Instantiating model <{cfg.model._target_}>")
-    model_cls = hydra.utils.get_class(cfg.model._target_)
-
+    log.info(f"Instantiating algorithm <{cfg.algorithm._target_}>")
+    alg_cls = hydra.utils.get_class(cfg.algorithm._target_)
     if (ckpt_path := cfg.get("ckpt_path")):
-        model = model_cls.load_from_checkpoint(ckpt_path, map_location=torch.device("cuda"))
+        algorithm = alg_cls.load_from_checkpoint(ckpt_path, map_location=torch.device("cuda"))
     else:
-        filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.data.model_params)
-        model = hydra.utils.instantiate(cfg.model, **filtered_params)
+        filtered_params = filter_kwargs_for_callable(alg_cls.__init__, data_module.data.model_params)
+        algorithm = hydra.utils.instantiate(cfg.algorithm, **filtered_params)
 
     log.info("Instantiating callbacks...")
     callbacks: List[L.Callback] = instantiate_callbacks(cfg.get("callbacks"))
 
     log.info("Instantiating loggers...")
     loggers: List[Logger] = instantiate_loggers(cfg.get("logger"))
-
-    results_dir = pathlib.Path(cfg.get("paths").get("results_dir")).expanduser()
-    (results_dir / "config").mkdir(parents=True, exist_ok=True)
-    raw_config = OmegaConf.to_container(cfg, resolve=True)
-    OmegaConf.save(raw_config, results_dir / "config" / f"{cfg.get('run_id')}.yaml")
-    log.info(json.dumps(raw_config, indent=1))
 
     if cfg.get("trainer"):
         log.info(f"Instantiating trainer <{cfg.trainer._target_}>")

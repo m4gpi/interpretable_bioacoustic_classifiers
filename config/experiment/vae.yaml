@@ -3,7 +3,7 @@
 # python main.py +experiment=vae
 
 defaults:
-  - override /model: vae
+  - override /algorithm: vae
   - override /trainer: gpu
   - override /logger: wandb
 

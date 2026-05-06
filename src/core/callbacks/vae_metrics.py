@@ -41,29 +41,30 @@ class VAEMetrics(L.Callback):
         dkl_norm = dkl.mean(dim=-1)
         dkl = dkl.sum(dim=-1)
         # frame-wise full elbo
-        sigma_recon = torch.tensor(pl_module.sigma_x, dtype=torch.float32, device=x_framed.device)
+        sigma_recon = torch.tensor(pl_module.model.sigma_x, dtype=torch.float32, device=x_framed.device)
         nll = (1/2 * (2 * sigma_recon.log() + ((x_framed - x_hat_framed) / sigma_recon).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
         elbo = nll + dkl
         # calculate timestamps
-        frame_hop_samples = pl_module.fft_hop_length * pl_module.frame_window_length
-        seq_start_samples = seq_idx * frame_hop_samples
-        frame_duration_samples = pl_module.fft_hop_length * pl_module.frame_window_length
-        seq_end_samples = seq_start_samples + frame_duration_samples
-        seq_start_seconds = seq_start_samples / pl_module.sample_rate
-        seq_end_seconds = seq_end_samples / pl_module.sample_rate
+        # TODO: move to front-end
+        # frame_hop_samples = pl_module.fft_hop_length * pl_module.frame_window_length
+        # seq_start_samples = seq_idx * frame_hop_samples
+        # frame_duration_samples = pl_module.fft_hop_length * pl_module.frame_window_length
+        # seq_end_samples = seq_start_samples + frame_duration_samples
+        # seq_start_seconds = seq_start_samples / pl_module.sample_rate
+        # seq_end_seconds = seq_end_samples / pl_module.sample_rate
         # set types
         ref_column_types = dict(
             file_i=int, timestep=int, dataloader_idx=int,
-            t_start_samples=int, t_end_samples=int,
-            t_start_seconds=float, t_end_seconds=float,
+            # t_start_samples=int, t_end_samples=int,
+            # t_start_seconds=float, t_end_seconds=float,
         )
         feat_column_types = dict(mae=float, mse=float, dkl=float, dkl_norm=float, elbo=float)
         column_types = (ref_column_types | feat_column_types)
         df = pd.DataFrame(
             data=dict(zip(column_types.keys(), [
                 sample_idx, seq_idx, dl_idx,
-                seq_start_samples, seq_end_samples,
-                seq_start_seconds, seq_end_seconds,
+                # seq_start_samples, seq_end_samples,
+                # seq_start_seconds, seq_end_seconds,
                 mae.flatten(end_dim=1).cpu(),
                 mse.flatten(end_dim=1).cpu(),
                 dkl.flatten(end_dim=1).cpu(),
@@ -72,9 +73,9 @@ class VAEMetrics(L.Callback):
             ])),
             columns=column_types.keys(),
         ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
-        df["latent_dim"] = pl_module.latent_dim
-        df["model_name"] = pl_module.__class__.__name__
-        df["sigma_x"] = pl_module.sigma_x
+        df["model_name"] = pl_module.model.__class__.__name__
+        df["latent_dim"] = pl_module.model.latent_dim
+        df["sigma_x"] = pl_module.model.sigma_x
         df["learning_rate"] = pl_module.learning_rate
         self.data.append(df)
 

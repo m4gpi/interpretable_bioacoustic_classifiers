@@ -2,7 +2,7 @@
 
 # python main.py +experiment=sivae
 defaults:
-  - override /model: sivae
+  - override /algorithm: sivae
   - override /trainer: gpu
   - override /logger: wandb
 
@@ -25,17 +25,20 @@ callbacks:
     filename: '{step}'
     every_n_train_steps: 5_000
     save_top_k: 1
-  # spectrogram_logger:
-  #   _target_: src.core.callbacks.spectrogram_logger.SpectrogramLogger
-  #   log_every_n_train_steps: 500
-  #   log_every_n_val_steps: 5
-  #   num_train_samples_per_batch: 1
-  #   num_val_samples_per_batch: 1
-  #   max_val_samples: 12
-  #   num_frames_per_sample: 6
+  spectrogram_logger:
+    _target_: src.core.callbacks.spectrogram_logger.SpectrogramLogger
+    log_every_n_train_steps: 500
+    log_every_n_val_steps: 5
+    num_train_samples_per_batch: 1
+    num_val_samples_per_batch: 1
+    max_val_samples: 12
+    num_frames_per_sample: 6
+  sivae_metrics:
+    _target_: src.core.callbacks.sivae_metrics.SIVAEMetrics
+    save_path: ${paths.results_dir}/sivae_metrics.parquet
   vae_metrics:
     _target_: src.core.callbacks.vae_metrics.VAEMetrics
-    save_path: ${paths.results_dir}/metrics.parquet
+    save_path: ${paths.results_dir}/vae_metrics.parquet
   vae_embeddings:
     _target_: src.core.callbacks.vae_embeddings.VAEEmbeddings
     frame_hop_length: 96

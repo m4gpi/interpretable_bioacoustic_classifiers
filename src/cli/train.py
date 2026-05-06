@@ -21,6 +21,12 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 OmegaConf.register_new_resolver("mnemonic", lambda: mnemonic(os.urandom(8).hex()))
+OmegaConf.register_new_resolver("add", lambda x, y: int(x) + int(y))
+OmegaConf.register_new_resolver("sub", lambda x, y: int(x) - int(y))
+OmegaConf.register_new_resolver("mul", lambda x, y: int(x) * int(y))
+OmegaConf.register_new_resolver("div", lambda x, y: int(x) // int(y))
+OmegaConf.register_new_resolver("len", lambda x: len(x))
+OmegaConf.register_new_resolver("pow", lambda x, y: int(x) ** int(y))
 
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     OmegaConf.update(cfg, "run_id", os.urandom(16).hex(), force_add=True)
@@ -40,10 +46,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     data_module: L.LightningDataModule = hydra.utils.instantiate(cfg.data, transforms=transforms)
     data_module.setup(stage="fit")
 
-    log.info(f"Instantiating model <{cfg.model._target_}>")
-    model_cls = hydra.utils.get_class(cfg.model._target_)
-    filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.data.model_params)
-    model: L.LightningModule = hydra.utils.instantiate(cfg.model, **filtered_params)
+    log.info(f"Instantiating algorithm <{cfg.algorithm._target_}>")
+    alg_cls = hydra.utils.get_class(cfg.algorithm._target_)
+    filtered_params = filter_kwargs_for_callable(alg_cls.__init__, data_module.data.model_params)
+    algorithm: L.LightningModule = hydra.utils.instantiate(cfg.algorithm, **filtered_params)
 
     log.info("Instantiating callbacks...")
     callbacks: List[L.Callback] = instantiate_callbacks(cfg.get("callbacks"))
@@ -59,7 +65,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             logger.log_hyperparams(raw_config)
 
     try:
-        model.run(
+        algorithm.run(
             trainer=trainer,
             config=cfg,
             data_module=data_module
