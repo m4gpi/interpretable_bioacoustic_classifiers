@@ -4,7 +4,7 @@
 
 defaults:
   - override /algorithm: soundscape_vae
-  - override /model: vae3
+  - override /model: vae
   - override /trainer: gpu
   - override /logger: wandb
 

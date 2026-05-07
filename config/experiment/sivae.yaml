@@ -3,7 +3,7 @@
 # python main.py +experiment=sivae
 defaults:
   - override /algorithm: soundscape_vae
-  - override /model: sivae3
+  - override /model: sivae
   - override /trainer: gpu
   - override /logger: wandb
 
