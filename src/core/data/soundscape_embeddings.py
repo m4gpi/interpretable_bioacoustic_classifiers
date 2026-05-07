@@ -8,13 +8,12 @@ import torch
 
 from typing import Any, Callable, Dict, List, Tuple
 
-from src.core.utils import tree
+from src.core.utils import Batch
 
 __all__ = [
     "SoundscapeEmbeddings",
     "SoundscapeEmbeddingsDataModule",
 ]
-
 
 @attrs.define(kw_only=True)
 class SoundscapeEmbeddings(torch.utils.data.Dataset):
@@ -77,10 +76,6 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
 @attrs.define(kw_only=True)
 class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     root: str | pathlib.Path = attrs.field(converter=pathlib.Path)
-    model: str = attrs.field(default=None)
-    scope: str = attrs.field(default=None)
-    version: str = attrs.field(default=None)
-
     transforms: List[Callable] = attrs.field(default=None)
     train_batch_size: int | None = attrs.field(default=None)
     eval_batch_size: int | None = attrs.field(default=None)
@@ -114,19 +109,19 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
 
     @property
     def train_features_path(self):
-        return self._build_subset_path(self.model, self.version, self.scope) / "train" / "features.parquet"
+        return self.root / "train" / "features.parquet"
 
     @property
     def test_features_path(self):
-        return self._build_subset_path(self.model, self.version, self.scope) / "test" / "features.parquet"
+        return self.root / "test" / "features.parquet"
 
     @property
     def train_labels_path(self):
-        return self._build_subset_path(self.model, self.version, self.scope) / "train" / "labels.parquet"
+        return self.root / "train" / "labels.parquet"
 
     @property
     def test_labels_path(self):
-        return self._build_subset_path(self.model, self.version, self.scope) / "test" / "labels.parquet"
+        return self.root / "test" / "labels.parquet"
 
     @property
     def dataloader_params(self) -> Dict[str, Any]:
@@ -217,8 +212,8 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
         return self._build_dataloader(self.test_data, batch_size=self.eval_batch_size, shuffle=False)
 
     def batch_converter(self, batch: List[List[torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]]:
-        xs, ys, idx = zip(*batch)
-        return (torch.stack(xs), torch.stack(ys), torch.tensor(idx))
+        xs, ys, ss = zip(*batch)
+        return Batch(x=torch.stack(xs), y=torch.stack(ys), s=torch.tensor(ss))
 
     def _build_dataloader(self, dataset: torch.utils.data.Dataset, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
         return torch.utils.data.DataLoader(
@@ -229,13 +224,12 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
             **kwargs
         )
 
-    def _build_subset_path(self, model: str | None, version: int | None, scope: str | None):
-        assert model is not None, f"'model' is not specified"
-        assert version is not None, f"'version' is not specified"
-        assert scope is not None, f"'scope' is not specified"
-        return self.root / (model + ".pt:" + version) / scope
+    # def _build_subset_path(self, model: str | None, version: int | None, scope: str | None):
+    #     assert model is not None, f"'model' is not specified"
+    #     assert version is not None, f"'version' is not specified"
+    #     assert scope is not None, f"'scope' is not specified"
+    #     return self.root / (model + ".pt:" + version) / scope
 
     def _validate_features_and_labels_present(self, features_path, labels_path):
         assert pathlib.Path(features_path).exists(), f"'{features_path}' does not exist"
         assert pathlib.Path(labels_path).exists(), f"'{labels_path}' does not exist"
-

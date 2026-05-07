@@ -1,8 +1,5 @@
 _target_: src.core.data.soundscape_embeddings.SoundscapeEmbeddingsDataModule
 root: ${paths.data_dir}/soundscape_vae_embeddings
-model:
-version:
-scope:
 train_batch_size:
 eval_batch_size:
 val_prop: 0.2
