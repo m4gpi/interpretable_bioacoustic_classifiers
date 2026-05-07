@@ -61,6 +61,19 @@ class Resample(Enum):
     def __init__(self, init: Callable[[], nn.Module]) -> None:
         self.init = init
 
+class CircularReflectiveConv2d(torch.nn.Conv2d):
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs["padding_mode"] = "zeros"
+        kwargs["padding"] = "valid"
+        super().__init__(*args, **kwargs)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        k_i, k_j = self.kernel_size
+        p_i, p_j = (k_i - 1) // 2, (k_j - 1) // 2
+        x = torch.cat([x[:, :, -p_i:], x, x[:, :, :p_i]], dim=-1)
+        x = torch.cat([x[:, 1:p_j+1].flip(dims=[-2]), x, x[:, -p_j-1:-1].flip(dims=[-2])], dim=-2)
+        return super().forward(x)
+
 class ResidualConv2d(nn.Module):
     def __init__(
         self,
