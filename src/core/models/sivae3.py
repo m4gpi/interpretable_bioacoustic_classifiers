@@ -109,7 +109,7 @@ class SIVAE(torch.nn.Module):
         if torch.bernoulli(torch.tensor(1), self.x_i_frame_prob):
             x_i_framed = x_i_framed.flatten(end_dim=1)
             theta_i, dx_i, dy_i = self.sample_circle(x_i_framed.size(0), 1, 1, scaling_factor=delta_sigma, device=x.device)
-            delta_i / torch.pi
+            delta_i = theta_i / torch.pi
             x_i_framed = self.translation(x_i_framed.transpose(-1, -2).contiguous(), delta_i, mode=self.translation_mode).transpose(-1, -2).contiguous()
             x_i = x_i_framed
             q_z_i, (theta_hat_i, dx_hat_i, dy_hat_i) = self.encode(x_i, t=t) # (bs * seq, 1, ld)
@@ -306,11 +306,13 @@ class SIVAE(torch.nn.Module):
         return outputs
 
     def delta_sigma_current(self, t: int) -> Tensor:
-        if self.delta_sigma_min is None: return self.delta_sigma_max
+        if self.delta_sigma_min is None or self.delta_sigma_min == self.delta_sigma_max:
+            return self.delta_sigma_max
         return torch.tensor(bounded_sigmoid(t, **self.delta_sigma_params))
 
     def delta_prob_current(self, t: int) -> float:
-        if self.delta_prob_min is None: return self.delta_prob_max
+        if self.delta_prob_min is None or self.delta_prob_min == self.delta_prob_max:
+            return self.delta_prob_max
         return linear_decay(t, **self.delta_prob_params)
 
     @torch.no_grad()

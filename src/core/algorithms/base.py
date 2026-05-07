@@ -46,30 +46,26 @@ class Algorithm(L.LightningModule):
         log.info(f"Testing <{config.algorithm.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.test(self, datamodule=data_module)
 
-    def forward(self, batch: Batch, batch_idx: int, stage: str, **kwargs: Any) -> Dict[str, torch.Tensor]:
+    def forward(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
         step_outputs = self.model(**batch, t=self.trainer.global_step, **kwargs)
         loss_outputs = self.model.loss(**step_outputs)
         step_outputs = detach_values(step_outputs)
-        self.log_dict(prefix_keys(loss_outputs, stage), batch_size=batch.x.size(0), prog_bar=True, logger=False)
-        return {**loss_outputs, **step_outputs}
+        return loss_outputs, step_outputs
 
     def training_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
-        outputs = self.forward(batch, batch_idx, "train")
-        return outputs
+        loss_outputs, step_outputs = self.forward(batch, batch_idx)
+        self.log_dict(prefix_keys(loss_outputs, "train"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
+        metrics = self._process_metrics(self.model.metrics(**step_outputs))
+        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "train")))
+        return loss_outputs | step_outputs
 
     @torch.no_grad()
     def validation_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
-        outputs = self.forward(batch, batch_idx, "val")
-        return outputs
-
-    def on_train_batch_end(self, outputs: Dict[str, torch.Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
-        if self.logger is not None and getattr(self.logger, "experiment") is not None and self.trainer.global_step % self.trainer.log_every_n_steps == 0:
-            metrics = self._process_metrics(self.model.metrics(**outputs))
-            self.logger.experiment.log(dict(step=self.trainer.global_step, **prefix_keys(metrics, "train")))
-
-    def on_validation_batch_end(self, outputs: Dict[str, torch.Tensor], batch: Batch, batch_idx: int, **kwargs: Any) -> None:
-        metrics = self._process_metrics(self.model.metrics(**outputs))
-        self.logger.experiment.log(dict(step=self.trainer.global_step, **prefix_keys(metrics, "val")))
+        loss_outputs, step_outputs = self.forward(batch, batch_idx)
+        self.log_dict(prefix_keys(loss_outputs, "val"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
+        metrics = self._process_metrics(self.model.metrics(**step_outputs))
+        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "val")))
+        return loss_outputs | step_outputs
 
     @torch.no_grad()
     def test_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:

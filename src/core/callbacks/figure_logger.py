@@ -62,8 +62,8 @@ class FigureLogger(L.Callback):
         self.val_step_count = 0
 
     def on_batch_end(self, pl_module: L.LightningModule, step_outputs: Dict[str, torch.Tensor], stage: str, num_samples: int = 6):
-        figures = self.pl_module.model.tracking_figures(**step_outputs, num_samples=num_samples)
+        figures = pl_module.model.tracking_figures(**step_outputs, num_samples=num_samples)
         for fig_name, fig in figures:
-            if self.logger is not None and getattr(self.logger, "experiment") is not None:
-                self.logger.experiment.log({f"{stage}/{fig_name}": wandb.Image(fig)})
+            if pl_module.logger is not None and getattr(pl_module.logger, "experiment") is not None:
+                pl_module.logger.experiment.log({f"{stage}/{fig_name}": wandb.Image(fig)})
             plt.close(fig)
