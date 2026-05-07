@@ -1,0 +1,6 @@
+_target_: src.core.algorithms.mil_classifier.MILClassifier
+clf_learning_rate: 0.1
+attn_learning_rate: 1.e-3
+attn_weight_decay: 1.e-2
+train_sample_size: 1
+eval_sample_size: 100

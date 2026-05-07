@@ -42,13 +42,14 @@ def class_balanced_binary_cross_entropy(
 ) -> torch.Tensor:
     samples_per_class = samples_per_class.to(y.device)
     weights = (torch.ones_like(beta) - beta) / (torch.ones_like(samples_per_class) - torch.pow(beta, samples_per_class.clip(min=1)))
-    weights = weights / weights.sum() * weights.shape[0]
+    weights = weights / weights.sum() * weights.size(-1)
     y = y.float()
     y_probs = y_probs.clamp(epsilon, 1 - epsilon)
     for values in [y, y_probs, weights]:
         assert torch.isfinite(values).all()
     y = y * (1 - label_smoothing) + (1 - y) * label_smoothing
-    return (-(weights * y * y_probs.log() + (1 - y) * (1 - y_probs).log()))
+    cel = (-(weights * y * y_probs.log() + (1 - y) * (1 - y_probs).log()))
+    return cel
 
 def weight_regularisation(weights: torch.Tensor, lamdba: float, order: int = 2) -> torch.Tensor:
     return lamdba * torch.stack([torch.linalg.norm(layer, order) for layer in weights])

@@ -4,21 +4,10 @@
 
 defaults:
   - override /data: soundscape_embeddings
+  - override /algorithm: mil_classifier
   - override /model: species_detector
   - override /trainer: gpu
   - override /logger: wandb
-
-project: species_detector
-train: true
-test: true
-seed: 42
-
-model:
-  seed: ${seed}
-
-data:
-  root: ${paths.data_dir}/soundscape_vae_embeddings
-  seed: ${seed}
 
 trainer:
   max_epochs: 2000
@@ -26,20 +15,19 @@ trainer:
   check_val_every_n_epoch: 10
 
 callbacks:
-  model_checkpoint:
-    dirpath: ${paths.results_dir}/checkpoints
-    filename: ${data.scope}_${data.model}.pt:${data.version}
+  # model_checkpoint:
+  #   dirpath: ${paths.results_dir}/checkpoints
+  #   filename: ${data.scope}_${data.model}.pt:${data.version}
   species_scores:
     _target_: src.core.callbacks.species_scores.SpeciesScores
-    model: ${data.model}
-    version: ${data.version}
-    scope: ${data.scope}
     save_dir: ${paths.results_dir}
+    data_dir: ${data.root}
     run_id: ${run_id}
     fold_id: ${data.fold_id}
+    log_every_n_train_epochs: 20
+    log_every_n_val_epochs: 20
 
 logger:
   wandb:
     id: ${run_id}
-    resume: null
-    project: ${project}
+    project: soundscape_species_detection

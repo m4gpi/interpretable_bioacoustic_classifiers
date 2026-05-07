@@ -1,3 +1,4 @@
+import itertools
 import lightning as L
 import numpy as np
 import pandas as pd
@@ -15,24 +16,24 @@ class SpeciesScores(L.Callback):
     def __init__(
         self,
         save_dir: str,
+        data_dir: str,
         run_id: str,
-        model: str,
-        version: str,
-        scope: str,
         fold_id: int | None = None,
+        log_every_n_train_epochs: int = 20,
+        log_every_n_val_epochs: int = 20,
     ) -> None:
         super().__init__()
         self.run_id = run_id
         self.fold_id = fold_id
-        self.model = model
-        self.scope = scope
-        self.version = version
+        model_name, self.scope = data_dir.split("/")[-2:]
+        self.model, self.version = model_name.split(":")
         self.save_dir = pathlib.Path(save_dir)
         self.save_dir.mkdir(exist_ok=True, parents=True)
         (self.save_dir / "val_scores.parquet").mkdir(exist_ok=True, parents=True)
         (self.save_dir / "test_scores.parquet").mkdir(exist_ok=True, parents=True)
         (self.save_dir / "test_results.parquet").mkdir(exist_ok=True, parents=True)
-        self.val_table = None
+        self.log_every_n_train_epochs = log_every_n_train_epochs
+        self.log_every_n_val_epochs = log_every_n_val_epochs
         self.train_predictions = []
         self.val_predictions = []
         self.test_predictions = []
@@ -47,8 +48,9 @@ class SpeciesScores(L.Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        df = self._on_batch_end(outputs)
-        self.train_predictions.append(df)
+        if trainer.current_epoch % self.log_every_n_train_epochs == 0:
+            df = pl_module.model.predict(**outputs)
+            self.train_predictions.append(df)
 
     def on_train_epoch_end(
         self,
@@ -73,8 +75,9 @@ class SpeciesScores(L.Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        df = self._on_batch_end(outputs)
-        self.val_predictions.append(df)
+        if trainer.current_epoch % self.log_every_n_val_epochs == 0:
+            df = pl_module.model.predict(**outputs)
+            self.val_predictions.append(df)
 
     def on_validation_epoch_end(
         self,
@@ -89,8 +92,6 @@ class SpeciesScores(L.Callback):
                 for metric, value in scores[["auROC", "AP"]].mean(axis=0).to_dict().items()
             }, prog_bar=True, on_epoch=True)
             scores["epoch"] = pl_module.current_epoch
-            # if pl_module.logger is not None and hasattr(pl_module.logger, "experiment"):
-                # pl_module.logger.experiment.log({"val_scores": self._update_table(self.val_table, scores)})
             scores.to_parquet(self.save_dir / "val_scores.parquet" / f"run_id={self.run_id}_epoch={pl_module.current_epoch}.parquet")
         self.val_predictions.clear()
 
@@ -103,7 +104,7 @@ class SpeciesScores(L.Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        df = self._on_batch_end(outputs)
+        df = pl_module.model.predict(**outputs)
         self.test_predictions.append(df)
 
     def on_test_end(
@@ -139,23 +140,6 @@ class SpeciesScores(L.Callback):
             print(summary_stats.T.to_markdown())
         self.test_predictions.clear()
 
-    def _on_batch_end(self, outputs: List[Dict[str, Any]]) -> pd.DataFrame:
-        y, y_probs, s, target_names = outputs["y"], outputs["y_probs"], outputs["s"], outputs["target_names"]
-        label_df = pd.DataFrame(data=y.detach().cpu(), columns=target_names, index=s.detach().cpu().tolist())
-        probs_df = pd.DataFrame(data=y_probs.detach().cpu(), columns=target_names, index=s.detach().cpu().tolist())
-        return (
-            label_df
-            .reset_index(names="file_i")
-            .melt(id_vars="file_i", var_name="species_name", value_name="label")
-            .merge(
-                probs_df
-                .reset_index(names="file_i")
-                .melt(id_vars="file_i", var_name="species_name", value_name="prob"),
-                on=["file_i", "species_name"],
-                how="inner",
-            )
-        )
-
     def _on_epoch_end(self, results: List[pd.DataFrame], pl_module: L.LightningModule) -> pd.DataFrame:
         df = metrics.score(results)
         df1 = self._freq_df(pl_module)
@@ -185,7 +169,7 @@ class SpeciesScores(L.Callback):
 
     def _freq_df(self, pl_module: L.LightningModule):
         return pd.DataFrame(
-            data=zip(pl_module.target_counts),
+            data=zip(pl_module.model.target_counts),
             columns=["train_label_counts"],
-            index=pl_module.target_names
+            index=pl_module.model.target_names
         )
