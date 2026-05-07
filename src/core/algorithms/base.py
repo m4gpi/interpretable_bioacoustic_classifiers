@@ -48,7 +48,7 @@ class Algorithm(L.LightningModule):
 
     def forward(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
         step_outputs = self.model(**batch, t=self.trainer.global_step, **kwargs)
-        loss_outputs = self.model.loss(**step_outputs)
+        loss_outputs = self.model.loss(**step_outputs, t=self.trainer.global_step)
         step_outputs = detach_values(step_outputs)
         return loss_outputs, step_outputs
 
