@@ -16,6 +16,12 @@ class VAEMetrics(L.Callback):
         super().__init__()
         self.data = []
         self.save_path = pathlib.Path(save_path)
+
+    def on_test_start(
+        self,
+        trainer: L.Trainer,
+        pl_module: L.LightningModule,
+    ) -> None:
         self.save_path.parent.mkdir(exist_ok=True, parents=True)
 
     def on_test_batch_end(

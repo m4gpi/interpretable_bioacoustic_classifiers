@@ -24,12 +24,17 @@ class VAEEmbeddings(L.Callback):
         self.embeddings = []
         self.labels = []
 
+    def on_predict_start(
+        self,
+        trainer: L.Trainer,
+        pl_module: L.LightningModule,
+    ) -> None:
+        log.info(f"Target path for embeddings: {self.save_path.resolve()}")
         self.save_path.mkdir(exist_ok=True, parents=True)
         self.train_save_path = (self.save_path / "train")
         self.test_save_path = (self.save_path / "test")
         self.train_save_path.mkdir(exist_ok=True, parents=True)
         self.test_save_path.mkdir(exist_ok=True, parents=True)
-        log.info(f"Target path for embeddings: {self.save_path.resolve()}")
 
     def on_predict_batch_end(
         self,
