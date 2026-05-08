@@ -46,7 +46,7 @@ model:
     _target_: src.core.models.components.ContentEncoder
     in_channels: 512
     out_channels: 128
-    layer_sizes: [3072, 768, 256]
+    layer_sizes: [3072, 1536, 256]
     dropout_prob: 0.1
     activation: LEAK
   content_decoder:
@@ -55,7 +55,7 @@ model:
     out_channels: 512
     out_height: 6
     out_width: 4
-    layer_sizes: [128,  768, 3072]
+    layer_sizes: [128, 1536, 3072]
     dropout_prob: 0.1
     activation: LEAK
   feature_decoder:

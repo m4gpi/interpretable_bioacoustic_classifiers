@@ -10,3 +10,11 @@ beta: 1.0
 gamma: 1.0
 sigma_x: 0.2
 sigma_z_min: 1.e-5
+learning_rate: 4.e-5
+optimiser_cls: torch.optim.AdamW
+scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+scheduler_config:
+  eta_min: 1.e-5
+  T_max: 180000
+scheduler_interval: step
+scheduler_frequency: 1
