@@ -1,0 +1,29 @@
+# @package _global_
+
+# python main.py +experiment=sivae
+defaults:
+  - override /model: sivae
+  - override /trainer: gpu
+  - override /logger: wandb
+
+model:
+  _target_: src.core.models.species_sivae.SpeciesSIVAE
+  clf_checkpoint_path: null # FILLMEIN
+  classifier:
+    _target_: src.core.models.species_detector.SpeciesDetector
+    in_features: 128
+    lamdba: 0.1
+    beta: 0.0
+    label_smoothing: 0.0
+    attn_dim: 10
+
+trainer:
+  max_epochs: 10
+  log_every_n_steps: 50
+  check_val_every_n_epoch: 1
+
+logger:
+  wandb:
+    id: ${run_id}
+    project: species_vae
+    group: sivae
