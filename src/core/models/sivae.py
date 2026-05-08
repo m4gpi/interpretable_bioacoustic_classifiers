@@ -133,6 +133,8 @@ class SIVAE(torch.nn.Module):
         q_z_j, (theta_hat_j, dx_hat_j, dy_hat_j) = self.encode(x_j, t=t) # (bs * seq, 1, ld)
         delta_hat_j = theta_hat_j / torch.pi
         mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
+        # stack together
+        q_z = torch.cat([q_z_i, q_z_j.view(q_z_i.size())], dim=0)
         # decode to feature maps
         if self.cross_decode_method == "soft":
             # soft cross-decoding averages the distributions
@@ -140,13 +142,11 @@ class SIVAE(torch.nn.Module):
             mu_z = torch.stack([mu_z_i.flatten(end_dim=1), mu_z_j.flatten(end_dim=1)], dim=1).mean(dim=1)
             log_sigma_sq_z = (torch.stack([log_sigma_sq_z_i.flatten(end_dim=1).exp(), log_sigma_sq_z_j.flatten(end_dim=1).exp()], dim=1).sum(dim=1) / 4).log()
             z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()  # (bs, seq, ld)
-            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1).view(q_z_i.size())
             U_hat_i = self.content_decoder(z) # (bs * seq, ch, fr, fq)
             U_hat_j = U_hat_i
         elif self.cross_decode_method == "hard":
             z_i = torch.distributions.Normal(mu_z_i, (0.5 * log_sigma_sq_z_i).exp()).rsample()  # (bs, seq, ld)
             z_j = torch.distributions.Normal(mu_z_j, (0.5 * log_sigma_sq_z_j).exp()).rsample()  # (bs * seq, 1, ld)
-            q_z = torch.cat([q_z_i, q_z_j.view(q_z_i.size())], dim=0)
             U_hat_i = self.content_decoder(z_i.flatten(end_dim=1))
             U_hat_j = self.content_decoder(z_j.flatten(end_dim=1))
         else:
@@ -219,7 +219,7 @@ class SIVAE(torch.nn.Module):
         u_window_length = self.frame_window_length // 2**2
         u_hop_length = (hop_length or self.frame_window_length) // 2**2
         x = self.frame(x, window_length=x_window_length, hop_length=x_hop_length, padding_mode=self.frame_padding_mode)
-        u = self.frame(us[0], window_length=u_window_length, hop_length=u_hop_length, padding_mode=self.frame_padding_mode)
+        u = self.frame(us[1], window_length=u_window_length, hop_length=u_hop_length, padding_mode=self.frame_padding_mode)
         # content bottleneck
         q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
         if self.sigma_z_min is not None:
@@ -320,6 +320,7 @@ class SIVAE(torch.nn.Module):
         self,
         x_framed: Tensor,
         x_hat_framed: Tensor,
+        q_z: Tensor,
         q_z_i: Tensor,
         q_z_j: Tensor,
         delta_i: torch.Tensor,
@@ -335,7 +336,6 @@ class SIVAE(torch.nn.Module):
         **kwargs: Any
     ) -> Dict[str, Any]:
         # distribution of z mean and varaince
-        q_z = torch.cat([q_z_i, q_z_j.view(q_z_i.size())], dim=0)
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
         sigma_z = (0.5 * log_sigma_sq_z).exp()
         mu_hist = np.histogram(mu_z.flatten().cpu().numpy(), bins=32, range=[-5.0, 5.0])
@@ -386,9 +386,8 @@ class SIVAE(torch.nn.Module):
     @torch.no_grad()
     def predict_delta(self, x: torch.Tensor, num_samples: int = 10):
         x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
-        bound = torch.ones(num_samples, x_framed.size(0), x_framed.size(1), device=x.device).permute(1, 2, 0)
-        delta = torch.distributions.Uniform(low=-bound, high=bound).sample()
-        x_framed = x_framed.expand(num_samples, -1, -1, -1, -1, -1).permute(1, 2, 0, 3, 4, 5)
+        delta = (torch.randn(x_framed.size(0), x_framed.size(1), num_samples) * 2) - 1
+        x_framed = x_framed.unsqueeze(2).expand(-1, -1, num_samples, -1, -1, -1)
         bs, seq, n, *_ = x_framed.size()
         x_trans = self.translation(
             x_framed.flatten(end_dim=2).transpose(-1, -2).contiguous(),

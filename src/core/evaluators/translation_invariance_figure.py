@@ -16,8 +16,8 @@ from typing import Any, Callable
 
 from src.core.models.vae import VAE
 from src.core.models.sivae import SIVAE
-from src.core.transforms.translation import translation
-from src.core.transforms.log_mel_spectrogram import LogMelSpectrogramLibrosa as LogMelSpectrogram
+from src.core.transforms.translation import translation_1d as translation
+from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.evaluators.base import Evaluator
 
 logging.basicConfig(level=logging.INFO)
@@ -109,7 +109,7 @@ class TranslationInvarianceFigure(Evaluator):
         deltas = np.linspace(-1.0, 1.0, 9)
         log.info(f"Applying translations")
         for i, delta in enumerate(deltas):
-            x_trans = translation(x_bg.unsqueeze(0).unsqueeze(0), torch.ones(1, 1, 1, 1) * delta, padding_mode="circular").squeeze()
+            x_trans = translation(x_bg.transpose(-1, -2).unsqueeze(0).unsqueeze(0), torch.ones(1, 1, 1, 1) * delta).squeeze().transpose(-1, -2)
             xs.append(x_trans)
 
         log.info(f"Plotting translations")
@@ -131,7 +131,7 @@ class TranslationInvarianceFigure(Evaluator):
         log.info(f"Encoding translations")
         deltas = np.linspace(-1, 1, 105)
         x = torch.cat([
-            translation(x_bg.unsqueeze(0).unsqueeze(0), torch.ones(1, 1, 1, 1) * delta, padding_mode="circular")
+            translation(x_bg.transpose(-1, -2).unsqueeze(0).unsqueeze(0), torch.ones(1, 1, 1, 1) * delta).transpose(-1, -2)
             for delta in deltas
         ], dim=0)
         with torch.no_grad():
@@ -163,6 +163,7 @@ class TranslationInvarianceFigure(Evaluator):
         for p in np.arange(0, 105, 13):
             ax.axvline(x=p + 0.5, linestyle="dashed", color="black", linewidth=1.0)
             ax.axvline(x=p - 0.5, linestyle="dashed", color="black", linewidth=1.0)
+        ax.set_ylabel("VAE\n\nLatent Dimension")
 
         ax = fig.add_subplot(grid_spec[3, :-1])
         im = ax.imshow(sivae_dzdT, **imshow_params)
@@ -171,8 +172,11 @@ class TranslationInvarianceFigure(Evaluator):
         for p in np.arange(0, 105, 13):
             ax.axvline(x=p + 0.5, linestyle="dashed", color="black", linewidth=1.0)
             ax.axvline(x=p - 0.5, linestyle="dashed", color="black", linewidth=1.0)
+        ax.set_ylabel("SIVAE\n\nLatent Dimension")
+        ax.set_xlabel(r"Shift ($\delta$)")
 
         cbar = fig.colorbar(im, cax=fig.add_subplot(grid_spec[2:, -1]))
+        cbar.set_label(r"$\frac{dz}{dT}$", rotation=0)
 
         self.save_path.parent.mkdir(exist_ok=True, parents=True)
         log.info(f"Saving figure to {self.save_path}")

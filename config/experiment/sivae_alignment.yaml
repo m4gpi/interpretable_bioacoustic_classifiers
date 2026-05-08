@@ -7,19 +7,34 @@ defaults:
   - override /trainer: gpu
   - override /logger: wandb
 
+algorithm:
+  learning_rate: 1.e-5
+
 model:
+  x_i_frame_prob: 1.0
   delta_prob_min: 0.0
   delta_prob_max: 0.0
   align_only: true
+  alignment_encoder:
+    _target_: src.core.models.components.UXAlignmentEncoder
+    out_features: 2
+    x_channels: ${mul:${model.feature_encoder.block_sizes.4}, ${model.feature_encoder.block_width}}
+    x_time_dim: ${div:${model.frame_window_length},${pow:2,${len:${model.feature_encoder.block_sizes}}}}
+    x_freq_dim: ${div:${model.front_end.num_mel_bins},${pow:2,${sub:${len:${model.feature_encoder.block_sizes}},1}}}
+    u_channels: ${mul:${model.feature_encoder.block_sizes.1}, ${model.feature_encoder.block_width}}
+    u_time_dim: ${div:${model.frame_window_length},${pow:2,2}}
+    u_freq_dim: ${div:${model.front_end.num_mel_bins},${pow:2,1}}
+    activation: ATAN2
 
-data:
-  val_prop: 0.0
+# data:
+#   val_prop: 0.0
 
 trainer:
-  max_steps: 12000
+  max_steps: 2500
   max_epochs: -1
   log_every_n_steps: 50
-  limit_val_batches: 0.0
+  val_check_interval: 250
+  # limit_val_batches: 0.0
 
 callbacks:
   # primary_model_checkpoint:
@@ -30,11 +45,14 @@ callbacks:
   #   save_top_k: -1
   figure_logger:
     _target_: src.core.callbacks.figure_logger.FigureLogger
-    log_every_n_train_steps: 1000
+    log_every_n_train_steps: 50
     num_train_samples_per_batch: 1
     num_val_samples_per_batch: 1
-    max_val_samples: 12
+    max_val_samples: 1
     num_frames_per_sample: 6
+  sivae_metrics:
+    _target_: src.core.callbacks.sivae_metrics.SIVAEMetrics
+    save_path: ${paths.results_dir}/metrics.parquet/${run_id}.parquet
   # vae_metrics:
   #   _target_: src.core.callbacks.vae_metrics.VAEMetrics
   #   save_path: ${paths.results_dir}/metrics.parquet/${run_id}.parquet

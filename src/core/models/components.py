@@ -313,6 +313,12 @@ class UXAlignmentEncoder(nn.Module):
         activation: str = "NONE",
     ) -> None:
         super().__init__()
+        self.x_channels = x_channels
+        self.x_freq_dim = x_freq_dim
+        self.x_time_dim = x_time_dim
+        self.u_channels = u_channels
+        self.u_freq_dim = u_freq_dim
+        self.u_time_dim = u_time_dim
         self.x_conv_freq = torch.nn.Conv2d(x_channels, x_channels // 4, kernel_size=(1, x_freq_dim))
         self.u_conv_freq = torch.nn.Conv2d(u_channels, u_channels // 4, kernel_size=(1, u_freq_dim))
         self.x_proj = torch.nn.Linear(x_channels // 4 * x_time_dim, proj_dim)
