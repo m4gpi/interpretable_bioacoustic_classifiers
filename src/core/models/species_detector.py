@@ -5,24 +5,24 @@ import logging
 import numpy as np
 import pandas as pd
 import hydra
+import omegaconf
 import pathlib
 import torch
 import yaml
 
 from dataclasses import dataclass
-from omegaconf import DictConfig
 from torch.nn import functional as F
 from typing import Any, Dict, List, Tuple
 
 from src.core.utils import metrics
-from src.core.utils import detach_values, prefix_keys
+from src.core.utils import Batch, TensorDict, detach_values, prefix_keys, histogram_to_wandb
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 __all__ = ["SpeciesDetector"]
 
-class SpeciesDetector(torch.nn.Module):
+class SpeciesDetector(L.LightningModule):
     def __init__(
         self,
         target_names: List[str],
@@ -33,17 +33,28 @@ class SpeciesDetector(torch.nn.Module):
         label_smoothing: float = 0.0,
         pool_method: str = "max",
         attn_dim: int = 10,
+        clf_learning_rate: float = 1e-2,
+        attn_learning_rate: float = 1e-3,
+        attn_weight_decay: float = 1e-3,
+        train_sample_size: int | None = 1,
+        eval_sample_size: int | None = 1,
     ) -> None:
         super().__init__()
+        self.save_hyperparameters()
         self.target_names = target_names
         self.target_counts = target_counts
         self.in_features = in_features
-        self.beta = beta
-        self.lamdba = lamdba 
+        self.lamdba = lamdba
         self.label_smoothing = label_smoothing
         self.attn_dim = attn_dim
-        # ensure initialisation and sampling proceed deterministically according to pre-training
-        self.beta = torch.nn.Parameter(torch.tensor(self.beta, dtype=torch.float32), requires_grad=False)
+
+        self.clf_learning_rate = clf_learning_rate
+        self.attn_learning_rate = attn_learning_rate
+        self.attn_weight_decay = attn_weight_decay
+        self.train_sample_size = train_sample_size
+        self.eval_sample_size = eval_sample_size
+
+        self.beta = torch.nn.Parameter(torch.tensor(beta, dtype=torch.float32), requires_grad=False)
         self.classifiers = self._init_classifiers()
         self.attention_V, self.attention_U, self.attention_w = self._init_attention()
 
@@ -73,7 +84,8 @@ class SpeciesDetector(torch.nn.Module):
             attention_w[target_name] = layer
         return attention_V, attention_U, attention_w
 
-    def pre_process(self, x: torch.Tensor, num_samples: int | None = None, **kwargs):
+    def pre_process(self, x: torch.Tensor):
+        num_samples = self.train_sample_size if self.training else self.eval_sample_size
         if num_samples is None:
             return x.unsqueeze(1)
         mean, log_var = x.chunk(2, dim=-1)
@@ -81,7 +93,7 @@ class SpeciesDetector(torch.nn.Module):
         log_var = log_var.unsqueeze(1).expand(-1, num_samples, -1, -1)
         return mean + torch.randn_like(mean) * (0.5 * log_var).exp()
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor, s: torch.Tensor, *args: Any, num_samples: int = 1, **kwargs: Any) -> Tuple[torch.Tensor, ...]:
+    def forward(self, x: torch.Tensor, y: torch.Tensor, s: torch.Tensor, *args: Any, **kwargs: Any) -> Tuple[torch.Tensor, ...]:
         # forward pass
         y_probs = []
         attn_w = []
@@ -106,18 +118,18 @@ class SpeciesDetector(torch.nn.Module):
         )
 
     def loss(self, y: torch.Tensor, y_probs: torch.Tensor, samples_per_class: torch.Tensor, epsilon: float = 1e-6, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        outputs = TensorDict()
         # batch mean over log probabilities weighted by positive class frequency
         cel = metrics.class_balanced_binary_cross_entropy(y, y_probs, samples_per_class=samples_per_class, **self.cel_params).mean(dim=0)
+        outputs |= dict(cel=cel.detach().sum())
         # sparse penalty for clf weights
         weights = torch.cat(list(self.classifiers.parameters())[::2], dim=0)
         l1 = self.lamdba * torch.linalg.norm(weights, dim=-1, ord=1)
+        outputs |= dict(l1=l1.detach().sum())
         # per logistic regression model, add the CEL and L1 together and then sum to get the total loss
         loss = (cel + l1).sum()
-        return dict(
-            loss=loss,
-            cel=cel.detach().sum(),
-            lamdba =l1.detach().sum(),
-        )
+        outputs |= dict(loss=loss)
+        return outputs
 
     @torch.no_grad()
     def metrics(
@@ -158,3 +170,68 @@ class SpeciesDetector(torch.nn.Module):
     @property
     def cel_params(self):
         return dict(beta=self.beta, label_smoothing=self.label_smoothing)
+
+    def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+        # run training
+        log.info(f"Training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        checkpoint_path, resume = config.get("ckpt_path"), config.get("resume")
+        if checkpoint_path is not None and resume:
+            log.info(f"Resuming from {checkpoint_path}")
+            trainer.fit(self, datamodule=data_module, ckpt_path=checkpoint_path)
+        elif config.get("ckpt_path"):
+            log.info(f"Loading state dict from {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path)
+            self.load_state_dict(checkpoint["state_dict"], strict=False)
+            trainer.fit(self, datamodule=data_module)
+        else:
+            trainer.fit(self, datamodule=data_module)
+        # persist the model configuration
+        checkpoint_dir = pathlib.Path(trainer.checkpoint_callback.dirpath)
+        if checkpoint_dir.exists():
+            config_path = checkpoint_dir / "config.yaml"
+            log.info(f"Saving model configuration to {config_path}")
+            omegaconf.OmegaConf.save(config, config_path)
+        # running test
+        log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        trainer.test(self, datamodule=data_module)
+
+    def step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        step_outputs = self.forward(**batch, t=self.trainer.global_step, **kwargs)
+        loss_outputs = self.loss(**step_outputs, t=self.trainer.global_step)
+        step_outputs = detach_values(step_outputs)
+        return loss_outputs, step_outputs
+
+    def training_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx)
+        self.log_dict(prefix_keys(loss_outputs, "train"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
+        metrics = histogram_to_wandb(self.metrics(**step_outputs))
+        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "train")))
+        return loss_outputs | step_outputs
+
+    @torch.no_grad()
+    def validation_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx)
+        self.log_dict(prefix_keys(loss_outputs, "val"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
+        metrics = histogram_to_wandb(self.metrics(**step_outputs))
+        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "val")))
+        return loss_outputs | step_outputs
+
+    @torch.no_grad()
+    def test_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        return self.predict(**batch, **kwargs)
+
+    @torch.no_grad()
+    def predict_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        return self.predict(**batch, **kwargs)
+
+    def on_after_batch_transfer(self, batch: Batch, dataloader_idx: int) -> Batch:
+        num_samples = self.train_sample_size if dataloader_idx == 0 else self.eval_sample_size
+        x = self.pre_process(batch.x, num_samples)
+        return Batch(x=x, **{k: batch[k] for k in batch.keys() if k != "x"})
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        groups = zip([self.clf_learning_rate, self.attn_learning_rate], [0.0, self.attn_weight_decay], self.param_groups)
+        return torch.optim.Adam([
+            dict(lr=learning_rate, params=params, weight_decay=weight_decay)
+            for learning_rate, weight_decay, params in groups
+        ])

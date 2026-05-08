@@ -1,4 +1,0 @@
-_target_: src.core.algorithms.birdnet.BirdNET
-mode: predict
-min_confidence: 0.0
-

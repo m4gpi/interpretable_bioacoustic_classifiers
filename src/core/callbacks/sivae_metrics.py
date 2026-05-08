@@ -40,7 +40,7 @@ class SIVAEMetrics(L.Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        outputs = pl_module.model.predict_delta(batch.x, num_samples=self.num_samples)
+        outputs = pl_module.predict_delta(batch.x, num_samples=self.num_samples)
         x_trans, delta, delta_hat = outputs["x_trans"], outputs["delta"], outputs["delta_hat"]
         bs, seq, n, *_ = x_trans.size()
         sample_idx = batch.s.cpu().unsqueeze(0).expand(seq, n, -1).permute(2, 0, 1).flatten().cpu()
@@ -61,9 +61,9 @@ class SIVAEMetrics(L.Callback):
             ])),
             columns=column_types.keys(),
         ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
-        df["model_name"] = pl_module.model.__class__.__name__
-        df["latent_dim"] = pl_module.model.latent_dim
-        df["sigma_x"] = pl_module.model.sigma_x
+        df["model_name"] = pl_module.__class__.__name__
+        df["latent_dim"] = pl_module.latent_dim
+        df["sigma_x"] = pl_module.sigma_x
         df["learning_rate"] = pl_module.learning_rate
         self.data.append(df)
 

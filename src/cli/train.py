@@ -15,7 +15,7 @@ from typing import Any, List, Dict, Tuple
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
-from src.cli.utils.instantiators import instantiate_callbacks, instantiate_loggers, instantiate_transforms
+from src.cli.utils.instantiators import instantiate_callbacks, instantiate_loggers
 from src.cli.utils import filter_kwargs_for_callable, mnemonic, load_yaml
 
 logging.basicConfig(level=logging.INFO)
@@ -38,21 +38,14 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("seed"):
         L.seed_everything(cfg.seed, workers=True)
 
-    log.info("Instantiating transforms...")
-    transforms: List[L.Callback] = instantiate_transforms(cfg.get("transforms"))
-
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
-    data_module: L.LightningDataModule = hydra.utils.instantiate(cfg.data, transforms=transforms)
+    data_module: L.LightningDataModule = hydra.utils.instantiate(cfg.data)
     data_module.setup(stage="fit")
 
     log.info(f"Instantiating model <{cfg.model._target_}>")
     model_cls = hydra.utils.get_class(cfg.model._target_)
     filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.data.model_params)
-    model: L.LightningModule = hydra.utils.instantiate(cfg.model, **filtered_params)
-
-    log.info(f"Instantiating algorithm <{cfg.algorithm._target_}>")
-    alg_cls = hydra.utils.get_class(cfg.algorithm._target_)
-    algorithm: L.LightningModule = hydra.utils.instantiate(cfg.algorithm, model=model, **filtered_params)
+    model: L.LightningModule = hydra.utils.instantiate(cfg.model, _recursive_=False, **filtered_params)
 
     log.info("Instantiating callbacks...")
     callbacks: List[L.Callback] = instantiate_callbacks(cfg.get("callbacks"))
@@ -68,7 +61,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             logger.log_hyperparams(raw_config)
 
     try:
-        algorithm.run(
+        model.run(
             trainer=trainer,
             config=cfg,
             data_module=data_module

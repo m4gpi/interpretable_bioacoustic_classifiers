@@ -49,7 +49,7 @@ class SpeciesScores(L.Callback):
         dataloader_idx: int = 0,
     ) -> None:
         if trainer.current_epoch % self.log_every_n_train_epochs == 0:
-            df = pl_module.model.predict(**outputs)
+            df = pl_module.predict(**outputs)
             self.train_predictions.append(df)
 
     def on_train_epoch_end(
@@ -76,7 +76,7 @@ class SpeciesScores(L.Callback):
         dataloader_idx: int = 0,
     ) -> None:
         if trainer.current_epoch % self.log_every_n_val_epochs == 0:
-            df = pl_module.model.predict(**outputs)
+            df = pl_module.predict(**outputs)
             self.val_predictions.append(df)
 
     def on_validation_epoch_end(
@@ -104,7 +104,7 @@ class SpeciesScores(L.Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        df = pl_module.model.predict(**outputs)
+        df = pl_module.predict(**outputs)
         self.test_predictions.append(df)
 
     def on_test_end(
@@ -169,7 +169,7 @@ class SpeciesScores(L.Callback):
 
     def _freq_df(self, pl_module: L.LightningModule):
         return pd.DataFrame(
-            data=zip(pl_module.model.target_counts),
+            data=zip(pl_module.target_counts),
             columns=["train_label_counts"],
-            index=pl_module.model.target_names
+            index=pl_module.target_names
         )

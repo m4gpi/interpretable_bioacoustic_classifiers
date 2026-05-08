@@ -41,7 +41,7 @@ class VAEMetrics(L.Callback):
         dkl_norm = dkl.mean(dim=-1)
         dkl = dkl.sum(dim=-1)
         # frame-wise full elbo
-        sigma_recon = torch.tensor(pl_module.model.sigma_x, dtype=torch.float32, device=x_framed.device)
+        sigma_recon = torch.tensor(pl_module.sigma_x, dtype=torch.float32, device=x_framed.device)
         nll = (1/2 * (2 * sigma_recon.log() + ((x_framed - x_hat_framed) / sigma_recon).pow(2))).flatten(start_dim=-3).sum(dim=-1).mean()
         elbo = nll + dkl
         # calculate timestamps
@@ -73,9 +73,9 @@ class VAEMetrics(L.Callback):
             ])),
             columns=column_types.keys(),
         ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
-        df["model_name"] = pl_module.model.__class__.__name__
-        df["latent_dim"] = pl_module.model.latent_dim
-        df["sigma_x"] = pl_module.model.sigma_x
+        df["model_name"] = pl_module.__class__.__name__
+        df["latent_dim"] = pl_module.latent_dim
+        df["sigma_x"] = pl_module.sigma_x
         df["learning_rate"] = pl_module.learning_rate
         self.data.append(df)
 

@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import random
 import re
+import wandb
 
 from torch.functional import F
 from typing import Any, Callable, Dict, List, Tuple, NamedTuple
@@ -18,6 +19,106 @@ class Batch(NamedTuple):
 
     def __getitem__(self, key):
         return {"x": self.x, "y": self.y, "s": self.s, "metadata": self.metadata}[key]
+
+from collections.abc import Mapping
+import torch
+
+
+class TensorDict(dict):
+    @staticmethod
+    def _zero_like_pair(a, b):
+        if a is not None:
+            return torch.zeros_like(a)
+        if b is not None:
+            return torch.zeros_like(b)
+        raise ValueError("Cannot infer tensor shape")
+
+    def _binary_op(self, other, op):
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        result = TensorDict()
+        all_keys = set(self) | set(other)
+        for k in all_keys:
+            a = self.get(k)
+            b = other.get(k)
+            if a is None:
+                a = self._zero_like_pair(None, b)
+            if b is None:
+                b = self._zero_like_pair(a, None)
+            result[k] = op(a, b)
+        return result
+
+    def __add__(self, other):
+        return self._binary_op(other, torch.add)
+
+    def __sub__(self, other):
+        return self._binary_op(other, torch.sub)
+
+    def __mul__(self, other):
+        # scalar multiply
+        if isinstance(other, (int, float)):
+            return TensorDict({
+                k: v * other
+                for k, v in self.items()
+            })
+        # elementwise dict multiply
+        if isinstance(other, Mapping):
+            return self._binary_op(other, torch.mul)
+        return NotImplemented
+
+    def __rmul__(self, other):
+        return self.__mul__(other)
+
+    def __truediv__(self, other):
+        if isinstance(other, (int, float)):
+            return TensorDict({
+                k: v / other
+                for k, v in self.items()
+            })
+        if isinstance(other, Mapping):
+            return self._binary_op(other, torch.div)
+        return NotImplemented
+
+    def clone(self):
+        return TensorDict({
+            k: v.clone()
+            for k, v in self.items()
+        })
+
+    def to(self, *args, **kwargs):
+        return TensorDict({
+            k: v.to(*args, **kwargs)
+            for k, v in self.items()
+        })
+
+    def detach(self):
+        return TensorDict({
+            k: v.detach()
+            for k, v in self.items()
+        })
+
+    def __repr__(self):
+        return f"TensorDict({dict.__repr__(self)})"
+
+    def __or__(self, other):
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        out = TensorDict(self)
+        out.update(other)
+        return out
+
+    def __ror__(self, other):
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        out = TensorDict(other)
+        out.update(self)
+        return out
+
+    def __ior__(self, other):
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        self.update(other)
+        return self
 
 def tree():
     return collections.defaultdict(tree)
@@ -101,3 +202,11 @@ def random_derange(n):
         random.shuffle(arr)
         if all(arr[i] != i for i in range(n)):
             return arr
+
+def histogram_to_wandb(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    results = {}
+    for k, v in metrics.items():
+        if k.endswith("hist"):
+            v = wandb.Histogram(np_histogram=v)
+        results[k] = v
+    return results

@@ -1,7 +1,11 @@
+import lightning as L
+import hydra
 import numpy as np
 import pandas as pd
+import omegaconf
 import torch
 import logging
+import wandb
 
 from matplotlib import pyplot as plt
 from torch import Tensor, nn
@@ -10,7 +14,7 @@ from torchvision.transforms import functional as T
 from typing import Any, Dict, List, Tuple
 
 from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
-from src.core.utils import Batch, bounded_sigmoid, linear_schedule, linear_decay
+from src.core.utils import Batch, bounded_sigmoid, linear_schedule, linear_decay, detach_values, prefix_keys, histogram_to_wandb
 from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, circular_variance
 
 __all__ = ["SIVAE"]
@@ -18,15 +22,15 @@ __all__ = ["SIVAE"]
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-class SIVAE(torch.nn.Module):
+class SIVAE(L.LightningModule):
     def __init__(
         self,
-        front_end: torch.nn.Module,
-        feature_encoder: torch.nn.Module,
-        content_encoder: torch.nn.Module,
-        feature_decoder: torch.nn.Module,
-        content_decoder: torch.nn.Module,
-        alignment_encoder: torch.nn.Module | None = None,
+        front_end: omegaconf.DictConfig,
+        feature_encoder: omegaconf.DictConfig,
+        content_encoder: omegaconf.DictConfig,
+        feature_decoder: omegaconf.DictConfig,
+        content_decoder: omegaconf.DictConfig,
+        alignment_encoder: omegaconf.DictConfig | None = None,
         latent_dim: int = 128,
         frequency_dim: int = 64,
         frame_window_length: int = 192,
@@ -49,9 +53,17 @@ class SIVAE(torch.nn.Module):
         delta_sigma_step_start: int = 0,
         delta_sigma_step_end: int = 0,
         align_only: bool = False,
+        learning_rate: float = 1e-4,
+        optimiser_cls: str = "torch.optim.AdamW",
+        optimiser_config: omegaconf.DictConfig | None = None,
+        scheduler_cls: str | None = None,
+        scheduler_config: omegaconf.DictConfig | None = None,
+        scheduler_interval: str = "step",
+        scheduler_frequency: int = 1,
         **kwargs: Any,
     ) -> None:
         super().__init__()
+        self.save_hyperparameters()
         self.latent_dim = latent_dim
         self.frequency_dim = frequency_dim
         self.frame_window_length = frame_window_length
@@ -75,12 +87,20 @@ class SIVAE(torch.nn.Module):
         self.delta_sigma_step_end = delta_sigma_step_end
         self.align_only = align_only
 
-        self.front_end = front_end
-        self.feature_encoder = feature_encoder
-        self.content_encoder = content_encoder
-        self.feature_decoder = feature_decoder
-        self.content_decoder = content_decoder
-        self.alignment_encoder = alignment_encoder
+        self.learning_rate = learning_rate
+        self.optimiser_cls = optimiser_cls
+        self.optimiser_config = optimiser_config
+        self.scheduler_cls = scheduler_cls
+        self.scheduler_config = scheduler_config
+        self.scheduler_interval = scheduler_interval
+        self.scheduler_frequency = scheduler_frequency
+
+        self.front_end = hydra.utils.instantiate(front_end)
+        self.feature_encoder = hydra.utils.instantiate(feature_encoder)
+        self.content_encoder = hydra.utils.instantiate(content_encoder)
+        self.feature_decoder = hydra.utils.instantiate(feature_decoder)
+        self.content_decoder = hydra.utils.instantiate(content_decoder)
+        self.alignment_encoder = hydra.utils.instantiate(alignment_encoder)
 
         if self.align_only:
             log.info("Freezing feature and content networks")
@@ -506,3 +526,73 @@ class SIVAE(torch.nn.Module):
             t_start=self.delta_prob_step_start,
             t_end=self.delta_prob_step_end,
         )
+
+    def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+        # run training
+        log.info(f"Training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        checkpoint_path, resume = config.get("ckpt_path"), config.get("resume")
+        if checkpoint_path is not None and resume:
+            log.info(f"Resuming from {checkpoint_path}")
+            trainer.fit(self, datamodule=data_module, ckpt_path=checkpoint_path)
+        elif config.get("ckpt_path"):
+            log.info(f"Loading state dict from {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path)
+            self.load_state_dict(checkpoint["state_dict"], strict=False)
+            trainer.fit(self, datamodule=data_module)
+        else:
+            trainer.fit(self, datamodule=data_module)
+        # persist the model configuration
+        checkpoint_dir = pathlib.Path(trainer.checkpoint_callback.dirpath)
+        if checkpoint_dir.exists():
+            config_path = checkpoint_dir / "config.yaml"
+            log.info(f"Saving model configuration to {config_path}")
+            omegaconf.OmegaConf.save(config, config_path)
+        # running test
+        log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        trainer.test(self, datamodule=data_module)
+
+    def step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        step_outputs = self.forward(**batch, t=self.trainer.global_step, **kwargs)
+        loss_outputs = self.loss(**step_outputs, t=self.trainer.global_step)
+        step_outputs = detach_values(step_outputs)
+        return loss_outputs, step_outputs
+
+    def training_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx)
+        self.log_dict(prefix_keys(loss_outputs, "train"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
+        metrics = histogram_to_wandb(self.metrics(**step_outputs))
+        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "train")))
+        return loss_outputs | step_outputs
+
+    @torch.no_grad()
+    def validation_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx)
+        self.log_dict(prefix_keys(loss_outputs, "val"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
+        metrics = histogram_to_wandb(self.metrics(**step_outputs))
+        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "val")))
+        return loss_outputs | step_outputs
+
+    @torch.no_grad()
+    def test_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        return self.predict(**batch, **kwargs)
+
+    @torch.no_grad()
+    def predict_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        return self.predict(**batch, **kwargs)
+
+    def on_after_batch_transfer(self, batch: Batch, dataloader_idx: int) -> Batch:
+        x = self.pre_process(batch.x)
+        return Batch(x=x, **{k: batch[k] for k in batch.keys() if k != "x"})
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        optimiser_config = omegaconf.DictConfig(dict(_target_=self.optimiser_cls, **(self.optimiser_config or {})))
+        optimiser = hydra.utils.instantiate(optimiser_config, params=self.parameters(), lr=self.learning_rate)
+        if self.scheduler_cls is not None:
+            scheduler_config = omegaconf.DictConfig(dict(_target_=self.scheduler_cls, **(self.scheduler_config or {})))
+            scheduler = hydra.utils.instantiate(scheduler_config, optimizer=optimiser)
+            return [optimiser], [dict(
+                scheduler=scheduler,
+                interval=self.scheduler_interval,
+                frequency=self.scheduler_frequency
+            )]
+        return optimiser
