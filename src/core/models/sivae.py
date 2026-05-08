@@ -546,11 +546,11 @@ class SIVAE(L.LightningModule):
         checkpoint_dir = pathlib.Path(trainer.checkpoint_callback.dirpath)
         if checkpoint_dir.exists():
             config_path = checkpoint_dir / "config.yaml"
-            log.info(f"Saving model configuration to {config_path}")
+            log.info(f"Saving run configuration to {config_path}")
             omegaconf.OmegaConf.save(config, config_path)
         # running test
         log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.test(self, datamodule=data_module)
+        trainer.test(self, dataloaders=data_module.predict_dataloader())
 
     def step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
         step_outputs = self.forward(**batch, t=self.trainer.global_step, **kwargs)
