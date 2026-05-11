@@ -270,7 +270,7 @@ class RainforestConnectionDataModule(L.LightningDataModule):
         self.training_mode = ranzen.torch.TrainingMode[self.training_mode]
 
     def prepare_data(self):
-        RainforestConnection(root=self.root, download=True)
+        RainforestConnection(root=self.root)
         return self
 
     def setup(self, *args, **kwargs: Any):
