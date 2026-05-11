@@ -1,0 +1,7 @@
+_target_: src.core.algorithms.soundscape_classifier.SpeciesVAE
+clf:
+  _target_: src.core.models.species_detector.SpeciesDetector
+  ckpt_path: checkpoints/species_detectors/monkey-patch/epoch=900.ckpt
+vae:
+  _target_: src.core.models.sivae.SIVAE
+  ckpt_path: checkpoints/base_vae/silly-byte/step=180000.ckpt

@@ -25,8 +25,7 @@ class SpeciesScores(L.Callback):
         super().__init__()
         self.run_id = run_id
         self.fold_id = fold_id
-        model_name, self.scope = data_dir.split("/")[-2:]
-        self.model, self.version = model_name.split(":")
+        self.model_name, self.scope = data_dir.split("/")[-2:]
         self.save_dir = pathlib.Path(save_dir)
         self.save_dir.mkdir(exist_ok=True, parents=True)
         (self.save_dir / "val_scores.parquet").mkdir(exist_ok=True, parents=True)
@@ -138,7 +137,7 @@ class SpeciesScores(L.Callback):
             # if pl_module.logger is not None and hasattr(pl_module.logger, "experiment") and callable(pl_module.logger.experiment.log):
                 # pl_module.logger.experiment.log({"test_scores_summary": wandb.Table(dataframe=summary_stats.T)})
             print(summary_stats.T.to_markdown())
-        self.test_predictions.clear()
+        elf.test_predictions.clear()
 
     def _on_epoch_end(self, results: List[pd.DataFrame], pl_module: L.LightningModule) -> pd.DataFrame:
         df = metrics.score(results)
@@ -157,8 +156,7 @@ class SpeciesScores(L.Callback):
 
     def _attach_hparams(self, df: pd.DataFrame, hparams: Dict[str, Any]):
         df["run_id"] = self.run_id
-        df["model"] = self.model
-        df["version"] = self.version
+        df["model"] = self.model_name
         df["scope"] = self.scope
         if self.fold_id is not None:
             df["fold_id"] = self.fold_id

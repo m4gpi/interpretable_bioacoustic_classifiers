@@ -86,16 +86,14 @@ class RainforestConnection(torch.utils.data.Dataset):
         # scope by taxa
         if scope is not None:
             self.labels = self.labels[self.labels["taxa"] == scope]
+        self.labels = self.format_labels(self.metadata, self.labels)
         # scope the dataset by train / test
         self.train_idx = pd.read_parquet(self.base_dir / "train_indices.parquet")
         self.test_idx = pd.read_parquet(self.base_dir / "test_indices.parquet")
         self.train_metadata = self.metadata[self.metadata.index.isin(self.train_idx.file_i)]
-        self.train_labels = self.labels.loc[self.labels.index.isin(self.train_idx.file_i)]
+        self.train_labels = self.labels.loc[self.labels.index.get_level_values(0).isin(self.train_idx.file_i)]
         self.test_metadata = self.metadata[self.metadata.index.isin(self.test_idx.file_i)]
-        self.test_labels = self.labels.loc[self.labels.index.isin(self.test_idx.file_i)]
-
-        self.train_labels = self.format_labels(self.train_metadata, self.train_labels)
-        self.test_labels = self.format_labels(self.test_metadata, self.test_labels)
+        self.test_labels = self.labels.loc[self.labels.index.get_level_values(0).isin(self.test_idx.file_i)]
 
         if test == True:
             self.x = self.test_metadata.file_path.to_numpy()
@@ -263,7 +261,7 @@ class RainforestConnectionDataModule(L.LightningDataModule):
 
     def _batch_converter(self, batch: Tuple):
         xs, ys, ss = zip(*batch)
-        return Batch(x=torch.stack(xs, dim=0), y=torch.stack(ys, dim=0), s=torch.tensor(ss))
+        return Batch(x=torch.stack(xs, dim=0), y=torch.stack(ys, dim=0), s=torch.tensor(ss), metadata=self.data.target_names)
 
     def __attrs_post_init__(self):
         L.LightningDataModule.__init__(self)

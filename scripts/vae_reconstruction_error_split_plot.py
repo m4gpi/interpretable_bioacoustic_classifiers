@@ -36,12 +36,23 @@ def main(results_dir, save_dir):
         log.warn("save_dir not assigned, will not persist results")
     else:
         save_dir.mkdir(exist_ok=True, parents=True)
-    df = pd.read_parquet(results_dir)
+
+    con = duckdb.connect()
+    df = con.execute(f"""
+CREATE TABLE mae AS
+SELECT
+    *,
+    regexp_extract(filename, 'version=(.*?)_', 1) AS version,
+    regexp_extract(filename, 'scope=(.*?)\\.parquet', 1) AS dataset_name
+FROM read_parquet('{results_dir}', filename=true);
+    """)
+    df = con.execute("SELECT * FROM mae").fetchdf()
     df["stage"] = df["dataloader_idx"].map({0: "Train", 1: "Validation", 2: "Test"})
     df = df.sort_values(by=["sigma_x", "latent_dim"])
     df["group"] = "sigma_x=" + df["sigma_x"].map(str) + " latent_dim=" + df["latent_dim"].map(str) + " version=" + df["version"].map(str)
+    df["dkl_norm"] = df["dkl"]
 
-    summary_stats = df.groupby(["dataset", "model_name", "stage", "latent_dim", "sigma_x"])[["mae", "mse", "dkl_norm", "elbo"]].agg(["mean", "std"])
+    summary_stats = df.groupby(["dataset_name", "model_name", "stage", "latent_dim", "sigma_x"])[["mae", "mse", "dkl_norm", "elbo"]].agg(["mean", "std"])
     print(summary_stats)
 
     palette = list(sns.color_palette("colorblind", len(df["version"].unique())))
@@ -53,7 +64,7 @@ def main(results_dir, save_dir):
         x="model_name",
         y="mae",
         col="stage",
-        row="dataset",
+        row="dataset_name",
         hue="group",
         sharey="row",
         palette=palette,
@@ -84,7 +95,7 @@ def main(results_dir, save_dir):
         x="model_name",
         y="mse",
         col="stage",
-        row="dataset",
+        row="dataset_name",
         hue="group",
         sharey="row",
         palette=palette,
@@ -115,7 +126,7 @@ def main(results_dir, save_dir):
         x="model_name",
         y="dkl_norm",
         col="stage",
-        row="dataset",
+        row="dataset_name",
         hue="group",
         sharey="row",
         palette=palette,

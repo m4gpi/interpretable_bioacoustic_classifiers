@@ -38,7 +38,7 @@ class VAEMetrics(L.Callback):
         sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
         seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
         dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
-        # frame-wise mean absolute error
+        # frame-wise reconstruction error
         mae = (x_hat_framed - x_framed).abs().flatten(start_dim=-3).mean(dim=-1)
         mse = (x_hat_framed - x_framed).pow(2).flatten(start_dim=-3).mean(dim=-1)
         # frame-wise kl divergence

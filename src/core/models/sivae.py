@@ -210,8 +210,7 @@ class SIVAE(L.LightningModule):
 
     def predict(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
         q_z, (theta, dx, dy) = self.encode(x)
-        # ignore shift prediction network if its not been trained
-        delta = torch.zeros_like(theta) if self.delta_prob_min == 1 and self.delta_prob_max == 1 else theta / torch.pi
+        delta = torch.zeros_like(theta)
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
         z = torch.distributions.Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample()
         x_hat = self.cnn_decode(self.content_decoder(z.flatten(end_dim=1)), delta)
@@ -430,7 +429,7 @@ class SIVAE(L.LightningModule):
     ) -> pd.DataFrame:
         x, *_ = batch
         frame_hop_length = frame_hop_length or self.frame_window_length // 2
-        q_z, delta = self.encode(x, hop_length=frame_hop_length)
+        q_z, *_ = self.encode(x, hop_length=frame_hop_length)
         bs, seq, *_ = q_z.size()
         sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
         seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
@@ -439,14 +438,14 @@ class SIVAE(L.LightningModule):
         feat_column_types = dict(
             **{ f"z_mean_{d}": float  for d in range(q_z.size(-1)//2) },
             **{ f"z_log_var_{d}": float  for d in range(q_z.size(-1)//2) },
-            **{ "delta": float },
+            # **{ "delta": float },
         )
         column_types = (ref_column_types | feat_column_types)
         return pd.DataFrame(
             data=dict(zip(column_types.keys(), [
                 sample_idx, dl_idx, seq_idx,
                 *q_z.flatten(end_dim=1).cpu().t(),
-                *delta.flatten(end_dim=1).cpu().squeeze(-1),
+                # *delta.flatten(end_dim=1).cpu().squeeze(-1),
             ])),
             columns=column_types.keys(),
         ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
