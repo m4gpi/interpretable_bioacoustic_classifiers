@@ -225,8 +225,7 @@ class SpeciesDetector(L.LightningModule):
         return self.predict(**batch, **kwargs)
 
     def on_after_batch_transfer(self, batch: Batch, dataloader_idx: int) -> Batch:
-        num_samples = self.train_sample_size if dataloader_idx == 0 else self.eval_sample_size
-        x = self.pre_process(batch.x, num_samples)
+        x = self.pre_process(batch.x)
         return Batch(x=x, **{k: batch[k] for k in batch.keys() if k != "x"})
 
     def configure_optimizers(self) -> torch.optim.Optimizer:

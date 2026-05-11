@@ -1,5 +1,7 @@
 #!/bin/bash
 
+DATA_DIR = "/mnt/data0/kag25"
+
 uv run src/cli/train.py --multirun \
   hydra/launcher=joblib \
   hydra.launcher.n_jobs=4 \
@@ -9,7 +11,7 @@ uv run src/cli/train.py --multirun \
   'trainer.devices=[0]' \
   trainer.max_epochs=2000 \
   trainer.check_val_every_n_epoch=50 \
-  data.root=silly-byte/SO_EC \
+  data.root=$DATA_DIR/soundscape_vae_embeddings/silly-byte/SO_EC \
   data.num_folds=5 \
   data.fold_id=0,1,2,3,4 \
   model.eval_sample_size=100 \
@@ -28,7 +30,7 @@ uv run src/cli/train.py --multirun \
   'trainer.devices=[0]' \
   trainer.max_epochs=2000 \
   trainer.check_val_every_n_epoch=50 \
-  data.root=meek-zebra/SO_EC \
+  data.root=$DATA_DIR/soundscape_vae_embeddings/meek-zebra/SO_EC \
   data.num_folds=5 \
   data.fold_id=0,1,2,3,4 \
   model.eval_sample_size=100 \
@@ -47,7 +49,7 @@ uv run src/cli/train.py --multirun \
   'trainer.devices=[0]' \
   trainer.max_epochs=2000 \
   trainer.check_val_every_n_epoch=50 \
-  data.root=rude-money/SO_EC \
+  data.root=$DATA_DIR/soundscape_vae_embeddings/rude-money/SO_EC \
   data.num_folds=5 \
   data.fold_id=0,1,2,3,4 \
   model.eval_sample_size=100 \
@@ -65,7 +67,7 @@ uv run src/cli/train.py --multirun \
   'trainer.devices=[0]' \
   trainer.max_epochs=2000 \
   trainer.check_val_every_n_epoch=50 \
-  data.root=tan-ohio,small-peru,brave-vincent
+  data.root=$DATA_DIR/soundscape_vae_embeddings/tan-ohio,small-peru,brave-vincent
   data.num_folds=5 \
   data.fold_id=0,1,2,3,4 \
   model.eval_sample_size=100 \
@@ -84,7 +86,7 @@ uv run src/cli/train.py --multirun \
   'trainer.devices=[0]' \
   trainer.max_epochs=2000 \
   trainer.check_val_every_n_epoch=50 \
-  data.root=tan-ohio/SO_EC \
+  data.root=$DATA_DIR/soundscape_vae_embeddings/tan-ohio/SO_EC \
   data.num_folds=5 \
   data.fold_id=0,1,2,3,4 \
   model.eval_sample_size=100 \
@@ -103,7 +105,7 @@ uv run src/cli/train.py --multirun \
   'trainer.devices=[0]' \
   trainer.max_epochs=2000 \
   trainer.check_val_every_n_epoch=50 \
-  data.root=small-peru/SO_EC \
+  data.root=$DATA_DIR/soundscape_vae_embeddings/small-peru/SO_EC \
   data.num_folds=5 \
   data.fold_id=0,1,2,3,4 \
   model.eval_sample_size=100 \
@@ -122,7 +124,7 @@ uv run src/cli/train.py --multirun \
   'trainer.devices=[0]' \
   trainer.max_epochs=2000 \
   trainer.check_val_every_n_epoch=50 \
-  data.root=brave-vincent/SO_EC \
+  data.root=$DATA_DIR/soundscape_vae_embeddings/brave-vincent/SO_EC \
   data.num_folds=5 \
   data.fold_id=0,1,2,3,4 \
   model.eval_sample_size=100 \

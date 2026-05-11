@@ -1,4 +1,3 @@
-import functools
 import hydra
 import json
 import lightning as L
@@ -10,6 +9,7 @@ import torch
 import wandb
 import yaml
 
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from typing import Any, List, Dict, Tuple
 
@@ -55,6 +55,12 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     loggers: List[Logger] = instantiate_loggers(cfg.get("logger"))
 
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
+    if trainer.devices == 1 and cfg.num_gpus > 1:
+        gpu_num = HydraConfig.get().job.num % cfg.num_gpus
+        available_devices = os.environ["CUDA_VISIBLE_DEVICES"].split(",")
+        gpu_id = int(available_devices[gpu_num])
+        log.info(f"Using GPU ID: {gpu_id} of available_devices {available_devices}")
+        cfg.trainer.devices = [gpu_id]
     trainer: L.Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=loggers)
 
     if loggers:

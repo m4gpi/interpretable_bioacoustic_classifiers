@@ -16,3 +16,4 @@ resume: false
 ckpt_path: null
 seed: 42
 run_id: null
+num_gpus: 2
