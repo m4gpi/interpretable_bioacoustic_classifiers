@@ -17,6 +17,7 @@ class SpeciesScores(L.Callback):
         self,
         save_dir: str,
         data_dir: str,
+        seed: str,
         run_id: str,
         fold_id: int | None = None,
         log_every_n_train_epochs: int = 20,
@@ -26,7 +27,8 @@ class SpeciesScores(L.Callback):
         self.run_id = run_id
         self.fold_id = fold_id
         self.model_name, self.scope = data_dir.split("/")[-2:]
-        self.save_dir = pathlib.Path(save_dir)
+        self.seed = seed
+        self.save_dir = pathlib.Path(save_dir).expanduser()
         self.save_dir.mkdir(exist_ok=True, parents=True)
         (self.save_dir / "val_scores.parquet").mkdir(exist_ok=True, parents=True)
         (self.save_dir / "test_scores.parquet").mkdir(exist_ok=True, parents=True)
@@ -158,6 +160,7 @@ class SpeciesScores(L.Callback):
         df["run_id"] = self.run_id
         df["model"] = self.model_name
         df["scope"] = self.scope
+        df["seed"] = self.seed
         if self.fold_id is not None:
             df["fold_id"] = self.fold_id
         for param, value in hparams.items():

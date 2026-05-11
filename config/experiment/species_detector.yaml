@@ -29,6 +29,7 @@ callbacks:
     save_dir: ${paths.results_dir}
     data_dir: ${data.root}
     run_id: ${run_id}
+    seed: ${seed}
     fold_id: ${data.fold_id}
     log_every_n_train_epochs: 20
     log_every_n_val_epochs: 20
