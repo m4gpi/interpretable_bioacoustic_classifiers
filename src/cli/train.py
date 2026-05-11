@@ -57,10 +57,9 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
     if cfg.trainer.devices == 1 and cfg.num_gpus > 1:
         gpu_num = HydraConfig.get().job.num % cfg.num_gpus
-        available_devices = os.environ["CUDA_VISIBLE_DEVICES"].split(",")
-        gpu_id = int(available_devices[gpu_num])
-        log.info(f"Using GPU ID: {gpu_id} of available_devices {available_devices}")
-        cfg.trainer.devices = [gpu_id]
+        available_devices = list(map(int, os.environ["CUDA_VISIBLE_DEVICES"].split(",")))
+        log.info(f"Using GPU NUM: {gpu_num}, GPU ID: {available_devices[gpu_num]} from available devices {available_devices}")
+        cfg.trainer.devices = [gpu_num]
     trainer: L.Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=loggers)
 
     if loggers:
