@@ -165,7 +165,6 @@ class VAE(L.LightningModule):
     def embed(
         self,
         batch: Tuple[Tensor, Tensor, Tensor],
-        batch_idx: int,
         dataloader_idx: int = 0,
         frame_hop_length: float | None = None,
         **kwargs: Any
