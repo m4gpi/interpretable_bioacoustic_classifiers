@@ -54,12 +54,16 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     log.info("Instantiating loggers...")
     loggers: List[Logger] = instantiate_loggers(cfg.get("logger"))
 
-    log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
-    if cfg.trainer.devices == 1 and cfg.num_gpus > 1:
-        gpu_num = HydraConfig.get().job.num % cfg.num_gpus
-        available_devices = list(map(int, os.environ["CUDA_VISIBLE_DEVICES"].split(",")))
-        log.info(f"Using GPU NUM: {gpu_num}, GPU ID: {available_devices[gpu_num]} from available devices {available_devices}")
+    hydra_config = HydraConfig.get()
+    if cfg.trainer.accelerator == "gpu" and (job_num := hydra_config.job.get("num")) is not None:
+        default_devices = list(range(torch.cuda.device_count()))
+        available_devices = list(map(int, filter(None, os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")))) or default_devices
+        log.info(f"GPU devices made available at runtime: {available_devices}")
+        gpu_num = job_num % cfg.num_gpus
         cfg.trainer.devices = [gpu_num]
+        log.info(f"Assigning GPU: {gpu_num}, GPU ID: {available_devices[gpu_num]}")
+
+    log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
     trainer: L.Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=loggers)
 
     if loggers:
