@@ -17,6 +17,7 @@ from matplotlib.image import AxesImage
 from matplotlib.collections import QuadMesh
 from matplotlib import cm
 from numpy.typing import NDArray
+from scipy import signal
 from typing import Any, Dict, List, Tuple
 
 from src.core.transforms.log_mel_spectrogram import hz_to_mel, mel_to_hz
@@ -177,3 +178,33 @@ def plot_species_proba_spectrogram(
     pred_handles = [tp_line, fp_line, fn_line, tn_line]
 
     return im, spec_handles, pred_handles, ax2
+
+def plot_latent_power_spectral_density_heatmap(
+    X: NDArray,
+    fft_length: int,
+    audio_sample_rate: int = 48_000,
+    audio_fft_hop_length: int = 384,
+    audio_frame_length_hops: int = 192,
+    ax: Axes = None,
+    cbar = False,
+    cmap = sns.color_palette("light:b", as_cmap=True),
+    **kwargs: Any,
+) -> QuadMesh:
+    ax = ax.gca() if ax is None else ax
+    seq_len, latent_dim = X.shape
+    ld = np.arange(latent_dim)
+    frame_length_seconds = (audio_fft_hop_length * audio_frame_length_hops / audio_sample_rate)
+    fs = audio_sample_rate / (audio_fft_hop_length * audio_frame_length_hops)
+    fq = np.fft.rfftfreq(fft_length, frame_length_seconds)
+    Z = np.vstack([signal.welch(X[:, j], fs, nperseg=fft_length)[1] for j in range(latent_dim)])
+    xx, yy = np.meshgrid(ld, fq)
+    mesh = ax.pcolormesh(xx, yy, Z.T, cmap=cmap, **kwargs)
+    ax.set_xticks(ld[::4] + 1)
+    ax.set_yticks(fq)
+    ax.tick_params(axis='x', rotation=90)
+    ax.set_xlabel("Latent Dimension")
+    ax.set_ylabel("Frequency (Hz)")
+    if cbar:
+        fig = plt.gcf()
+        cbar = fig.colorbar(mesh, ax=ax, orientation="vertical")
+    return mesh

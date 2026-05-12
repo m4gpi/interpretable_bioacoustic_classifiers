@@ -210,3 +210,31 @@ def histogram_to_wandb(metrics: Dict[str, Any]) -> Dict[str, Any]:
             v = wandb.Histogram(np_histogram=v)
         results[k] = v
     return results
+
+def gaussian_kernel(sigmas: torch.Tensor, mask_center: bool = False) -> torch.Tensor:
+    sigmas = sigmas.float()
+    s_max = sigmas.max()
+    c = int(s_max / 0.3 + 1)
+    k_size = 2 * c + 1
+    x = torch.arange(k_size, device=sigmas.device) - c
+    x = x.unsqueeze(0)
+    sigmas = sigmas.unsqueeze(1)
+    filt = torch.exp(-(x ** 2) / (2 * sigmas ** 2))
+    if mask_center:
+        filt[:, c] = 0.0
+    filt = filt / filt.sum(dim=1, keepdim=True)
+    return filt.unsqueeze(1)
+
+def laplace_kernel(sigmas: torch.Tensor, mask_center: bool = False) -> torch.Tensor:
+    sigmas = sigmas.float()
+    s_max = sigmas.max()
+    c = int(s_max / 0.3 + 1)
+    k_size = 2 * c + 1
+    x = torch.arange(k_size, device=sigmas.device) - c
+    x = x.unsqueeze(0)
+    sigmas_exp = sigmas.unsqueeze(1)
+    filt = torch.exp(-torch.abs(x) / sigmas_exp)
+    if mask_center:
+        filt[:, c] = 0.0
+    filt = filt / filt.sum(dim=1, keepdim=True)
+    return filt.unsqueeze(1)

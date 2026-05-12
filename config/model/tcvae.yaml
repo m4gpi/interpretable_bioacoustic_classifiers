@@ -1,0 +1,17 @@
+_target_: src.core.models.tcvae.TCVAE
+latent_dim: 128
+frequency_dim: 64
+frame_window_length: 192
+frame_padding_mode: circular
+beta: 1.0
+sigma_x: 0.2
+sigma_z_min: 1.e-5
+ema_sigma_z_min: 1.e-2
+learning_rate: 4.e-5
+optimiser_cls: torch.optim.AdamW
+scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+scheduler_config:
+  eta_min: 1.e-5
+  T_max: 180000
+scheduler_interval: step
+scheduler_frequency: 1
