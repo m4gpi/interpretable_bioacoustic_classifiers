@@ -12,18 +12,20 @@ scope: null
 
 data:
   root: ${paths.data_dir}/soundscape_vae_embeddings/${model_name}/${scope}
-  num_folds: 5
-  fold_id: [0, 1, 2, 3, 4]
 
-model:
-  clf_learning_rate: [1.e-1, 5.e-2, 3.e-2, 1.e-2]
-  lamdba: [1.e-1, 5.e-2, 1.e-2]
-  attn_learning_rate: [1.e-3, 5.e-4]
-  attn_weight_decay: [1.e-2, 1.e-3]
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      data.fold_id: 0,1,2,3,4
+      model.clf_learning_rate: 1e-1,5e-2,3e-2,1e-2
+      model.lamdba: 1e-1,5e-2,1e-2
+      model.attn_learning_rate: 1e-3,5e-4
+      model.attn_weight_decay: 1e-2,1e-3
 
 trainer:
   max_epochs: 2000
-  log_every_n_steps: 1
+  log_every_n_steps: 10
   check_val_every_n_epoch: 50
 
 callbacks:

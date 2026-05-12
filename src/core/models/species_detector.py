@@ -171,7 +171,7 @@ class SpeciesDetector(L.LightningModule):
     def cel_params(self):
         return dict(beta=self.beta, label_smoothing=self.label_smoothing)
 
-    def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+    def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = False):
         # run training
         log.info(f"Training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         checkpoint_path, resume = config.get("ckpt_path"), config.get("resume")
@@ -192,8 +192,9 @@ class SpeciesDetector(L.LightningModule):
             log.info(f"Saving model configuration to {config_path}")
             omegaconf.OmegaConf.save(config, config_path)
         # running test
-        log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.test(self, datamodule=data_module)
+        if test:
+            log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+            trainer.test(self, datamodule=data_module)
 
     def step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
         step_outputs = self.forward(**batch, t=self.trainer.global_step, **kwargs)
@@ -205,7 +206,8 @@ class SpeciesDetector(L.LightningModule):
         loss_outputs, step_outputs = self.step(batch, batch_idx)
         self.log_dict(prefix_keys(loss_outputs, "train"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
         metrics = histogram_to_wandb(self.metrics(**step_outputs))
-        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "train")))
+        if self.logger is not None and self.logger.get("experiment") is not None:
+            self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "train")))
         return loss_outputs | step_outputs
 
     @torch.no_grad()
@@ -213,16 +215,19 @@ class SpeciesDetector(L.LightningModule):
         loss_outputs, step_outputs = self.step(batch, batch_idx)
         self.log_dict(prefix_keys(loss_outputs, "val"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
         metrics = histogram_to_wandb(self.metrics(**step_outputs))
-        self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "val")))
+        if self.logger is not None and self.logger.get("experiment") is not None:
+            self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "val")))
         return loss_outputs | step_outputs
 
     @torch.no_grad()
     def test_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
-        return self.predict(**batch, **kwargs)
+        loss_outputs, step_outputs = self.step(batch, batch_idx)
+        return loss_outputs | step_outputs
 
     @torch.no_grad()
     def predict_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
-        return self.predict(**batch, **kwargs)
+        loss_outputs, step_outputs = self.step(batch, batch_idx)
+        return loss_outputs | step_outputs
 
     def on_after_batch_transfer(self, batch: Batch, dataloader_idx: int) -> Batch:
         x = self.pre_process(batch.x)

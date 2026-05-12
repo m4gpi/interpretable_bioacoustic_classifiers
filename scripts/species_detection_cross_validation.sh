@@ -3,13 +3,13 @@
 STORAGE=/mnt/data0/kag25
 JOBS_PER_GPU=2
 GPU_IDS=1,3,4,5
-NUM_GPUS="$(echo $CUDA_VISIBLE_DEVICES | awk -F ',' '{print NF}')"
-NUM_JOBS="$((echo $NUM_GPUS * $JOBS_PER_GPU))"
+NUM_GPUS="$(echo $GPU_IDS | awk -F ',' '{print NF}')"
+NUM_JOBS=$((NUM_GPUS * JOBS_PER_GPU))
 
 # CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=8 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=silly-byte scope=SO_UK paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
 # CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=16 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=meek-zebra scope=SO_UK paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
 # CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=24 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=rude-money scope=SO_UK paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
-# CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=8 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=tan-ohio scope=SO_UK paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
+# CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=8 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=tan-ohio scope=SO_UK paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation data.fold_id=0,1
 # CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=16 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=small-peru scope=SO_UK paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
 # CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=24 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=brave-vincent scope=SO_UK paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
 
@@ -33,3 +33,8 @@ CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=
 CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=8 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=uncanny-burma scope=RFCX_frog paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
 CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=16 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=detailed-ticket scope=RFCX_frog paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
 CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=24 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=mossy-andrea scope=RFCX_frog paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
+
+# rerun failed / missing runs
+# CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=8 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=tan-ohio scope=SO_UK paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation data.fold_id=0,1
+# CUDA_VISIBLE_DEVICES=1 uv run src/cli/train.py seed=8 +experiment=species_detector_cross_validation 'trainer.devices=[1]' model_name=silly-byte scope=SO_UK paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation data.fold_id=0 model.clf_learning_rate=1.e-2 model.lamdba=1.e-2 model.attn_weight_decay=1.e-3 model.attn_learning_rate=1.e-3
+# CUDA_VISIBLE_DEVICES=1 uv run src/cli/train.py seed=16 +experiment=species_detector_cross_validation 'trainer.devices=[1]' model_name=meek-zebra scope=SO_UK paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation data.fold_id=1 model.clf_learning_rate=3.e-2 model.lamdba=1.e-2 model.attn_weight_decay=1.e-3 model.attn_learning_rate=1.e-3
