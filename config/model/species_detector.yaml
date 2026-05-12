@@ -4,3 +4,5 @@ lamdba: 0.1
 beta: 0.0
 label_smoothing: 0.0
 attn_dim: 10
+train_sample_size: 1
+eval_sample_size: 100

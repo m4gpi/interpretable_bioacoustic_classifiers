@@ -21,7 +21,6 @@ class SpeciesScores(L.Callback):
         run_id: str,
         fold_id: int | None = None,
         log_every_n_train_epochs: int = 20,
-        log_every_n_val_epochs: int = 20,
     ) -> None:
         super().__init__()
         self.run_id = run_id
@@ -34,7 +33,6 @@ class SpeciesScores(L.Callback):
         (self.save_dir / "test_scores.parquet").mkdir(exist_ok=True, parents=True)
         (self.save_dir / "test_results.parquet").mkdir(exist_ok=True, parents=True)
         self.log_every_n_train_epochs = log_every_n_train_epochs
-        self.log_every_n_val_epochs = log_every_n_val_epochs
         self.train_predictions = []
         self.val_predictions = []
         self.test_predictions = []
@@ -76,9 +74,8 @@ class SpeciesScores(L.Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        if trainer.current_epoch % self.log_every_n_val_epochs == 0:
-            df = pl_module.predict(**outputs)
-            self.val_predictions.append(df)
+        df = pl_module.predict(**outputs)
+        self.val_predictions.append(df)
 
     def on_validation_epoch_end(
         self,

@@ -6,35 +6,27 @@ defaults:
   - override /data: soundscape_embeddings
   - override /model: species_detector
   - override /trainer: gpu
-  - override /logger: wandb
 
 model_name: null
 scope: null
 
 data:
   root: ${paths.data_dir}/soundscape_vae_embeddings/${model_name}/${scope}
-  val_prop: 0.0
+  num_folds: 5
+  fold_id: [0, 1, 2, 3, 4]
 
 model:
-  clf_learning_rate: 0.1
-  attn_learning_rate: 1.e-3
-  attn_weight_decay: 1.e-2
-  train_sample_size: 1
-  eval_sample_size: 100
+  clf_learning_rate: [1.e-1, 5.e-2, 3.e-2, 1.e-2]
+  lamdba: [1.e-1, 5.e-2, 1.e-2]
+  attn_learning_rate: [1.e-3, 5.e-4]
+  attn_weight_decay: [1.e-2, 1.e-3]
 
 trainer:
   max_epochs: 2000
-  log_every_n_steps: 10
+  log_every_n_steps: 1
   check_val_every_n_epoch: 50
-  limit_val_batches: 0.0
 
 callbacks:
-  model_checkpoint:
-    _target_: lightning.pytorch.callbacks.ModelCheckpoint
-    dirpath: ${paths.checkpoint_dir}/species_detectors/
-    filename: ${model_name}_${scope}
-    every_n_train_steps: ${trainer.max_epochs}
-    save_top_k: -1
   species_scores:
     _target_: src.core.callbacks.species_scores.SpeciesScores
     save_dir: ${paths.results_dir}
@@ -43,8 +35,3 @@ callbacks:
     seed: ${seed}
     fold_id: ${data.fold_id}
     log_every_n_train_epochs: 20
-
-logger:
-  wandb:
-    id: ${run_id}
-    project: soundscape_species_detection
