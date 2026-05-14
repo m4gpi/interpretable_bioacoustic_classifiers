@@ -10,9 +10,10 @@ defaults:
 model:
   alpha_step_start: 15_000
   alpha_step_end: 100_000
-  alpha_min: 0.25
-  alpha_max: 1.0
+  alpha_min: null
+  alpha_max: 0.9
   alpha_step_slope: 1.0
+  ema_sigma_z_min: 1.e-2
   front_end:
     _target_: src.core.transforms.log_mel_spectrogram.LogMelSpectrogram
     sample_rate: 48000

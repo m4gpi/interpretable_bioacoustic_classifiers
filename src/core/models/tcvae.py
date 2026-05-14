@@ -242,9 +242,8 @@ class TCVAE(L.LightningModule):
         sq_err = (mu_smooth - mu_bar).pow(2) * (-log_sigma_sq_bar).exp()
         temp_dkl[:, :, self.smooth_feature_idx] = -1/2 * (1 + log_sigma_sq_smooth - log_sigma_sq_bar - var_ratio - sq_err)
         # cross-weigh the standard normal prior on the student with smoothness prior on the teacher
-        alpha = bounded_sigmoid(self.trainer.global_step, **self.alpha_params)
-        smooth_dkl = alpha * smooth_dkl
-        temp_dkl = (1 - alpha) * temp_dkl
+        smooth_dkl = (1 - self.alpha) * smooth_dkl
+        temp_dkl = self.alpha * temp_dkl
         # sum all KL terms
         dkl = self.beta * (sharp_dkl + smooth_dkl + temp_dkl).sum(dim=-1).mean()
         losses.append(dkl)
@@ -253,6 +252,7 @@ class TCVAE(L.LightningModule):
             sharp_dkl=sharp_dkl.detach().sum(dim=-1).mean(),
             temp_dkl=temp_dkl.detach().sum(dim=-1).mean(),
             smooth_dkl=smooth_dkl.detach().sum(dim=-1).mean(),
+            alpha=self.alpha,
         )
         # sum the loss components
         outputs |= dict(loss=sum(losses))
@@ -280,6 +280,17 @@ class TCVAE(L.LightningModule):
             sigma_z_hist=sigma_hist,
             dkl_norm=dkl_norm,
         )
+
+    @property
+    def alpha(self):
+        if (
+            self.alpha_min is None or
+            self.alpha_step_min == 0 or
+            self.alpha_step_max == 0 or
+            self.alpha_step_min is None or
+            self.alpha_step_max is None
+        ): return self.alpha_max
+        return bounded_sigmoid(self.trainer.global_step, **self.alpha_params)
 
     @torch.no_grad()
     def embed(
