@@ -6,11 +6,14 @@ defaults:
   - override /trainer: gpu
   - override /logger: wandb
 
-data:
-  val_prop: 0.0
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      model.translation_idx: 0,1,2,3,4,-1
 
 model:
-  x_i_frame_prob: 0.5
+  x_i_frame_prob: 1.0
   front_end:
     _target_: src.core.transforms.log_mel_spectrogram.LogMelSpectrogram
     sample_rate: 48000
@@ -72,7 +75,6 @@ trainer:
   max_steps: 180_000
   max_epochs: -1
   log_every_n_steps: 50
-  limit_val_batches: 0.0
 
 callbacks:
   primary_model_checkpoint:
@@ -99,5 +101,5 @@ callbacks:
 logger:
   wandb:
     id: ${run_id}
-    project: soundscape_vae_pt
+    project: translation_idx
     group: sivae

@@ -103,6 +103,13 @@ class SIVAE(L.LightningModule):
         self.content_decoder = hydra.utils.instantiate(content_decoder)
         self.alignment_encoder = hydra.utils.instantiate(alignment_encoder)
 
+        assert translation_idx <= len(self.feature_decoder.blocks), f"'translation_idx' is too large, set <= {len(self.feature_decoder.blocks)}"
+        if translation_idx == -1 or translation_idx >= len(self.feature_decoder.blocks) and x_i_frame_prob < 1.0:
+            raise AssertionError(
+                f"Cannot apply independent frame-level translations after unframing, "
+                f"set 'translation_idx' < {len(self.feature_decoder.blocks)} to reconstruction without frame continuity"
+            )
+
         if self.align_only:
             log.info("Freezing feature and content networks")
             params = list(self.feature_encoder.parameters()) + list(self.feature_decoder.parameters()) + \
@@ -110,7 +117,7 @@ class SIVAE(L.LightningModule):
             for param in params:
                 param.requires_grad = False
         # if ground truth is always shown, freeze the alignment encoder
-        if self.delta_prob_min == 1 and self.delta_prob_max == 1:
+        if self.alignment_encoder is not None and self.delta_prob_min == 1 and self.delta_prob_max == 1:
             log.info("Freezing alignment encoder")
             for param in self.alignment_encoder.parameters():
                 param.requires_grad = False
@@ -163,19 +170,19 @@ class SIVAE(L.LightningModule):
             mu_z = torch.stack([mu_z_i.flatten(end_dim=1), mu_z_j.flatten(end_dim=1)], dim=1).mean(dim=1)
             log_sigma_sq_z = (torch.stack([log_sigma_sq_z_i.flatten(end_dim=1).exp(), log_sigma_sq_z_j.flatten(end_dim=1).exp()], dim=1).sum(dim=1) / 4).log()
             z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()  # (bs, seq, ld)
-            U_hat_i = self.content_decoder(z) # (bs * seq, ch, fr, fq)
-            U_hat_j = U_hat_i
+            U_hat_i = self.content_decoder(z).unflatten(0, (mu_z_i.size(0), mu_z_i.size(1))) # (bs, seq, ch, fr, fq)
+            U_hat_j = U_hat_i.flatten(end_dim=1).unsqueeze(1) # (bs * seq, 1, ch, fr, fq)
         elif self.cross_decode_method == "hard":
             z_i = torch.distributions.Normal(mu_z_i, (0.5 * log_sigma_sq_z_i).exp()).rsample()  # (bs, seq, ld)
             z_j = torch.distributions.Normal(mu_z_j, (0.5 * log_sigma_sq_z_j).exp()).rsample()  # (bs * seq, 1, ld)
-            U_hat_i = self.content_decoder(z_i.flatten(end_dim=1))
-            U_hat_j = self.content_decoder(z_j.flatten(end_dim=1))
+            U_hat_i = self.content_decoder(z_i)
+            U_hat_j = self.content_decoder(z_j)
         else:
             raise Exception("Cross decode method not specified, terminating")
 
         if self.training:
-            # during training, occasionally aid the decoder by providing the true delta
             delta_prob = self.delta_prob_current(t)
+            # during training, aid the decoder by providing the true delta
             mask_i = torch.bernoulli(torch.full((delta_i.size(0), delta_i.size(1), 1), delta_prob, device=delta_i.device))
             mask_j = torch.bernoulli(torch.full((delta_j.size(0), delta_j.size(1), 1), delta_prob, device=delta_i.device))
             delta_i_mixed = mask_i * delta_i + (1 - mask_i) * delta_hat_i
@@ -248,23 +255,34 @@ class SIVAE(L.LightningModule):
             log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*sigma_latent.pow(2).log())
             q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         # alignment bottleneck
-        delta = self.alignment_encoder(x, u)
+        if self.alignment_encoder is not None:
+            delta = self.alignment_encoder(x, u)
+        else:
+            delta = None
         return q_z, delta
 
     def decode(self, z: Tensor, delta: Tensor | None = None) -> Tensor:
-        U = self.content_decoder(z.flatten(end_dim=1))
+        U = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1)))
         x_hat = self.cnn_decode(U, delta)
         return x_hat
 
-    def cnn_decode(self, U: Tensor, delta: Tensor) -> Tensor:
+    def cnn_decode(self, U: Tensor, delta: Tensor | None = None) -> Tensor:
+        if delta is None:
+            delta = torch.zeros(U.size(0), U.size(1), 1)
+        bs, seq, _ = delta.size()
+        U = U.flatten(end_dim=1)
         for i, block in enumerate(self.feature_decoder.blocks):
-            if i == self.translation_idx:
+            if self.translation_idx == i:
                 U = U.transpose(-1, -2).contiguous()
                 U = self.translation(U, delta.view(delta.size(0) * delta.size(1)), mode=self.translation_mode)
                 U = U.transpose(-1, -2).contiguous()
             if i == len(self.feature_decoder.blocks) - 1:
                 U = U.unflatten(0, (delta.size(0), delta.size(1))).transpose(1, 2).flatten(start_dim=2, end_dim=3)
             U = block(U)
+        if self.translation_idx == -1 or self.translation_idx == len(self.feature_decoder.blocks):
+            U = U.transpose(-1, -2).contiguous()
+            U = self.translation(U, delta.view(delta.size(0) * delta.size(1)), mode=self.translation_mode)
+            U = U.transpose(-1, -2).contiguous()
         return U
 
     @staticmethod
