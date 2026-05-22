@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # last run on 22.05.2026
+# commit ref: c1d3a34bb724ce9610420923469a064fec0bfd8f
 
 RESULTS_DIR=/its/home/kag25/experiments/v1/species_detectors/
 CKPT_DIR=/its/home/kag25/models/v1/species_detectors/
