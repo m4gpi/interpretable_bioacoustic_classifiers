@@ -136,7 +136,7 @@ class SpeciesScores(L.Callback):
             # if pl_module.logger is not None and hasattr(pl_module.logger, "experiment") and callable(pl_module.logger.experiment.log):
                 # pl_module.logger.experiment.log({"test_scores_summary": wandb.Table(dataframe=summary_stats.T)})
             print(summary_stats.T.to_markdown())
-        elf.test_predictions.clear()
+        self.test_predictions.clear()
 
     def _on_epoch_end(self, results: List[pd.DataFrame], pl_module: L.LightningModule) -> pd.DataFrame:
         df = metrics.score(results)

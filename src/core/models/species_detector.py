@@ -31,7 +31,6 @@ class SpeciesDetector(L.LightningModule):
         beta: float = 0.0,
         lamdba : float = 1e-1,
         label_smoothing: float = 0.0,
-        pool_method: str = "max",
         attn_dim: int = 10,
         clf_learning_rate: float = 1e-2,
         attn_learning_rate: float = 1e-3,
