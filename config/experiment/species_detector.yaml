@@ -10,6 +10,7 @@ defaults:
 
 model_name: null
 scope: null
+test: true
 
 data:
   root: ${paths.data_dir}/soundscape_vae_embeddings/${model_name}/${scope}
@@ -25,13 +26,12 @@ model:
 trainer:
   max_epochs: 2000
   log_every_n_steps: 10
-  check_val_every_n_epoch: 50
   limit_val_batches: 0.0
 
 callbacks:
   model_checkpoint:
     _target_: lightning.pytorch.callbacks.ModelCheckpoint
-    dirpath: ${paths.checkpoint_dir}/species_detectors/
+    dirpath: ${paths.checkpoint_dir}
     filename: ${model_name}_${scope}
     every_n_train_steps: ${trainer.max_epochs}
     save_top_k: -1

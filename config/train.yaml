@@ -11,6 +11,7 @@ defaults:
   - _self_
 
 task_name: train
+test: false
 tags: ["dev"]
 resume: false
 ckpt_path: null

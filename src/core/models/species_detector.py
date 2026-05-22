@@ -192,7 +192,7 @@ class SpeciesDetector(L.LightningModule):
             log.info(f"Saving model configuration to {config_path}")
             omegaconf.OmegaConf.save(config, config_path)
         # running test
-        if test:
+        if config.get("test"):
             log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
             trainer.test(self, datamodule=data_module)
 
