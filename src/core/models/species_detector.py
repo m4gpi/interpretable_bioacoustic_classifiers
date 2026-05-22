@@ -206,7 +206,7 @@ class SpeciesDetector(L.LightningModule):
         loss_outputs, step_outputs = self.step(batch, batch_idx)
         self.log_dict(prefix_keys(loss_outputs, "train"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
         metrics = histogram_to_wandb(self.metrics(**step_outputs))
-        if self.logger is not None and self.logger.get("experiment") is not None:
+        if self.logger is not None and hasattr(self.logger, "experiment"):
             self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "train")))
         return loss_outputs | step_outputs
 
@@ -215,7 +215,7 @@ class SpeciesDetector(L.LightningModule):
         loss_outputs, step_outputs = self.step(batch, batch_idx)
         self.log_dict(prefix_keys(loss_outputs, "val"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
         metrics = histogram_to_wandb(self.metrics(**step_outputs))
-        if self.logger is not None and self.logger.get("experiment") is not None:
+        if self.logger is not None and hasattr(self.logger, "experiment"):
             self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "val")))
         return loss_outputs | step_outputs
 

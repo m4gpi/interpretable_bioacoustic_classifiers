@@ -20,7 +20,7 @@ class SpeciesScores(L.Callback):
         seed: str,
         run_id: str,
         fold_id: int | None = None,
-        log_every_n_train_epochs: int = 20,
+        log_every_n_train_epochs: int | None = None,
     ) -> None:
         super().__init__()
         self.run_id = run_id
@@ -47,7 +47,7 @@ class SpeciesScores(L.Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        if trainer.current_epoch % self.log_every_n_train_epochs == 0:
+        if self.log_every_n_train_epochs is not None and trainer.current_epoch % self.log_every_n_train_epochs == 0:
             df = pl_module.predict(**outputs)
             self.train_predictions.append(df)
 
@@ -90,7 +90,7 @@ class SpeciesScores(L.Callback):
                 for metric, value in scores[["auROC", "AP"]].mean(axis=0).to_dict().items()
             }, prog_bar=True, on_epoch=True)
             scores["epoch"] = pl_module.current_epoch
-            scores.to_parquet(self.save_dir / "val_scores.parquet" / f"run_id={self.run_id}_epoch={pl_module.current_epoch}.parquet")
+            scores.to_parquet(self.save_dir / "val_scores.parquet" / f"model_{self.model_name}_run_id={self.run_id}_epoch={pl_module.current_epoch}.parquet")
         self.val_predictions.clear()
 
     def on_test_batch_end(
@@ -116,8 +116,8 @@ class SpeciesScores(L.Callback):
             results = self._attach_hparams(results, pl_module.hparams)
             # if pl_module.logger is not None and hasattr(pl_module.logger, "experiment"):
                 # pl_module.logger.experiment.log({"test_scores": wandb.Table(dataframe=scores)})
-            scores.to_parquet(self.save_dir / "test_scores.parquet" / f"run_id={self.run_id}.parquet")
-            results.to_parquet(self.save_dir / "test_results.parquet" / f"run_id={self.run_id}.parquet")
+            scores.to_parquet(self.save_dir / "test_scores.parquet" / f"model_{self.model_name}_run_id={self.run_id}.parquet")
+            results.to_parquet(self.save_dir / "test_results.parquet" / f"model_{self.model_name}_run_id={self.run_id}.parquet")
             # recall at k, proportion of species in the top K were predicted?
             print(scores.to_markdown())
             # log summary stats
