@@ -31,3 +31,7 @@ uv run src/cli/train.py --multirun \
   model.attn_learning_rate=1e-2,5e-3 \
   model.clf_learning_rate=1e-1,5e-2 \
 ```
+
+```
+uv run main.py train +experiment=vae data=wabad data.sample_rate=32000 paths.checkpoint_dir=checkpoints paths.results_dir=dump/wabad/test seed=24 ++model.front_end.fft_hop_length=256 ++model.front_end.fft_window_length=342 ++model.front_end.num_fft=342 paths.data_dir=/its/home/kag25/data model.frame_window_length=128 data.segment_len=30 ++model.content_encoder.layer_sizes.0=2048 ++model.content_encoder.layer_sizes.1=1024 ++model.content_decoder.layer_sizes.1=1024 ++model.content_decoder.layer_sizes.2=2048 ++model.content_decoder.out_height=4 logger.wandb.project=wabad ++model.front_end.mel_min_hertz=500
+```

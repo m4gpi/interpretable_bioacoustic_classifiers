@@ -37,35 +37,29 @@ def main(results_dir, save_dir):
     else:
         save_dir.mkdir(exist_ok=True, parents=True)
 
-    con = duckdb.connect()
-    df = con.execute(f"""
-CREATE TABLE mae AS
-SELECT
-    *,
-    regexp_extract(filename, 'version=(.*?)_', 1) AS version,
-    regexp_extract(filename, 'scope=(.*?)\\.parquet', 1) AS dataset_name
-FROM read_parquet('{results_dir}', filename=true);
-    """)
-    df = con.execute("SELECT * FROM mae").fetchdf()
+    df = pd.read_parquet(results_dir).reset_index()
     df["stage"] = df["dataloader_idx"].map({0: "Train", 1: "Validation", 2: "Test"})
+    df["dataset_name"] = df["dataset_name"].map({"RainforestConnectionDataModule": "RFCX", "SoundingOutChorusDataModule": "SO"})
     df = df.sort_values(by=["sigma_x", "latent_dim"])
-    df["group"] = "sigma_x=" + df["sigma_x"].map(str) + " latent_dim=" + df["latent_dim"].map(str) + " version=" + df["version"].map(str)
-    df["dkl_norm"] = df["dkl"]
+    df["seed"] = df.groupby(["dataset_name", "model_name"])["run_id"].transform(lambda s: pd.factorize(s)[0])
 
     summary_stats = df.groupby(["dataset_name", "model_name", "stage", "latent_dim", "sigma_x"])[["mae", "mse", "dkl_norm", "elbo"]].agg(["mean", "std"])
     print(summary_stats)
 
-    palette = list(sns.color_palette("colorblind", len(df["version"].unique())))
+    palette = list(sns.color_palette("colorblind", len(df["stage"].unique())))
 
     fig = plt.figure(figsize=(10, 4), constrained_layout=True)
     g = sns.catplot(
         data=df,
-        kind="box",
-        x="model_name",
         y="mae",
-        col="stage",
+        kind="box",
+        x="seed",
+        col="model_name",
+        col_order=["VAE", "SIVAE"],
         row="dataset_name",
-        hue="group",
+        row_order=["SO", "RFCX"],
+        hue="stage",
+        hue_order=["Train", "Test"],
         sharey="row",
         palette=palette,
         legend=True,
@@ -73,11 +67,6 @@ FROM read_parquet('{results_dir}', filename=true);
         width=0.9,
         showfliers=False,
         whis=2.0,
-        # common_norm=True,
-        # density_norm="area",
-        # gap=.1,
-        # bw_adjust=0.75,
-        # width=0.9,
     )
     # y_max = df["mae"].mean() + z_score * df["mae"].std()
     # y_min = df["mae"].mean() - z_score * df["mae"].std()
@@ -91,12 +80,15 @@ FROM read_parquet('{results_dir}', filename=true);
     fig = plt.figure(figsize=(10, 4), constrained_layout=True)
     g = sns.catplot(
         data=df,
-        kind="box",
-        x="model_name",
         y="mse",
-        col="stage",
+        kind="box",
+        x="seed",
+        col="model_name",
+        col_order=["VAE", "SIVAE"],
         row="dataset_name",
-        hue="group",
+        row_order=["SO", "RFCX"],
+        hue="stage",
+        hue_order=["Train", "Test"],
         sharey="row",
         palette=palette,
         legend=True,
@@ -122,12 +114,15 @@ FROM read_parquet('{results_dir}', filename=true);
     fig = plt.figure(figsize=(10, 4), constrained_layout=True)
     g = sns.catplot(
         data=df,
-        kind="box",
-        x="model_name",
         y="dkl_norm",
-        col="stage",
+        kind="box",
+        x="seed",
+        col="model_name",
+        col_order=["VAE", "SIVAE"],
         row="dataset_name",
-        hue="group",
+        row_order=["SO", "RFCX"],
+        hue="stage",
+        hue_order=["Train", "Test"],
         sharey="row",
         palette=palette,
         legend=True,

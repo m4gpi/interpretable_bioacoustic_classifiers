@@ -46,6 +46,7 @@ dependencies = [
   "duckdb>=1.5.2",
   "nemony>=0.0.2",
   "torchsummary>=1.5.1",
+  "scikit-image>=0.25.2",
 ]
 
 [dependency-groups]

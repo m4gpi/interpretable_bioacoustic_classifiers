@@ -188,6 +188,12 @@ def exponential_decay(t_current: int, t_start: int, t_end: int, maximum: int, mi
     decay_rate = decay_rate or -np.log((minimum - maximum) / (maximum - minimum)) / (t_end - t_start)
     return minimum + (maximum - minimum) * np.exp(decay_rate * (t_start - t_clamped))
 
+def cosine_ramp(step: int, T_max: int, warmup_prop: float, ramp_prop: float) -> float:
+    return 0.5 * (1 - np.cos(np.pi * min(max((step - int(T_max * warmup_prop)) / (int(T_max * ramp_prop) - int(T_max * warmup_prop)), 0.0), 1.0)))
+
+def cosine_annealing(step: int, T_max: int, warmup_prop: float, ramp_prop: float, minimum: float, maximum: float) -> float:
+    return minimum + (maximum - minimum) * cosine_ramp(step, T_max, warmup_prop, ramp_prop)
+
 def bounded_sigmoid(x: float, x_min: float, x_max: float, y_min: float, y_max: float, k: float):
     s = np.floor(np.log10(np.abs(x_max)))
     z = k / 10**(s - 1)

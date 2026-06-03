@@ -12,10 +12,12 @@ from src.core.utils import metrics
 __all__ = ["VAEMetrics"]
 
 class VAEMetrics(L.Callback):
-    def __init__(self, save_path: str) -> None:
+    def __init__(self, save_path: str, model_name: str, dataset_name: str) -> None:
         super().__init__()
         self.data = []
-        self.save_path = pathlib.Path(save_path)
+        self.model_name = model_name
+        self.dataset_name = dataset_name.split(".")[-1]
+        self.save_path = pathlib.Path(save_path) / f"{model_name}.parquet"
 
     def on_test_start(
         self,
@@ -80,6 +82,8 @@ class VAEMetrics(L.Callback):
             columns=column_types.keys(),
         ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
         df["model_name"] = pl_module.__class__.__name__
+        df["dataset_name"] = self.dataset_name
+        df["run_id"] = self.model_name
         df["latent_dim"] = pl_module.latent_dim
         df["sigma_x"] = pl_module.sigma_x
         df["learning_rate"] = pl_module.learning_rate

@@ -21,12 +21,6 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 OmegaConf.register_new_resolver("mnemonic", lambda: mnemonic(os.urandom(8).hex()))
-OmegaConf.register_new_resolver("add", lambda x, y: int(x) + int(y))
-OmegaConf.register_new_resolver("sub", lambda x, y: int(x) - int(y))
-OmegaConf.register_new_resolver("mul", lambda x, y: int(x) * int(y))
-OmegaConf.register_new_resolver("div", lambda x, y: int(x) // int(y))
-OmegaConf.register_new_resolver("len", lambda x: len(x))
-OmegaConf.register_new_resolver("pow", lambda x, y: int(x) ** int(y))
 
 def evaluate(cfg):
     if cfg.get("run_id") is None:
@@ -43,8 +37,8 @@ def evaluate(cfg):
     if (ckpt_path := cfg.get("ckpt_path")):
         model = model_cls.load_from_checkpoint(ckpt_path, map_location=torch.device("cuda"))
     else:
-        filtered_params = filter_kwargs_for_callable(alg_cls.__init__, data_module.data.model_params)
-        model = hydra.utils.instantiate(cfg.model, **filtered_params)
+        filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.data.model_params)
+        model = hydra.utils.instantiate(cfg.model, _recursive_=False, **filtered_params)
 
     log.info("Instantiating callbacks...")
     callbacks: List[L.Callback] = instantiate_callbacks(cfg.get("callbacks"))

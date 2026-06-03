@@ -107,7 +107,7 @@ class SIVAE(L.LightningModule):
         if translation_idx == -1 or translation_idx >= len(self.feature_decoder.blocks) and x_i_frame_prob < 1.0:
             raise AssertionError(
                 f"Cannot apply independent frame-level translations after unframing, "
-                f"set 'translation_idx' < {len(self.feature_decoder.blocks)} to reconstruction without frame continuity"
+                f"set 'translation_idx' < {len(self.feature_decoder.blocks)} to reconstruct without frame continuity"
             )
 
         if self.align_only:
@@ -184,7 +184,7 @@ class SIVAE(L.LightningModule):
             delta_prob = self.delta_prob_current(t)
             # during training, aid the decoder by providing the true delta
             mask_i = torch.bernoulli(torch.full((delta_i.size(0), delta_i.size(1), 1), delta_prob, device=delta_i.device))
-            mask_j = torch.bernoulli(torch.full((delta_j.size(0), delta_j.size(1), 1), delta_prob, device=delta_i.device))
+            mask_j = torch.bernoulli(torch.full((delta_j.size(0), delta_j.size(1), 1), delta_prob, device=delta_j.device))
             delta_i_mixed = mask_i * delta_i + (1 - mask_i) * delta_hat_i
             delta_j_mixed = mask_j * delta_j + (1 - mask_j) * delta_hat_j
             # reconstruct a contiguous sequence

@@ -17,7 +17,6 @@ from typing import Any, Callable
 from src.core.models.vae import VAE
 from src.core.models.sivae import SIVAE
 from src.core.transforms.translation import translation_1d as translation
-from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.core.evaluators.base import Evaluator
 
 logging.basicConfig(level=logging.INFO)
@@ -90,9 +89,8 @@ class TranslationInvarianceFigure(Evaluator):
 
         log.info(f"Loading sample {file_path}")
         wav = data.load_sample(file_path)
-        x = vae.log_mel_spectrogram(wav.unsqueeze(0)).squeeze()
-        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % vae.frame_window_length)), x.size(-1)])
-        samples_per_second = int(np.ceil(vae.sample_rate / vae.fft_hop_length))
+        x = vae.pre_process(wav.unsqueeze(0)).squeeze()
+        samples_per_second = int(np.ceil(vae.front_end.sample_rate / vae.front_end.fft_hop_length))
 
         bbox = [2530, 2564, 20, 30]
         log.info(f"Extracting call at bounding box: {bbox}")
@@ -109,14 +107,14 @@ class TranslationInvarianceFigure(Evaluator):
         deltas = np.linspace(-1.0, 1.0, 9)
         log.info(f"Applying translations")
         for i, delta in enumerate(deltas):
-            x_trans = translation(x_bg.transpose(-1, -2).unsqueeze(0).unsqueeze(0), torch.ones(1, 1, 1, 1) * delta).squeeze().transpose(-1, -2)
+            x_trans = translation(x_bg.transpose(-1, -2).unsqueeze(0).unsqueeze(0), torch.tensor(delta)).squeeze().transpose(-1, -2)
             xs.append(x_trans)
 
         log.info(f"Plotting translations")
         for i, (x_bg, delta) in enumerate(zip(xs, deltas)):
             ax = fig.add_subplot(grid_spec[0, i])
             twin_ax = ax.twiny()
-            im = model.log_mel_spectrogram.plot(x_bg.T, cmap="Greys", ax=ax)
+            im = model.front_end.plot(x_bg.T, cmap="Greys", ax=ax)
             ax.set_xticks([0, 95, 191], [-1.0, 0.0, 1.0])
             twin_ax.set_xticks([0, 95, 191], [0.0, 1.536/2, 1.536])
             # ax.set_title(rf"$\delta = {{{np.format_float_positional(delta, precision=2, min_digits=2)}}}$")
@@ -131,7 +129,7 @@ class TranslationInvarianceFigure(Evaluator):
         log.info(f"Encoding translations")
         deltas = np.linspace(-1, 1, 105)
         x = torch.cat([
-            translation(x_bg.transpose(-1, -2).unsqueeze(0).unsqueeze(0), torch.ones(1, 1, 1, 1) * delta).transpose(-1, -2)
+            translation(x_bg.transpose(-1, -2).unsqueeze(0).unsqueeze(0), torch.tensor(delta)).transpose(-1, -2)
             for delta in deltas
         ], dim=0)
         with torch.no_grad():

@@ -37,7 +37,7 @@ model:
     _target_: src.core.models.components.ContentEncoder
     in_channels: 512
     out_channels: 128
-    layer_sizes: [3072, 1536, 256]
+    layer_sizes: [3072, 768, 256]
     dropout_prob: 0.1
     activation: LEAK
   content_decoder:
@@ -46,7 +46,7 @@ model:
     out_channels: 512
     out_height: 6
     out_width: 4
-    layer_sizes: [128, 1536, 3072]
+    layer_sizes: [128, 768, 3072]
     dropout_prob: 0.1
     activation: LEAK
   feature_decoder:
@@ -90,7 +90,9 @@ callbacks:
     num_frames_per_sample: 6
   vae_metrics:
     _target_: src.core.callbacks.vae_metrics.VAEMetrics
-    save_path: ${paths.results_dir}/metrics.parquet/${run_id}.parquet
+    model_name: ${run_id}
+    dataset_name: ${data._target_}
+    save_path: ${paths.results_dir}/metrics.parquet
   vae_embeddings:
     _target_: src.core.callbacks.vae_embeddings.VAEEmbeddings
     frame_hop_length: 96

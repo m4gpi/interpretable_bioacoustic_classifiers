@@ -33,12 +33,11 @@ callbacks:
     _target_: lightning.pytorch.callbacks.ModelCheckpoint
     dirpath: ${paths.checkpoint_dir}
     filename: ${model_name}_${scope}
-    every_n_train_steps: ${trainer.max_epochs}
-    save_top_k: -1
   species_scores:
     _target_: src.core.callbacks.species_scores.SpeciesScores
     save_dir: ${paths.results_dir}
-    data_dir: ${data.root}
+    model_name: ${model_name}
+    scope: ${scope}
     run_id: ${run_id}
     seed: ${seed}
     fold_id: ${data.fold_id}

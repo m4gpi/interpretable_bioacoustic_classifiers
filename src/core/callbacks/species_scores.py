@@ -16,22 +16,26 @@ class SpeciesScores(L.Callback):
     def __init__(
         self,
         save_dir: str,
-        data_dir: str,
+        model_name: str,
+        scope: str,
         seed: str,
         run_id: str,
         fold_id: int | None = None,
         log_every_n_train_epochs: int | None = None,
     ) -> None:
         super().__init__()
+        self.save_dir = pathlib.Path(save_dir).expanduser()
+        self.model_name = model_name
+        self.scope = scope
+        self.seed = seed
         self.run_id = run_id
         self.fold_id = fold_id
-        self.model_name, self.scope = data_dir.split("/")[-2:]
-        self.seed = seed
-        self.save_dir = pathlib.Path(save_dir).expanduser()
+
         self.save_dir.mkdir(exist_ok=True, parents=True)
         (self.save_dir / "val_scores.parquet").mkdir(exist_ok=True, parents=True)
         (self.save_dir / "test_scores.parquet").mkdir(exist_ok=True, parents=True)
         (self.save_dir / "test_results.parquet").mkdir(exist_ok=True, parents=True)
+
         self.log_every_n_train_epochs = log_every_n_train_epochs
         self.train_predictions = []
         self.val_predictions = []

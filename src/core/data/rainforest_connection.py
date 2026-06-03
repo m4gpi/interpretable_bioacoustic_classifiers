@@ -56,6 +56,7 @@ class RainforestConnection(torch.utils.data.Dataset):
         reset_index: bool = False,
         test: bool = False,
         seed: int = 42,
+        sort_index: bool = False,
     ) -> None:
         self.base_dir = pathlib.Path(root).expanduser()
         self.data_dir = self.base_dir / self._TRAIN_DATA_DIR
@@ -83,6 +84,9 @@ class RainforestConnection(torch.utils.data.Dataset):
         self.metadata["file_path"] = self.data_dir / self.metadata["file_name"]
         self.labels = self.labels[~self.labels.file_name.isin(failed.file_name)]
         self.labels.drop("species_id", axis=1, inplace=True)
+        if sort_index:
+            self.metadata = self.metadata.sort_index()
+            self.labels = self.labels.sort_index()
         # scope by taxa
         if scope is not None:
             self.labels = self.labels[self.labels["taxa"] == scope]
@@ -122,6 +126,10 @@ class RainforestConnection(torch.utils.data.Dataset):
             target_names=self.target_names,
             target_counts=self.target_counts,
         )
+
+    @property
+    def strong_labels(self):
+        return pd.read_parquet(self.base_dir / f"labels.parquet")
 
     def format_labels(self, metadata, labels):
         # count occurrences and drop duplicates

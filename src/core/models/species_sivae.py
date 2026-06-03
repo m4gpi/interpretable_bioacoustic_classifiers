@@ -32,7 +32,6 @@ class SpeciesSIVAE(L.LightningModule):
         feature_decoder: omegaconf.DictConfig,
         content_decoder: omegaconf.DictConfig,
         classifier: omegaconf.DictConfig,
-        alignment_encoder: omegaconf.DictConfig,
         target_names: List[str],
         target_counts: List[int],
         clf_checkpoint_path: str | None = None,
@@ -44,7 +43,6 @@ class SpeciesSIVAE(L.LightningModule):
         translation_idx: int = 2,
         cross_decode_method: str = "soft",
         beta: float = 1.0,
-        gamma: float = 1.0,
         sigma_x: float = 0.2,
         sigma_z_min: float = 1e-5,
         learning_rate: float = 1e-4,
@@ -66,20 +64,8 @@ class SpeciesSIVAE(L.LightningModule):
         self.translation_idx = translation_idx
         self.cross_decode_method = cross_decode_method
         self.beta = beta
-        self.gamma = gamma
         self.sigma_x = sigma_x
         self.sigma_z_min = sigma_z_min
-        self.x_i_frame_prob = x_i_frame_prob
-        self.delta_prob_step_start = delta_prob_step_start
-        self.delta_prob_step_end = delta_prob_step_end
-        self.delta_prob_min = delta_prob_min
-        self.delta_prob_max = delta_prob_max
-        self.delta_sigma_min = delta_sigma_min
-        self.delta_sigma_max = delta_sigma_max
-        self.delta_sigma_step_slope = delta_sigma_step_slope
-        self.delta_sigma_step_start = delta_sigma_step_start
-        self.delta_sigma_step_end = delta_sigma_step_end
-        self.align_only = align_only
 
         self.learning_rate = learning_rate
         self.optimiser_cls = optimiser_cls
@@ -95,12 +81,8 @@ class SpeciesSIVAE(L.LightningModule):
         self.feature_decoder = hydra.utils.instantiate(feature_decoder)
         self.content_decoder = hydra.utils.instantiate(content_decoder)
         self.classifier = hydra.utils.instantiate(classifier, target_names, target_counts)
-        if clf_checkpoint_path is not None:
-            log.info("Loading classifier weights")
-            ckpt = torch.load(clf_checkpoint_path, map_location="cuda")
-            self.classifier.load_state_dict(ckpt["state_dict"])
-        else:
-            log.warning("No classifier weights provided!")
+        self.target_counts = target_counts
+        self.target_names = target_names
 
     def pre_process(self, wav: torch.Tensor) -> torch.Tensor:
         x = self.front_end(wav)
@@ -169,22 +151,8 @@ class SpeciesSIVAE(L.LightningModule):
             **clf_outputs,
         )
 
-    def predict(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
-        q_z, _ = self.encode(x)
-        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
-        z = torch.distributions.Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample()
-        clf_outputs = self.classifier(z)
-        x_hat = self.cnn_decode(self.content_decoder(z.flatten(end_dim=1)), delta)
-        x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
-        x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_window_length)
-        return dict(
-            x=x,
-            x_hat=x_hat,
-            x_framed=x_framed,
-            x_hat_framed=x_hat_framed,
-            q_z=q_z,
-            **clf_outputs,
-        )
+    def predict(self, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
+        return self.classifier.predict(*args, **kwargs)
 
     def sample_circle(self, *args: Any, scaling_factor: float = 1.0, **kwargs: Any):
         delta = scaling_factor * ((torch.rand(*args, **kwargs) * 2) - 1)
@@ -371,22 +339,15 @@ class SpeciesSIVAE(L.LightningModule):
         # run training
         log.info(f"Training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         checkpoint_path, resume = config.get("ckpt_path"), config.get("resume")
-        if checkpoint_path is not None and resume:
-            log.info(f"Resuming from {checkpoint_path}")
-            trainer.fit(self, datamodule=data_module, ckpt_path=checkpoint_path)
-        elif config.get("ckpt_path"):
-            log.info(f"Loading state dict from {checkpoint_path}")
-            checkpoint = torch.load(checkpoint_path)
-            self.load_state_dict(checkpoint["state_dict"], strict=False)
-            trainer.fit(self, datamodule=data_module)
-        else:
-            trainer.fit(self, datamodule=data_module)
-        # persist the model configuration
-        checkpoint_dir = pathlib.Path(trainer.checkpoint_callback.dirpath)
-        if checkpoint_dir.exists():
-            config_path = checkpoint_dir / "config.yaml"
-            log.info(f"Saving model configuration to {config_path}")
-            omegaconf.OmegaConf.save(config, config_path)
+        vae_ckpt_path = pathlib.Path(config.get("vae_ckpt_path"))
+        clf_ckpt_path = pathlib.Path(config.get("clf_ckpt_path"))
+        log.info(f"Loading VAE from {vae_ckpt_path}")
+        checkpoint = torch.load(vae_ckpt_path)
+        self.load_state_dict(checkpoint["state_dict"], strict=False)
+        log.info(f"Loading CLF from {clf_ckpt_path}")
+        checkpoint = torch.load(clf_ckpt_path)
+        self.classifier.load_state_dict(checkpoint["state_dict"], strict=False)
+        trainer.fit(self, datamodule=data_module)
         # running test
         log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.test(self, datamodule=data_module)

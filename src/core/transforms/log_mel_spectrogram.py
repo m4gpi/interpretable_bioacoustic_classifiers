@@ -74,7 +74,7 @@ class LogMelSpectrogram(torch.nn.Module):
         fft_hop_length: int = 384,
         num_mel_bins: int = 64,
         mel_min_hertz: float = 150,
-        mel_max_hertz: float = 1500,
+        mel_max_hertz: float = 15000,
         mel_scaling_factor: float = 4581.0,
         mel_break_frequency: float = 1750.0,
     ) -> None:
@@ -134,6 +134,20 @@ class LogMelSpectrogram(torch.nn.Module):
         ax.set_yticks(y_tick_indices, labels=y_tick_labels)
         ax.set_ylabel("Frequency (Hz)")
         return im
+
+    def seconds_to_hops(self, seconds: float) -> int:
+        hops_per_second = self.sample_rate / self.fft_hop_length
+        return int(seconds * hops_per_second)
+
+    def hops_to_seconds(self, hops: float) -> int:
+        hops_per_second = self.sample_rate / self.fft_hop_length
+        return 1 / hops_per_second * hops
+
+    def hz_to_mel_bin(self, frequency: float) -> int:
+        return np.abs(self.mel_bands - hz_to_mel(frequency)).argmin()
+
+    def mel_bin_to_hz(self, mel_bin: int) -> float:
+        return mel_to_hz(self.mel_bands, scaling_factor=self.mel_scaling_factor, break_frequency=self.mel_break_frequency)[mel_bin]
 
     @property
     def mel_bands(self):

@@ -32,7 +32,8 @@ callbacks:
   species_scores:
     _target_: src.core.callbacks.species_scores.SpeciesScores
     save_dir: ${paths.results_dir}
-    data_dir: ${data.root}
+    model_name: ${model_name}
+    scope: ${scope}
     run_id: ${run_id}
     seed: ${seed}
     fold_id: ${data.fold_id}
