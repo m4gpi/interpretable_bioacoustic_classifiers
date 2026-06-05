@@ -4,7 +4,7 @@ frequency_dim: 64
 frame_window_length: 192
 frame_padding_mode: circular
 translation_mode: bicubic
-translation_idx: 2
+translation_idx: 3
 cross_decode_method: soft
 beta: 1.0
 gamma: 1.0
