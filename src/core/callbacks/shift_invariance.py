@@ -41,7 +41,7 @@ class ShiftInvariancePlot(L.Callback):
         dataloader_idx: int = 0,
     ) -> None:
         if batch_idx <= 4:
-            x = pl_module.frame(batch.x[0:1], window_length=pl_module.frame_window_length, hop_length=pl_module.frame_window_length).flatten(end_dim=1)
+            x = pl_module.frame(batch.x[:, :, :pl_module.frame_window_length * 3], window_length=pl_module.frame_window_length, hop_length=pl_module.frame_window_length).flatten(end_dim=1)
             thetas = torch.linspace(-torch.pi, torch.pi, 50, device=x.device)
             x_trans = torch.stack([
                 translation(x.transpose(-1, -2), (theta  / torch.pi).expand(x.size(0))).transpose(-1, -2)
@@ -54,12 +54,13 @@ class ShiftInvariancePlot(L.Callback):
             # for each frame
             for i in range(mu_z.size(0)):
                 dzdT = central_finite_difference(mu_z[i].transpose(-1, -3), "circular")
-                fig, ax = plt.subplots(figsize=(4, 4), constrained_layout=True)
-                im = ax.imshow(dzdT.squeeze().cpu(), vmin=-1, vmax=1, **self.imshow_params)
-                cbar = fig.colorbar(im, ax=ax, orientation="vertical")
+                fig, (ax1, ax2) = plt.subplots(ncols=2, figsize=(8, 4), constrained_layout=True)
+                pl_module.front_end.plot(x[i].cpu().squeeze().t(), ax=ax1)
+                im = ax2.imshow(dzdT.squeeze().cpu(), vmin=-1, vmax=1, **self.imshow_params)
+                cbar = fig.colorbar(im, ax=ax2, orientation="vertical")
                 cbar.set_label(r"$\frac{dz}{dT}$", rotation=0)
-                ax.set_ylabel("Latent Dimension")
-                ax.set_xlabel(r"Shift")
+                ax2.set_ylabel("Latent Dimension")
+                ax2.set_xlabel(r"Shift")
                 if pl_module.logger is not None and getattr(pl_module.logger, "experiment") is not None:
                     pl_module.logger.experiment.log({f"val/dzdT": wandb.Image(fig)})
                 plt.close(fig)
