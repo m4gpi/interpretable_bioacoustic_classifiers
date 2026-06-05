@@ -186,7 +186,7 @@ class SIVAE(L.LightningModule):
         delta = torch.zeros_like(theta)
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
         z = torch.distributions.Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample()
-        x_hat = self.cnn_decode(self.content_decoder(z.flatten(end_dim=1)), delta)
+        x_hat = self.cnn_decode(self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1))), delta)
         x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
         x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_window_length)
         return dict(
