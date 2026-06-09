@@ -305,10 +305,10 @@ class UXAlignmentEncoder(nn.Module):
         proj_dim: int = 512,
         x_channels: int = 512,
         x_freq_dim: int = 4,
-        x_time_dim: int = 48,
+        x_time_dim: int = 6,
         u_channels: int = 64,
         u_freq_dim: int = 32,
-        u_time_dim: int = 6,
+        u_time_dim: int = 48,
         u_weight_init_std: float = 1e-1,
         activation: str = "NONE",
     ) -> None:
@@ -348,3 +348,27 @@ class UXAlignmentEncoder(nn.Module):
         h = torch.cat([x, u], dim=-1)
         # predict alignment factor
         return self.mlp(h)
+
+class AlignmentEncoderV0(torch.nn.Module):
+    def __init__(
+        self,
+        out_features: int = 1,
+        x_channels: int = 512,
+        x_freq_dim: int = 4,
+        x_time_dim: int = 6,
+    ) -> None:
+        super().__init__()
+        self.x_conv_freq = torch.nn.Conv2d(x_channels, x_channels // 4, kernel_size=(1, x_freq_dim))
+        in_features = x_channels // 4 * x_time_dim
+        self.mlp = torch.nn.Sequential(
+            nn.Linear(in_features, in_features // 2),
+            nn.LeakyReLU(),
+            torch.nn.Linear(in_features // 2, out_features, bias=False),
+        )
+
+    def forward(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+        bs, seq, ch, ts, fq = x.shape
+        x = x.flatten(end_dim=1)
+        x = self.x_conv_freq(x).squeeze(-1)
+        x = x.unflatten(0, (bs, seq)).flatten(start_dim=-2)
+        return self.mlp(x)
