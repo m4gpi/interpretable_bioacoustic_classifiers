@@ -1,12 +1,25 @@
-_target_: src.core.models.vae.VAE
+_target_: src.core.models.sivae.SIVAEFreqOffset
 latent_dim: 128
 frequency_dim: 64
 frame_window_length: 192
 frame_padding_mode: circular
+translation_mode: bicubic
+translation_idx: 3
+cross_decode_method: soft
 beta: 1.0
+gamma: 1.0
 sigma_x: 0.2
 sigma_z_min: 1.e-5
 learning_rate: 4.e-5
+delta_prob_step_start: 0
+delta_prob_step_end: 0
+delta_prob_min: 1.0
+delta_prob_max: 1.0
+delta_sigma_min: 1.0
+delta_sigma_max: 1.0
+delta_sigma_step_slope: 0.4
+delta_sigma_step_start: 0
+delta_sigma_step_end: 20_000
 optimiser_cls: torch.optim.AdamW
 scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
 scheduler_config:
@@ -49,7 +62,7 @@ content_decoder:
   out_channels: 512
   out_height: 6
   out_width: 4
-  layer_sizes: [128, 768, 3072]
+  layer_sizes: [124, 768, 3072]
   dropout_prob: 0.0
   activation: LEAK
 feature_decoder:
@@ -63,3 +76,10 @@ feature_decoder:
   activation: LEAK
   norm_type: LN
   dropout_prob: 0.0
+alignment_encoder:
+  _target_: src.core.models.components.XAlignmentEncoder
+  out_features: 2
+  x_channels: 512
+  x_time_dim: 6
+  x_freq_dim: 4
+  activation: ATAN2

@@ -48,13 +48,13 @@ feature_encoder:
   padding_mode: circular
   activation: LEAK
   norm_type: LN
-  dropout_prob: 0.2
+  dropout_prob: 0.0
 content_encoder:
   _target_: src.core.models.components.ContentEncoder
   in_channels: 512
   out_channels: 128
   layer_sizes: [3072, 768, 256]
-  dropout_prob: 0.1
+  dropout_prob: 0.0
   activation: LEAK
 content_decoder:
   _target_: src.core.models.components.ContentDecoder
@@ -63,7 +63,7 @@ content_decoder:
   out_height: 6
   out_width: 4
   layer_sizes: [128, 768, 3072]
-  dropout_prob: 0.1
+  dropout_prob: 0.0
   activation: LEAK
 feature_decoder:
   _target_: src.core.models.components.CNNFeatureDecoder
@@ -75,7 +75,7 @@ feature_decoder:
   padding_mode: circular
   activation: LEAK
   norm_type: LN
-  dropout_prob: 0.2
+  dropout_prob: 0.0
 alignment_encoder:
   _target_: src.core.models.components.XAlignmentEncoder
   out_features: 2
