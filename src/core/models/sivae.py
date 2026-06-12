@@ -152,13 +152,16 @@ class SIVAE(L.LightningModule):
             mu_z = (1/2 * mu_z_i + 1/2 * mu_z_j.view(mu_z_i.size()))
             log_sigma_sq_z = (1/4 * (log_sigma_sq_z_i.exp() + log_sigma_sq_z_j.view(log_sigma_sq_z_i.size()).exp())).log()
             z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()  # (bs, seq, ld)
-            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1).view(q_z_j.size()).squeeze(1)
-            U_hat_i = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1))) # (bs, seq, ch, fr, fq)
-            U_hat_j = U_hat_i.flatten(end_dim=1).unsqueeze(1) # (bs * seq, 1, ch, fr, fq)
+            # keep dim 1 as the 'pair' dimension
+            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1).view(q_z_j.size())
+            U_hat = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1))) # (bs, seq, ch, fr, fq)
+            U_hat_i, U_hat_j = U_hat, U_hat
         elif self.cross_decode_method == "hard":
             z_i = torch.distributions.Normal(mu_z_i, (0.5 * log_sigma_sq_z_i).exp()).rsample()  # (bs, seq, ld)
             z_j = torch.distributions.Normal(mu_z_j, (0.5 * log_sigma_sq_z_j).exp()).rsample()  # (bs * seq, 1, ld)
-            q_z = torch.cat([q_z_i.view(q_z_j.size()), q_z_j], dim=0).squeeze(1)
+            # stack posteriors pairwise
+            q_z = torch.cat([q_z_i.view(q_z_j.size()), q_z_j], dim=1)
+            z_i, z_j = z_j, z_i
             U_hat_i = self.content_decoder(z_i.flatten(end_dim=1)).unflatten(0, (z_i.size(0), z_i.size(1)))
             U_hat_j = self.content_decoder(z_j.flatten(end_dim=1)).unflatten(0, (z_j.size(0), z_j.size(1)))
         else:
@@ -166,18 +169,18 @@ class SIVAE(L.LightningModule):
 
         # cross-decode representations
         if self.align_only:
-            x_hat_i = self.cnn_decode(U_hat_j, theta_hat_i / torch.pi) # (bs, 1, fr * seq, fq)
+            x_hat_i = self.cnn_decode(U_hat_i, theta_hat_i / torch.pi) # (bs, 1, fr * seq, fq)
             # reconstruct independent translations
-            x_hat_j = self.cnn_decode(U_hat_i, theta_hat_j / torch.pi) # (bs * seq, 1, fr, fq)
+            x_hat_j = self.cnn_decode(U_hat_j, theta_hat_j / torch.pi) # (bs * seq, 1, fr, fq)
         else:
-            x_hat_i = self.cnn_decode(U_hat_j, theta_i / torch.pi) # (bs, 1, fr * seq, fq)
+            x_hat_i = self.cnn_decode(U_hat_i, theta_i / torch.pi) # (bs, 1, fr * seq, fq)
             # reconstruct independent translations
-            x_hat_j = self.cnn_decode(U_hat_i, theta_j / torch.pi) # (bs * seq, 1, fr, fq)
+            x_hat_j = self.cnn_decode(U_hat_j, theta_j / torch.pi) # (bs * seq, 1, fr, fq)
 
         # frame for frame-wise loss
         x_hat_i_framed = self.frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_window_length).flatten(end_dim=1)
-        x_framed = torch.cat([x_i_framed, x_j], dim=0)
-        x_hat_framed = torch.cat([x_hat_i_framed, x_hat_j], dim=0)
+        x_framed = torch.stack([x_i_framed, x_j], dim=1)
+        x_hat_framed = torch.stack([x_hat_i_framed, x_hat_j], dim=1)
         return dict(
             x=x,
             x_framed=x_framed, x_i=x, x_j=x_j,
@@ -301,19 +304,24 @@ class SIVAE(L.LightningModule):
         # maximise likelihood p(x_i|z_j) framewise to ensure invariance to sequence length
         sigma_recon = torch.tensor(self.sigma_x, dtype=torch.float32, requires_grad=False, device=x_framed.device)
         nll = negative_log_likelihood(x_framed, x_hat_framed, 2*sigma_recon.log()).flatten(start_dim=-3).sum(dim=-1)
-        losses.append(nll.mean())
-        outputs |= dict(log_likelihood_x=-nll.detach().mean())
+        # average across pairs, then across batch & frames
+        nll = nll.mean(dim=-1).mean()
+        losses.append(nll)
+        outputs |= dict(log_likelihood_x=-nll.detach())
         # supervision signal for delta, minimise relative angular difference
         if self.align_only:
             angular_error_i = 2 * (1 - (dx_hat_i * dx_i + dy_hat_i * dy_i))
             angular_error_j = 2 * (1 - (dx_hat_j * dx_j + dy_hat_j * dy_j))
-            alignment_loss = self.gamma * torch.stack([angular_error_i, angular_error_j.view(angular_error_i.size())]).mean()
+            # sum along angle (always singular), mean across pairs, mean across batch & frames
+            alignment_loss = self.gamma * torch.cat([angular_error_i.view(angular_error_j.size()), angular_error_j], dim=-2).sum(dim=-1).mean(dim=-1).mean()
             losses.append(alignment_loss)
             outputs |= dict(alignment_loss=alignment_loss.detach())
         # standard normal dkl
         dkl = self.beta * gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
-        losses.append(dkl.mean())
-        outputs |= dict(dkl=dkl.detach().mean())
+        # average first across pairs, then across batch & frames
+        dkl = dkl.mean(dim=-1).mean()
+        losses.append(dkl)
+        outputs |= dict(dkl=dkl.detach())
         # sum the loss components
         outputs |= dict(loss=sum(losses))
         return outputs
@@ -347,9 +355,10 @@ class SIVAE(L.LightningModule):
         sigma_z = (0.5 * log_sigma_sq_z).exp()
         mu_hist = np.histogram(mu_z.flatten().cpu().numpy(), bins=32, range=[-5.0, 5.0])
         sigma_hist = np.histogram(sigma_z.flatten().cpu().numpy(), bins=32, range=[0.0, 2.0])
+        # mean distance between shifted embeddings
         mu_z_i, mu_z_j = q_z_i.chunk(2, dim=-1)[0], q_z_j.view(q_z_i.size()).chunk(2, dim=-1)[0]
-        # mean squared error between shifted embeddings
-        z_dist = (mu_z_j - mu_z_i).pow(2).mean()
+        z_dist_mean = (mu_z_j - mu_z_i).pow(2).sum(dim=-1).sqrt().mean()
+        z_dist_std = (mu_z_j - mu_z_i).pow(2).sum(dim=-1).sqrt().std()
         # # distribution of delta predictions
         # delta = torch.cat([delta_i, delta_j.view(delta_i.size())])
         # delta_hist = np.histogram(delta.flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
@@ -366,17 +375,18 @@ class SIVAE(L.LightningModule):
         angular_error = 1 - torch.cos(d_theta)
         d_theta_hist = np.histogram(d_theta.flatten().cpu().numpy(), bins=128, range=[0.0, 2.0])
         # reconstruction error
-        d_x = (x_hat_framed - x_framed).flatten(start_dim=-3)
-        mae = d_x.abs().mean(dim=-1).mean()
-        mse = d_x.pow(2).mean(dim=-1).mean()
+        err = (x_hat_framed - x_framed).flatten(start_dim=-3)
+        mae = err.abs().mean(dim=-1).mean(dim=-1).mean()
+        mse = err.pow(2).mean(dim=-1).mean(dim=-1).mean()
         # normalised KL
-        dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / mu_z.size(-1)).mean()
+        dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / mu_z.size(-1)).mean(dim=-1).mean()
         return dict(
             mae=mae,
             mse=mse,
             mu_z_hist=mu_hist,
             sigma_z=sigma_hist,
-            z_dist=z_dist,
+            z_dist_mean=z_dist_mean,
+            z_dist_std=z_dist_std,
             # delta_hist=delta_hist,
             # delta_hat_hist=delta_hat_hist,
             theta_hat_var=theta_hat_var,
@@ -703,6 +713,7 @@ class SIVAE_V0(L.LightningModule):
             log_sigma_sq_z = (1/4 * (log_sigma_sq_z_i.exp() + log_sigma_sq_z_j.view(log_sigma_sq_z_i.size()).exp())).log()
             z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()  # (bs, seq, ld)
             q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1).view(q_z_i.size()).squeeze(1)
+            # only need to decode z once before applying the translation
             U_hat_i = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1))) # (bs, seq, ch, fr, fq)
             U_hat_j = U_hat_i.flatten(end_dim=1).unsqueeze(1) # (bs * seq, 1, ch, fr, fq)
         elif self.cross_decode_method == "hard":
@@ -710,17 +721,19 @@ class SIVAE_V0(L.LightningModule):
             z_i = torch.distributions.Normal(mu_z_i, (0.5 * log_sigma_sq_z_i).exp()).rsample()  # (bs, seq, ld)
             z_j = torch.distributions.Normal(mu_z_j, (0.5 * log_sigma_sq_z_j).exp()).rsample()  # (bs * seq, 1, ld)
             q_z = torch.cat([q_z_i.view(q_z_j.size()), q_z_j], dim=0).squeeze(1)
+            z_i, z_j = z_j, z_i
+            # each z is decoded separately
             U_hat_i = self.content_decoder(z_i.flatten(end_dim=1)).unflatten(0, (z_i.size(0), z_i.size(1)))
             U_hat_j = self.content_decoder(z_j.flatten(end_dim=1)).unflatten(0, (z_j.size(0), z_j.size(1)))
         else:
             raise Exception("Cross decode method not specified, terminating")
 
         if self.align_only:
-            x_hat_i = self.cnn_decode(U_hat_j, delta_hat_i) # (bs, 1, fr * seq, fq)
-            x_hat_j = self.cnn_decode(U_hat_i, delta_hat_j) # (bs * seq, 1, fr, fq)
+            x_hat_i = self.cnn_decode(U_hat_i, delta_hat_i) # (bs, 1, fr * seq, fq)
+            x_hat_j = self.cnn_decode(U_hat_j, delta_hat_j) # (bs * seq, 1, fr, fq)
         else:
-            x_hat_i = self.cnn_decode(U_hat_j, delta_i) # (bs, 1, fr * seq, fq)
-            x_hat_j = self.cnn_decode(U_hat_i, delta_j) # (bs * seq, 1, fr, fq)
+            x_hat_i = self.cnn_decode(U_hat_i, delta_i) # (bs, 1, fr * seq, fq)
+            x_hat_j = self.cnn_decode(U_hat_j, delta_j) # (bs * seq, 1, fr, fq)
         # frame for frame-wise loss
         x_hat_i_framed = self.frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_window_length).flatten(end_dim=1)
         x_framed = torch.cat([x_i_framed, x_j], dim=0)
@@ -860,8 +873,9 @@ class SIVAE_V0(L.LightningModule):
         mu_hist = np.histogram(mu_z.flatten().cpu().numpy(), bins=32, range=[-5.0, 5.0])
         sigma_hist = np.histogram(sigma_z.flatten().cpu().numpy(), bins=32, range=[0.0, 2.0])
         mu_z_i, mu_z_j = q_z_i.chunk(2, dim=-1)[0], q_z_j.view(q_z_i.size()).chunk(2, dim=-1)[0]
-        # mean squared error between shifted embeddings
-        z_dist = (mu_z_j - mu_z_i).pow(2).mean()
+        # mean distance between shifted embeddings
+        z_dist_mean = (mu_z_j - mu_z_i).pow(2).sum(dim=-1).sqrt().mean()
+        z_dist_std = (mu_z_j - mu_z_i).pow(2).sum(dim=-1).sqrt().std()
         # # distribution of delta predictions
         delta = torch.cat([delta_i, delta_j.view(delta_i.size())])
         delta_hist = np.histogram(delta.flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
@@ -878,7 +892,8 @@ class SIVAE_V0(L.LightningModule):
             mse=mse,
             mu_z_hist=mu_hist,
             sigma_z=sigma_hist,
-            z_dist=z_dist,
+            z_dist_mean=z_dist_mean,
+            z_dist_std=z_dist_std,
             delta_hist=delta_hist,
             delta_hat_hist=delta_hat_hist,
             dkl_norm=dkl_norm,
@@ -1072,6 +1087,7 @@ class SIVAEFreqOffset(L.LightningModule):
         content_decoder: omegaconf.DictConfig,
         alignment_encoder: omegaconf.DictConfig | None = None,
         latent_dim: int = 128,
+        freq_offset_latent_dim: int = 4,
         frequency_dim: int = 64,
         frame_window_length: int = 192,
         frame_padding_mode: int = "circular",
@@ -1105,6 +1121,7 @@ class SIVAEFreqOffset(L.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.latent_dim = latent_dim
+        self.freq_offset_latent_dim = freq_offset_latent_dim
         self.frequency_dim = frequency_dim
         self.frame_window_length = frame_window_length
         self.frame_padding_mode = frame_padding_mode
@@ -1142,7 +1159,7 @@ class SIVAEFreqOffset(L.LightningModule):
         self.content_decoder = hydra.utils.instantiate(content_decoder)
         self.alignment_encoder = hydra.utils.instantiate(alignment_encoder)
 
-        self.frequency_offset_decoder = MLP(layer_sizes=[4, 128, 128, 64], activation="LEAK", dropout_prob=0.0)
+        self.frequency_offset_decoder = MLP(layer_sizes=[self.freq_offset_latent_dim, 128, 128, self.frequency_dim], activation="LEAK", dropout_prob=0.0)
 
         assert translation_idx <= len(self.feature_decoder.blocks), f"'translation_idx' is too large, set <= {len(self.feature_decoder.blocks)}"
         if translation_idx == -1 or translation_idx >= len(self.feature_decoder.blocks) and x_i_frame_prob < 1.0:
@@ -1192,23 +1209,26 @@ class SIVAEFreqOffset(L.LightningModule):
             mu_z = (1/2 * mu_z_i + 1/2 * mu_z_j.view(mu_z_i.size()))
             log_sigma_sq_z = (1/4 * (log_sigma_sq_z_i.exp() + log_sigma_sq_z_j.view(log_sigma_sq_z_i.size()).exp())).log()
             z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()  # (bs, seq, ld)
-            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1).view(q_z_j.size()).squeeze(1)
+            # keep dim 1 as the 'pair' dimension
+            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1).view(q_z_j.size())
             # learn a frame-level log magnitude offset for each spectrogram frequency bin
             z, z_glob = z[..., :-4], z[..., -4:]
-            x_freq_offset = self.frequency_offset_decoder(z_glob).view(x_i_framed.size(0), 1, 1, x.size(-1))
+            x_freq_offset = self.frequency_offset_decoder(z_glob).view(x_i_framed.size(0), 1, 1, x.size(-1)) # (bs * seq, 1, 1, fq)
             x_freq_offset_i, x_freq_offset_j = x_freq_offset, x_freq_offset
             # decode cnn feature maps
-            U_hat_i = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1))) # (bs, seq, ch, fr, fq)
-            U_hat_j = U_hat_i.flatten(end_dim=1).unsqueeze(1) # (bs * seq, 1, ch, fr, fq)
+            U_hat = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1))) # (bs, seq, ch, fr, fq)
+            U_hat_i, U_hat_j = U_hat, U_hat
         elif self.cross_decode_method == "hard":
+            # cross decoding switches representations
             z_i = torch.distributions.Normal(mu_z_i, (0.5 * log_sigma_sq_z_i).exp()).rsample()  # (bs, seq, ld)
             z_j = torch.distributions.Normal(mu_z_j, (0.5 * log_sigma_sq_z_j).exp()).rsample()  # (bs * seq, 1, ld)
-            q_z = torch.cat([q_z_i.view(q_z_j.size()), q_z_j], dim=0).squeeze(1)
+            z_i, z_j = z_j, z_i
+            # stack posteriors pairwise
+            q_z = torch.cat([q_z_i.view(q_z_j.size()), q_z_j], dim=1)
             # learn a frame-level log magnitude offset for each spectrogram frequency bin
-            z_i, z_glob_i = z_i[..., :-4], z_i[..., -4:]
-            z_j, z_glob_j = z_j[..., :-4], z_j[..., -4:]
-            x_freq_offset_i = self.frequency_offset_decoder(z_glob_j).view(x_i_framed.size(0), 1, 1, x.size(-1))
-            x_freq_offset_j = self.frequency_offset_decoder(z_glob_i).view(x_i_framed.size(0), 1, 1, x.size(-1))
+            z_i, z_glob_i, z_j, z_glob_j = z_i[..., :-4], z_i[..., -4:], z_j[..., :-4], z_j[..., -4:]
+            x_freq_offset_i = self.frequency_offset_decoder(z_glob_i).view(x_i_framed.size(0), 1, 1, x.size(-1)) # (bs * seq, 1, 1, fq)
+            x_freq_offset_j = self.frequency_offset_decoder(z_glob_j).view(x_i_framed.size(0), 1, 1, x.size(-1)) # (bs * seq, 1, 1, fq)
             # decode cnn feature maps
             U_hat_i = self.content_decoder(z_i.flatten(end_dim=1)).unflatten(0, (z_i.size(0), z_i.size(1)))
             U_hat_j = self.content_decoder(z_j.flatten(end_dim=1)).unflatten(0, (z_j.size(0), z_j.size(1)))
@@ -1217,18 +1237,20 @@ class SIVAEFreqOffset(L.LightningModule):
 
         # cross-decode representations
         if self.align_only:
-            x_hat_i = self.cnn_decode(U_hat_j, theta_hat_i / torch.pi) # (bs, 1, fr * seq, fq)
-            # reconstruct independent translations
-            x_hat_j = self.cnn_decode(U_hat_i, theta_hat_j / torch.pi) # (bs * seq, 1, fr, fq)
+            x_hat_i = self.cnn_decode(U_hat_i, theta_hat_i / torch.pi) # (bs, 1, fr * seq, fq)
+            x_hat_j = self.cnn_decode(U_hat_j, theta_hat_j / torch.pi) # (bs * seq, 1, fr, fq)
         else:
-            x_hat_i = self.cnn_decode(U_hat_j, theta_i / torch.pi) # (bs, 1, fr * seq, fq)
-            # reconstruct independent translations
-            x_hat_j = self.cnn_decode(U_hat_i, theta_j / torch.pi) # (bs * seq, 1, fr, fq)
+            x_hat_i = self.cnn_decode(U_hat_i, theta_i / torch.pi) # (bs, 1, fr * seq, fq)
+            x_hat_j = self.cnn_decode(U_hat_j, theta_j / torch.pi) # (bs * seq, 1, fr, fq)
 
-        # frame for frame-wise loss
+        # apply learned frequency bin offsets
         x_hat_i_framed = self.frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_window_length).flatten(end_dim=1)
-        x_framed = torch.cat([x_i_framed, x_j], dim=0)
-        x_hat_framed = torch.cat([x_hat_i_framed + x_freq_offset_i, x_hat_j + x_freq_offset_j], dim=0)
+        x_hat_i_framed = x_hat_i_framed + x_freq_offset_i
+        x_hat_i = self.unframe(x_hat_i_framed,)
+        x_hat_j = x_hat_j + x_freq_offset_j
+        # stack for frame-wise loss
+        x_framed = torch.stack([x_i_framed, x_j], dim=1)
+        x_hat_framed = torch.stack([x_hat_i_framed, x_hat_j], dim=1)
         return dict(
             x=x,
             x_framed=x_framed, x_i=x, x_j=x_j,
@@ -1242,6 +1264,7 @@ class SIVAEFreqOffset(L.LightningModule):
         )
 
     def predict(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
+        x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
         q_z, (theta, dx, dy) = self.encode(x)
         if self.align_only:
             delta = torch.zeros_like(theta)
@@ -1249,10 +1272,12 @@ class SIVAEFreqOffset(L.LightningModule):
             delta = theta / torch.pi
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
         z = torch.distributions.Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample()
+        z, z_glob = z[..., :-4], z[..., -4:]
+        x_freq_offset = self.frequency_offset_decoder(z_glob).unsqueeze(-2).unsqueeze(-2)
         U = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1)))
         x_hat = self.cnn_decode(U, delta)
-        x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
         x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_window_length)
+        x_hat_framed = x_hat_framed + x_freq_offset
         return dict(
             x=x,
             x_hat=x_hat,
@@ -1302,9 +1327,8 @@ class SIVAEFreqOffset(L.LightningModule):
                 U = self.translation(U, delta.view(bs * seq), mode=self.translation_mode)
                 U = U.transpose(-1, -2).contiguous()
             if i == len(self.feature_decoder.blocks) - 1 and self.translation_idx != -1:
-                U = U.unflatten(0, (bs, seq)).transpose(1, 2)
-                # recombine frames with time dimension
-                U = U.flatten(start_dim=2, end_dim=3)
+                U = U.unflatten(0, (bs, seq))
+                U = self.unframe(U)
             U = block(U)
         if self.translation_idx == -1:
             U = U.transpose(-1, -2).contiguous()
@@ -1333,6 +1357,10 @@ class SIVAEFreqOffset(L.LightningModule):
             return frame(x, window_length=window_length, hop_length=hop_length, padding_mode=padding_mode)
         return x.view(x.size(0), x.size(1), x.size(2) // window_length, window_length, x.size(3)).transpose(1, 2)
 
+    @staticmethod
+    def unframe(x: Tensor) -> Tensor:
+        return x.transpose(1, 2).flatten(start_dim=2, end_dim=3)
+
     def loss(
         self,
         x_framed: Tensor,
@@ -1353,32 +1381,27 @@ class SIVAEFreqOffset(L.LightningModule):
         # maximise likelihood p(x_i|z_j) framewise to ensure invariance to sequence length
         sigma_recon = torch.tensor(self.sigma_x, dtype=torch.float32, requires_grad=False, device=x_framed.device)
         nll = negative_log_likelihood(x_framed, x_hat_framed, 2*sigma_recon.log()).flatten(start_dim=-3).sum(dim=-1)
-        losses.append(nll.mean())
-        outputs |= dict(log_likelihood_x=-nll.detach().mean())
+        # average across pairs, then across batch & frames
+        nll = nll.mean(dim=-1).mean()
+        losses.append(nll)
+        outputs |= dict(log_likelihood_x=-nll.detach())
         # supervision signal for delta, minimise relative angular difference
         if self.align_only:
             angular_error_i = 2 * (1 - (dx_hat_i * dx_i + dy_hat_i * dy_i))
             angular_error_j = 2 * (1 - (dx_hat_j * dx_j + dy_hat_j * dy_j))
-            alignment_loss = self.gamma * torch.stack([angular_error_i, angular_error_j.view(angular_error_i.size())]).mean()
+            # sum along angle (always singular), mean across pairs, mean across batch & frames
+            alignment_loss = self.gamma * torch.cat([angular_error_i.view(angular_error_j.size()), angular_error_j], dim=-2).sum(dim=-1).mean(dim=-1).mean()
             losses.append(alignment_loss)
             outputs |= dict(alignment_loss=alignment_loss.detach())
         # standard normal dkl
         dkl = self.beta * gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
-        losses.append(dkl.mean())
-        outputs |= dict(dkl=dkl.detach().mean())
+        # average first across pairs, then across batch & frames
+        dkl = dkl.mean(dim=-1).mean()
+        losses.append(dkl)
+        outputs |= dict(dkl=dkl.detach())
         # sum the loss components
         outputs |= dict(loss=sum(losses))
         return outputs
-
-    # def delta_sigma_current(self, t: int) -> Tensor:
-    #     if self.delta_sigma_min is None or self.delta_sigma_min == self.delta_sigma_max:
-    #         return self.delta_sigma_max
-    #     return torch.tensor(bounded_sigmoid(t, **self.delta_sigma_params))
-
-#     def delta_prob_current(self, t: int) -> float:
-#         if self.delta_prob_min is None or self.delta_prob_min == self.delta_prob_max:
-#             return self.delta_prob_max
-#         return linear_decay(t, **self.delta_prob_params)
 
     @torch.no_grad()
     def metrics(
@@ -1399,14 +1422,10 @@ class SIVAEFreqOffset(L.LightningModule):
         sigma_z = (0.5 * log_sigma_sq_z).exp()
         mu_hist = np.histogram(mu_z.flatten().cpu().numpy(), bins=32, range=[-5.0, 5.0])
         sigma_hist = np.histogram(sigma_z.flatten().cpu().numpy(), bins=32, range=[0.0, 2.0])
+        # mean distance between shifted embeddings
         mu_z_i, mu_z_j = q_z_i.chunk(2, dim=-1)[0], q_z_j.view(q_z_i.size()).chunk(2, dim=-1)[0]
-        # mean squared error between shifted embeddings
-        z_dist = (mu_z_j - mu_z_i).pow(2).mean()
-        # # distribution of delta predictions
-        # delta = torch.cat([delta_i, delta_j.view(delta_i.size())])
-        # delta_hist = np.histogram(delta.flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
-        # delta_hat = torch.cat([delta_hat_i, delta_hat_j.view(delta_hat_i.size())])
-        # delta_hat_hist = np.histogram(delta_hat.flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
+        z_dist_mean = (mu_z_j - mu_z_i).pow(2).sum(dim=-1).sqrt().mean()
+        z_dist_std = (mu_z_j - mu_z_i).pow(2).sum(dim=-1).sqrt().std()
         # variance of predicted theta both independently and across sequence
         theta = torch.cat([theta_i, theta_j.view(theta_i.size())])
         theta_hat = torch.cat([theta_hat_i, theta_hat_j.view(theta_hat_i.size())])
@@ -1418,17 +1437,19 @@ class SIVAEFreqOffset(L.LightningModule):
         angular_error = 1 - torch.cos(d_theta)
         d_theta_hist = np.histogram(d_theta.flatten().cpu().numpy(), bins=128, range=[0.0, 2.0])
         # reconstruction error
-        d_x = (x_hat_framed - x_framed).flatten(start_dim=-3)
-        mae = d_x.abs().mean(dim=-1).mean()
-        mse = d_x.pow(2).mean(dim=-1).mean()
+        err = (x_hat_framed - x_framed).flatten(start_dim=-3)
+        mae = err.abs().mean(dim=-1).mean(dim=-1).mean()
+        mse = err.pow(2).mean(dim=-1).mean(dim=-1).mean()
         # normalised KL
-        dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / mu_z.size(-1)).mean()
+        dkl_norm = ((-1/2 * (1 + log_sigma_sq_z[...,:-4] - mu_z[...,:-4].pow(2) - log_sigma_sq_z[...,:-4].exp())).sum(dim=-1) / mu_z[...,:-4].size(-1)).mean(dim=-1).mean()
+        dkl_norm_glob = ((-1/2 * (1 + log_sigma_sq_z[...,-4:] - mu_z[...,-4:].pow(2) - log_sigma_sq_z[...,-4:].exp())).sum(dim=-1) / mu_z[...,-4:].size(-1)).mean(dim=-1).mean()
         return dict(
             mae=mae,
             mse=mse,
             mu_z_hist=mu_hist,
             sigma_z=sigma_hist,
-            z_dist=z_dist,
+            z_dist_mean=z_dist_mean,
+            z_dist_std=z_dist_std,
             # delta_hist=delta_hist,
             # delta_hat_hist=delta_hat_hist,
             theta_hat_var=theta_hat_var,
@@ -1438,6 +1459,7 @@ class SIVAEFreqOffset(L.LightningModule):
             angular_error_mean=angular_error.mean(),
             angular_error_std=angular_error.std(),
             dkl_norm=dkl_norm,
+            dkl_norm_glob=dkl_norm_glob,
         )
 
     @torch.no_grad()
@@ -1507,79 +1529,56 @@ class SIVAEFreqOffset(L.LightningModule):
     ) -> List:
         figures = []
         num_samples = min(num_samples, x.size(0))
-        if q_z_i.size(1) == seq_len:
-            specs = x_i.squeeze().cpu()
-            recons = x_hat_i.squeeze().cpu()
-            for i in range(num_samples):
-                fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize, width_ratios=[0.97, 0.03], constrained_layout=True, dpi=dpi)
-                mesh = self.front_end.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
-                mesh = self.front_end.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
-                axes[0, 0].set_title("Original")
-                axes[1, 0].set_title("Reconstruction")
-                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
-                fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
-                figures.append(("spectrogram", fig))
-        else:
-            specs = x_i.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu()
-            recons = x_hat_i.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu()
-            for i in range(num_samples):
-                fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=figsize, width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True, dpi=dpi)
-                for j in range(num_frames):
-                    mesh = self.front_end.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max())
-                    mesh = self.front_end.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max())
-                axes[0, 0].set_title("Original")
-                axes[1, 0].set_title("Reconstruction")
-                fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
-                fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
-                figures.append((f"frames/i", fig))
-            offsets = x_freq_offset_i.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu()
-            for i in range(num_samples):
-                fig, axes = plt.subplots(nrows=1, ncols=num_frames + 1, figsize=figsize, width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True, dpi=dpi)
-                for j in range(num_frames):
-                    mesh = axes[j].imshow(offsets[j], vmin=offsets.min(), vmax=offsets.max(), origin="lower")
-                fig.colorbar(mesh, cax=axes[-1], orientation="vertical")
-                figures.append((f"offsets/i", fig))
 
-        # plot translated frames
-        specs = x_j.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
-        recons = x_hat_j.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+        specs = x_i.squeeze().cpu()
+        recons = x_hat_i.squeeze().cpu()
         for i in range(num_samples):
-            fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=figsize, width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True, dpi=dpi)
-            for j in range(num_frames):
-                mesh = self.front_end.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max())
-                mesh = self.front_end.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max())
+            fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize, width_ratios=[0.97, 0.03], constrained_layout=True, dpi=dpi)
+            mesh = self.front_end.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+            mesh = self.front_end.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
             axes[0, 0].set_title("Original")
             axes[1, 0].set_title("Reconstruction")
+            fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+            fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+            figures.append(("spectrogram", fig))
+
+        # plot baseline frames
+        specs = x_i.view(x.size(0), seq_len, self.frame_window_length, self.frequency_dim).cpu()
+        recons = x_hat_i.view(x.size(0), seq_len, self.frame_window_length, self.frequency_dim).cpu()
+        offsets = x_freq_offset_i.view(x.size(0), seq_len, 1, self.frequency_dim).cpu()
+        for i in range(num_samples):
+            fig, axes = plt.subplots(nrows=3, ncols=num_frames + 1, figsize=(10, 9), width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True, dpi=dpi)
+            for j in range(num_frames):
+                mesh = self.front_end.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+                self.front_end.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+                self.front_end.plot(offsets[i, j].expand(self.frame_window_length, -1).t(), ax=axes[2, j], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+            axes[0, 0].set_title("Original")
+            axes[1, 0].set_title("Reconstruction")
+            axes[2, 0].set_title("Offset")
             fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
             fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
-            figures.append((f"frames/j", fig))
-        offsets = x_freq_offset_j.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu()
+            fig.colorbar(mesh, cax=axes[2, -1], orientation="vertical")
+            figures.append((f"frames/i", fig))
+
+        # plot translated frames
+        specs = x_j.view(x.size(0), seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+        recons = x_hat_j.view(x.size(0), seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+        offsets = x_freq_offset_j.view(x.size(0), seq_len, 1, self.frequency_dim).cpu()
         for i in range(num_samples):
-            fig, axes = plt.subplots(nrows=1, ncols=num_frames + 1, figsize=figsize, width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True, dpi=dpi)
+            fig, axes = plt.subplots(nrows=3, ncols=num_frames + 1, figsize=(10, 9), width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True, dpi=dpi)
             for j in range(num_frames):
-                mesh = axes[j].imshow(offsets[j], vmin=offsets.min(), vmax=offsets.max(), origin="lower")
-            fig.colorbar(mesh, cax=axes[-1], orientation="vertical")
-            figures.append((f"offsets/i", fig))
+                mesh = self.front_end.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+                self.front_end.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+                self.front_end.plot(offsets[i, j].expand(self.frame_window_length, -1).t(), ax=axes[2, j], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+            axes[0, 0].set_title("Original")
+            axes[1, 0].set_title("Reconstruction")
+            axes[2, 0].set_title("Offset")
+            fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
+            fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
+            fig.colorbar(mesh, cax=axes[2, -1], orientation="vertical")
+            figures.append((f"frames/j", fig))
+
         return figures
-
-    # @property
-    # def delta_sigma_params(self):
-    #     return dict(
-    #         x_min=self.delta_sigma_step_start,
-    #         x_max=self.delta_sigma_step_end,
-    #         y_min=self.delta_sigma_min,
-    #         y_max=self.delta_sigma_max,
-    #         k=self.delta_sigma_step_slope,
-    #     )
-
-#     @property
-#     def delta_prob_params(self):
-#         return dict(
-#             minimum=self.delta_prob_min,
-#             maximum=self.delta_prob_max,
-#             t_start=self.delta_prob_step_start,
-#             t_end=self.delta_prob_step_end,
-#         )
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         # run training

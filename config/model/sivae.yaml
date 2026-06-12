@@ -33,7 +33,7 @@ front_end:
   num_fft: 512
   fft_window_length: 512
   fft_hop_length: 384
-  num_mel_bins: 64
+  num_mel_bins: ${model.frequency_dim}
   mel_min_hertz: 150
   mel_max_hertz: 15_000
   mel_scaling_factor: 4581.0
@@ -53,7 +53,10 @@ content_encoder:
   _target_: src.core.models.components.ContentEncoder
   in_channels: 512
   out_channels: 128
-  layer_sizes: [3072, 768, 256]
+  layer_sizes:
+    - 3072
+    - 768
+    - ${mul:${model.latent_dim},2}
   dropout_prob: 0.0
   activation: LEAK
 content_decoder:
@@ -62,7 +65,10 @@ content_decoder:
   out_channels: 512
   out_height: 6
   out_width: 4
-  layer_sizes: [128, 768, 3072]
+  layer_sizes:
+    - ${model.latent_dim}
+    - 768
+    - 3072
   dropout_prob: 0.0
   activation: LEAK
 feature_decoder:
