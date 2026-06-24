@@ -6,7 +6,7 @@ train_batch_size: 6
 eval_batch_size: 6
 val_prop: 0.2
 test_prop: 0.2
-num_workers: 8
+num_workers: 0
 seed: 42
 persist_workers: false
 pin_memory: true

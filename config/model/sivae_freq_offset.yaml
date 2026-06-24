@@ -1,5 +1,6 @@
 _target_: src.core.models.sivae.SIVAEFreqOffset
 latent_dim: 128
+freq_offset_latent_dim: 4
 frequency_dim: 64
 frame_window_length: 192
 frame_padding_mode: circular
@@ -53,7 +54,10 @@ content_encoder:
   _target_: src.core.models.components.ContentEncoder
   in_channels: 512
   out_channels: 128
-  layer_sizes: [3072, 768, 256]
+  layer_sizes:
+    - 3072
+    - 768
+    - ${mul:${model.latent_dim},2}
   dropout_prob: 0.0
   activation: LEAK
 content_decoder:
@@ -62,7 +66,10 @@ content_decoder:
   out_channels: 512
   out_height: 6
   out_width: 4
-  layer_sizes: [124, 768, 3072]
+  layer_sizes:
+    - ${sub:${model.latent_dim},${model.freq_offset_latent_dim}}
+    - 768
+    - 3072
   dropout_prob: 0.0
   activation: LEAK
 feature_decoder:

@@ -153,7 +153,8 @@ class SIVAE(L.LightningModule):
             log_sigma_sq_z = (1/4 * (log_sigma_sq_z_i.exp() + log_sigma_sq_z_j.view(log_sigma_sq_z_i.size()).exp())).log()
             z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()  # (bs, seq, ld)
             # keep dim 1 as the 'pair' dimension
-            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1).view(q_z_j.size())
+            # q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1).view(q_z_j.size())
+            q_z = torch.cat([q_z_i.view(q_z_j.size()), q_z_j], dim=1)
             U_hat = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1))) # (bs, seq, ch, fr, fq)
             U_hat_i, U_hat_j = U_hat, U_hat
         elif self.cross_decode_method == "hard":
@@ -384,7 +385,7 @@ class SIVAE(L.LightningModule):
             mae=mae,
             mse=mse,
             mu_z_hist=mu_hist,
-            sigma_z=sigma_hist,
+            sigma_z_hist=sigma_hist,
             z_dist_mean=z_dist_mean,
             z_dist_std=z_dist_std,
             # delta_hist=delta_hist,
@@ -1246,7 +1247,7 @@ class SIVAEFreqOffset(L.LightningModule):
         # apply learned frequency bin offsets
         x_hat_i_framed = self.frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_window_length).flatten(end_dim=1)
         x_hat_i_framed = x_hat_i_framed + x_freq_offset_i
-        x_hat_i = self.unframe(x_hat_i_framed,)
+        x_hat_i = self.unframe(x_hat_i_framed)
         x_hat_j = x_hat_j + x_freq_offset_j
         # stack for frame-wise loss
         x_framed = torch.stack([x_i_framed, x_j], dim=1)

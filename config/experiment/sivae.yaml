@@ -6,14 +6,15 @@ defaults:
   - override /trainer: gpu
   - override /logger: wandb
 
-data:
-  val_prop: 0.0
+# data:
+#   val_prop: 0.0
 
 trainer:
   max_steps: 180_000
   max_epochs: -1
   log_every_n_steps: 50
-  limit_val_batches: 0.0
+  val_check_interval: 2500
+  # limit_val_batches: 0.0
 
 callbacks:
   primary_model_checkpoint:

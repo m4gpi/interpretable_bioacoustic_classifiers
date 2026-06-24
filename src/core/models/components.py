@@ -61,6 +61,17 @@ class Resample(Enum):
     def __init__(self, init: Callable[[], nn.Module]) -> None:
         self.init = init
 
+class MaxAvgConvPool2d(torch.nn.Module):
+    def __init__(self, kernel_size, stride):
+        super().__init__()
+        self.avg_pool = torch.nn.AvgPool2d(kernel_size=kernel_size, stride=stride)
+        self.max_pool = torch.nn.MaxPool2d(kernel_size=kernel_size, stride=stride)
+        self.conv = torch.nn.Conv2d(in_channels=2, out_channels=1, kernel_size=1, stride=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = torch.stack([self.avg_pool(x), self.max_pool(x)], dim=-3)
+        return self.conv(x.flatten(end_dim=1)).unflatten(0, (x.size(0), x.size(1))).squeeze(-3)
+
 class CircularReflectiveConv2d(torch.nn.Conv2d):
     def __init__(self, *args, **kwargs) -> None:
         kwargs["padding_mode"] = "zeros"
