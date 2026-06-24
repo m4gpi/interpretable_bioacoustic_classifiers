@@ -24,94 +24,13 @@ log = logging.getLogger(__name__)
 
 __all__ = ["SpeciesDetector"]
 
-def l1(weights: torch.Tensor, dim: int, **kwargs: Any) -> torch.Tensor:
-    return torch.sum(weights.abs(), dim=dim)
-
-def l2(weights: torch.Tensor, dim: int, **kwargs: Any) -> torch.Tensor:
-    return torch.sum(weights.pow(2), dim=dim)
-
-def elastic(weights: torch.Tensor, dim: int, alpha: float = 0.5) -> torch.Tensor:
-    return alpha * l1(weights, dim=dim) + ((1 - alpha) / 2) * l2(weights, dim=dim)
-
 class RegMode(enum.Enum):
-    L1 = functools.partial(l1)
-    L2 = functools.partial(l2)
-    EL = functools.partial(elastic)
+    L1 = functools.partial(metrics.l1)
+    L2 = functools.partial(metrics.l2)
+    EL = functools.partial(metrics.elastic)
 
     def __call__(self, *args, **kwargs):
         return self.value(*args, **kwargs)
-
-class MultiLabelLogisticRegression(torch.nn.Module):
-    def __init__(self, num_features: int, num_targets: int) -> None:
-        super().__init__()
-        weight = torch.empty(num_targets, num_features, 1)
-        bias = torch.empty(num_targets, 1)
-        self.reset_parameters(weight, bias)
-        self.weight = torch.nn.Parameter(weight.squeeze().t())
-        self.bias = torch.nn.Parameter(bias.squeeze())
-
-    def reset_parameters(self, weight: torch.Tensor, bias: torch.Tensor) -> None:
-        torch.nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
-        fan_in, _ = torch.nn.init._calculate_fan_in_and_fan_out(weight)
-        bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-        torch.nn.init.uniform_(bias, -bound, bound)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y_prob = torch.sigmoid(x @ self.weight + self.bias)
-        return y_prob
-
-class MultiLabelBayesianLogisticRegression(torch.nn.Module):
-    def __init__(self, num_features: int, num_targets: int) -> None:
-        super().__init__()
-        weight_mu = torch.empty(num_targets, num_features, 1)
-        bias_mu = torch.empty(num_targets, 1)
-        self.reset_parameters(weight_mu, bias_mu)
-        self.weight_mu = torch.nn.Parameter(weight_mu.squeeze().t())
-        self.bias_mu = torch.nn.Parameter(bias_mu.squeeze())
-        # NB: assumption of a diagonal covariance
-        weight_log_var = torch.empty(num_targets, num_features, 1)
-        bias_log_var = torch.empty(num_targets, 1)
-        self.reset_parameters(weight_log_var, bias_log_var)
-        self.weight_log_var = torch.nn.Parameter(weight_log_var.squeeze().t())
-        self.bias_log_var = torch.nn.Parameter(bias_log_var.squeeze())
-
-    def reset_parameters(self, weight: torch.Tensor, bias: torch.Tensor) -> None:
-        torch.nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
-        fan_in, _ = torch.nn.init._calculate_fan_in_and_fan_out(weight)
-        bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-        torch.nn.init.uniform_(bias, -bound, bound)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # predict the mean and variance of activations
-        mu_a = x @ self.weight_mu + self.bias_mu
-        sigma_sq_a = x.pow(2) @ self.weight_log_var.exp() + self.bias_log_var.exp()
-        # approximating the expectation of a sigmoid under a Gaussian distribution using the mackay approximation
-        y_prob = torch.sigmoid(mu_a / torch.sqrt(1.0 + torch.pi * sigma_sq_a / 8.0))
-        return y_prob
-
-class GatedAttention(torch.nn.Module):
-    def __init__(self, in_features: int, hidden_dim: int, out_features: int, num_targets: int) -> None:
-        super().__init__()
-        self.A_V_weight = torch.nn.Parameter(torch.empty(in_features, hidden_dim))
-        self.A_V_bias = torch.nn.Parameter(torch.empty(hidden_dim))
-        self.reset_parameters(self.A_V_weight, self.A_V_bias)
-        self.A_U_weight = torch.nn.Parameter(torch.empty(num_targets, in_features, hidden_dim))
-        self.A_U_bias = torch.nn.Parameter(torch.empty(num_targets, 1, hidden_dim))
-        self.reset_parameters(self.A_U_weight, self.A_U_bias)
-        self.A_w = torch.nn.Parameter(torch.empty(num_targets, hidden_dim, out_features))
-        self.reset_parameters(self.A_w)
-
-    def reset_parameters(self, weight: torch.Tensor, bias: torch.Tensor | None = None) -> None:
-        torch.nn.init.xavier_uniform_(weight)
-        if bias is not None:
-            torch.nn.init.zeros_(bias)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.unsqueeze(1)
-        A_V = torch.tanh(x @ self.A_V_weight + self.A_V_bias) # (N, 1, T, D)
-        A_U = torch.sigmoid(x @ self.A_U_weight + self.A_U_bias) # (N, C, T, D)
-        A = F.softmax((A_V * A_U) @ self.A_w, dim=-2) # (N, C, T, 1)
-        return A.squeeze(-1).permute(0, 2, 1) # (N, T, C)
 
 class SpeciesDetector(L.LightningModule):
     def __init__(
@@ -228,9 +147,9 @@ class SpeciesDetector(L.LightningModule):
         attn_V_weights = self.attention_V.weight
         attn_U_weights = torch.stack(list(self.attention_U.parameters())[::2], dim=0)
         attn_w_weights = torch.stack(list(self.attention_w.parameters()), dim=0)
-        V_reg = l2(attn_V_weights, dim=[-1, -2]).unsqueeze(0)
-        U_reg = l2(attn_U_weights, dim=[-1, -2])
-        w_reg = l2(attn_w_weights, dim=[-1, -2])
+        V_reg = metrics.l2(attn_V_weights, dim=[-1, -2]).unsqueeze(0)
+        U_reg = metrics.l2(attn_U_weights, dim=[-1, -2])
+        w_reg = metrics.l2(attn_w_weights, dim=[-1, -2])
         attn_reg = self.attn_weight_decay * (U_reg + V_reg + w_reg)
         outputs |= {f"attn_l2": attn_reg.detach().sum()}
         # sum the cel, clf_reg and attn_reg for logistic regression

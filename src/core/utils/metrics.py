@@ -8,6 +8,16 @@ warnings.filterwarnings("ignore", category=sklearn.exceptions.UndefinedMetricWar
 
 from numpy.typing import NDArray
 from torch.nn import functional as F
+from typing import Any
+
+def l1(weights: torch.Tensor, dim: int, **kwargs: Any) -> torch.Tensor:
+    return torch.sum(weights.abs(), dim=dim)
+
+def l2(weights: torch.Tensor, dim: int, **kwargs: Any) -> torch.Tensor:
+    return torch.sum(weights.pow(2), dim=dim)
+
+def elastic(weights: torch.Tensor, dim: int, alpha: float = 0.5) -> torch.Tensor:
+    return alpha * l1(weights, dim=dim) + ((1 - alpha) / 2) * l2(weights, dim=dim)
 
 def negative_log_likelihood(x: torch.Tensor, mu: torch.Tensor, log_sigma_sq: torch.Tensor) -> torch.Tensor:
     return 1/2 * (log_sigma_sq + (x - mu).pow(2) / log_sigma_sq.exp())

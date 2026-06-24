@@ -171,7 +171,7 @@ class SpeciesScores(L.Callback):
 
     def _freq_df(self, pl_module: L.LightningModule):
         return pd.DataFrame(
-            data=zip(pl_module.target_counts),
+            data=zip(pl_module.target_counts.cpu().numpy()),
             columns=["train_label_counts"],
             index=pl_module.target_names
         )
