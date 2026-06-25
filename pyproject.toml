@@ -47,6 +47,7 @@ dependencies = [
   "nemony>=0.0.2",
   "torchsummary>=1.5.1",
   "scikit-image>=0.25.2",
+  "colorcet>=3.2.1",
 ]
 
 [dependency-groups]

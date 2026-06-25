@@ -14,7 +14,7 @@ test: true
 
 data:
   root: ${paths.data_dir}/soundscape_vae_embeddings/${model_name}/${scope}
-  val_prop: 0.0
+  # val_prop: 0.0
 
 trainer:
   max_epochs: 2000
@@ -35,6 +35,13 @@ callbacks:
     seed: ${seed}
     fold_id: ${data.fold_id}
     log_every_n_train_epochs: 20
+  weight_activation_uncertainty:
+    _target_: src.core.callbacks.weight_activation_uncertainty.WeightActivationUncertainty
+    save_dir: ${paths.results_dir}/v3/species_detectors/
+    model_name: ${model_name}
+    scope: ${scope}
+    run_id: ${run_id}
+    seed: ${seed}
 
 logger:
   wandb:

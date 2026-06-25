@@ -34,8 +34,11 @@ class L2:
         return metrics.l2(weights, dim=dim)
 
 class Elastic:
-    def __call__(self, weights: torch.Tensor, dim: int, alpha: float = 0.5, **kwargs: Any) -> torch.Tensor:
-        return metrics.elastic(weights, dim=dim, alpha=alpha)
+    def __init__(self, alpha: float = 0.5):
+        self.alpha = alpha
+
+    def __call__(self, weights: torch.Tensor, dim: int, **kwargs: Any) -> torch.Tensor:
+        return metrics.elastic(weights, dim=dim, alpha=self.alpha)
 
 class MultiLabelLogisticRegression(torch.nn.Module):
     def __init__(self, num_features: int, num_targets: int) -> None:
@@ -52,9 +55,9 @@ class MultiLabelLogisticRegression(torch.nn.Module):
         bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
         torch.nn.init.uniform_(bias, -bound, bound)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, ...]:
         y_prob = torch.sigmoid(x @ self.weight.t() + self.bias)
-        return y_prob
+        return y_prob,
 
     def get_weights(self):
         return self.weight
@@ -80,13 +83,13 @@ class MultiLabelBayesianLogisticRegression(torch.nn.Module):
         bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
         torch.nn.init.uniform_(bias, -bound, bound)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, ...]:
         # predict the mean and variance of activations
         mu_a = x @ self.weight_mu.t() + self.bias_mu
         sigma_sq_a = x.pow(2) @ self.weight_log_var.exp().t() + self.bias_log_var.exp()
         # approximating the expectation of a sigmoid under a Gaussian distribution using the mackay approximation
         y_prob = torch.sigmoid(mu_a / torch.sqrt(1.0 + torch.pi * sigma_sq_a / 8.0))
-        return y_prob
+        return y_prob, mu_a, sigma_sq_a
 
     def get_weights(self):
         return self.weight_mu
@@ -147,25 +150,19 @@ class MILSpeciesDetector(L.LightningModule):
         clf_regulariser: omegaconf.DictConfig,
         attn_regulariser: omegaconf.DictConfig,
         beta: float = 0.0,
-        alpha: float = 0.0,
         gamma_clf: float = 0.0,
         gamma_attn: float = 0.0,
         label_smoothing: float = 0.0,
         clf_learning_rate: float = 1e-2,
         attn_learning_rate: float = 1e-2,
-        train_sample_size: int | None = 1,
-        eval_sample_size: int | None = 1,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
-        self.alpha = alpha
         self.gamma_clf = gamma_clf
         self.gamma_attn = gamma_attn
         self.label_smoothing = label_smoothing
         self.clf_learning_rate = clf_learning_rate
         self.attn_learning_rate = attn_learning_rate
-        self.train_sample_size = train_sample_size
-        self.eval_sample_size = eval_sample_size
 
         self.register_buffer("beta", torch.tensor(beta, dtype=torch.float32))
         self.register_buffer("target_names_enc", self.to_buffer_matrix(target_names))
@@ -176,33 +173,25 @@ class MILSpeciesDetector(L.LightningModule):
         self.clf_regulariser = hydra.utils.instantiate(clf_regulariser)
         self.attn_regulariser = hydra.utils.instantiate(attn_regulariser)
 
-    def pre_process(self, x: torch.Tensor):
-        num_samples = self.train_sample_size if self.training else self.eval_sample_size
-        if num_samples is None:
-            return x.unsqueeze(1)
-        mean, log_var = x.chunk(2, dim=-1)
-        mean = mean.unsqueeze(1).expand(-1, num_samples, -1, -1)
-        log_var = log_var.unsqueeze(1).expand(-1, num_samples, -1, -1)
-        return mean + torch.randn_like(mean) * (0.5 * log_var).exp()
-
     def forward(self, x: torch.Tensor, y: torch.Tensor, s: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
         attn_w = self.attention(x)
-        y_probs = (self.classifiers(x) * attn_w).sum(dim=-2)
-        y_probs = y_probs.mean(dim=1)
-        attn_w = attn_w.mean(dim=1)
+        y_t_probs, mu_a, sigma_sq_a = self.classifiers(x)
+        y_probs = (y_t_probs * attn_w).sum(dim=-2)
         return dict(
-            y=y, y_probs=y_probs, attn_w=attn_w, s=s,
+            y=y, y_probs=y_probs, y_t_probs=y_t_probs, attn_w=attn_w, s=s,
+            mu_a=mu_a, sigma_sq_a=sigma_sq_a,
             samples_per_class=self.target_counts,
-            target_names=self.target_names
         )
 
     def loss(self, y: torch.Tensor, y_probs: torch.Tensor, samples_per_class: torch.Tensor, epsilon: float = 1e-6, **kwargs: Any) -> Dict[str, torch.Tensor]:
         outputs = TensorDict()
+        # first take the mean over VAE posterior samples
+        y_probs = y_probs.mean(dim=1)
         # batch mean over log probabilities weighted by positive class frequency
         cel = metrics.class_balanced_binary_cross_entropy(y, y_probs, samples_per_class=samples_per_class, **self.cel_params).mean(dim=0)
         outputs |= dict(cel=cel.detach().sum())
         # sparse penalty for clf weights
-        clf_reg = self.gamma_clf * self.clf_regulariser(self.classifiers.get_weights(), dim=-1, alpha=self.alpha)
+        clf_reg = self.gamma_clf * self.clf_regulariser(self.classifiers.get_weights(), dim=-1)
         outputs |= {f"clf_{self.clf_regulariser.__class__.__name__.lower()}": clf_reg.detach().sum()}
         # l2 regularisation on attn model weights
         attn_reg = self.gamma_attn * sum([self.attn_regulariser(weights, dim=[-1, -2]) for weights in self.attention.get_weights()])
@@ -224,21 +213,29 @@ class MILSpeciesDetector(L.LightningModule):
         max_entropy = np.log(seq_len)
         attn_w = attn_w.clamp(min=1e-8)
         attn_entropy = (-(attn_w * attn_w.log()).sum(dim=1)).cpu().numpy()
-        return dict(collections.ChainMap(*[
-            { f"attn_entropy_{target_name}_mean": a_e.mean(), f"attn_entropy_{target_name}_std": a_e.std(), f"a_e_{target_name}_hist": np.histogram(a_e.flatten(), bins=128, range=[0, max_entropy]) }
-            for target_name, a_e in zip(self.target_names, attn_entropy.T)
-        ]))
+        metrics = dict(collections.ChainMap(*[{
+            f"attn_entropy_{target_name}_mean": a_e.mean(),
+            f"attn_entropy_{target_name}_std": a_e.std(),
+            f"a_e_{target_name}_hist": np.histogram(a_e.flatten(), bins=128, range=[0, max_entropy])
+        } for target_name, a_e in zip(self.target_names, attn_entropy.T)]))
+        return metrics
 
     @torch.no_grad()
-    def predict(self, y: torch.Tensor, y_probs: torch.Tensor, s: torch.Tensor, target_names: List[str], **kwargs: Any) -> pd.DataFrame:
+    def predict(
+        self,
+        y: torch.Tensor,
+        y_probs: torch.Tensor,
+        s: torch.Tensor,
+        mu_a: torch.Tensor | None = None,
+        sigma_sq_a: torch.Tensor | None = None,
+        **kwargs: Any
+    ) -> pd.DataFrame:
         s = s.expand(y.size(-1), -1).permute(1, 0).flatten().cpu().numpy()
-        target_names = list(itertools.chain(*[target_names for _ in range(y_probs.size(0))]))
+        target_names = np.array(list(itertools.chain(*[self.target_names for _ in range(y_probs.size(0))])))
         y, y_probs = y.flatten().cpu().numpy(), y_probs.flatten().cpu().numpy()
-        df = pd.DataFrame(
-            data=list(zip(s, target_names, y, y_probs)),
-            columns=["file_i", "species_name", "label", "prob"]
-        )
-        return df
+        data = [s, target_names, y, y_probs]
+        columns = ["file_i", "species_name", "label", "prob"]
+        return pd.DataFrame(data={k: v.ravel() for k, v in zip(columns, data)})
 
     @property
     def cel_params(self):
@@ -266,6 +263,9 @@ class MILSpeciesDetector(L.LightningModule):
         trainer.save_checkpoint(checkpoint_dir / f"{checkpoint_name}.ckpt")
         log.info(f"Saving model configuration to {config_path}")
         omegaconf.OmegaConf.save(config, config_path)
+        # run validation
+        trainer.limit_val_batches = 1.0
+        trainer.validate(self, datamodule=data_module)
         # running test
         if config.get("test"):
             log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
@@ -303,10 +303,6 @@ class MILSpeciesDetector(L.LightningModule):
     def predict_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
         loss_outputs, step_outputs = self.step(batch, batch_idx)
         return loss_outputs | step_outputs
-
-    def on_after_batch_transfer(self, batch: Batch, dataloader_idx: int) -> Batch:
-        x = self.pre_process(batch.x)
-        return Batch(x=x, **{k: batch[k] for k in batch.keys() if k != "x"})
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         optim_groups = zip([self.clf_learning_rate, self.attn_learning_rate], [self.classifiers.parameters(), self.attention.parameters()])
