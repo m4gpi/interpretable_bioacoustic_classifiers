@@ -35,13 +35,13 @@ feature_encoder:
   padding_mode: circular
   activation: LEAK
   norm_type: LN
-  dropout_prob: 0.0
+  dropout_prob: 0.2
 content_encoder:
   _target_: src.core.models.components.ContentEncoder
   in_channels: 512
   out_channels: 128
   layer_sizes: [3072, 768, 256]
-  dropout_prob: 0.0
+  dropout_prob: 0.1
   activation: LEAK
 content_decoder:
   _target_: src.core.models.components.ContentDecoder

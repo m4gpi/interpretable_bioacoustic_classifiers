@@ -32,15 +32,7 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
         return len(self.y)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, ...]:
-        x, y, s = self.x[idx], self.y[idx], self.index[idx]
-        if self.chunked:
-            mean, log_var = x.chunk(2, dim=-1)
-            mean = mean.expand(self.num_samples, -1, -1)
-            log_var = log_var.expand(self.num_samples, -1, -1)
-            x = mean + torch.randn_like(mean) * (0.5 * log_var).exp()
-        else:
-            x = x.unsqueeze(0)
-        return (x, y, s)
+        return self.x[idx], self.y[idx], self.index[idx]
 
     def __attrs_post_init__(self):
         if self.download:
@@ -92,6 +84,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     eval_sample_size: int = attrs.field(default=1)
     val_prop: float = attrs.field(default=0.2, validator=attrs.validators.instance_of(float))
     min_train_label_count: int = attrs.field(default=10, validator=attrs.validators.instance_of(int))
+    chunked: bool = attrs.field(default=True)
 
     seed: int = attrs.field(default=None)
     num_workers: int = attrs.field(default=0, validator=attrs.validators.instance_of(int))
@@ -118,22 +111,38 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     def check_fold_is_integer_if_not_none(self, attribute, value):
         return isinstance(value, int) if value is not None else True
 
+    def pre_process(self, x: torch.Tensor, num_samples: int):
+        mean, log_var = x.chunk(2, dim=-1)
+        mean = mean.unsqueeze(1).expand(-1, num_samples, -1, -1)
+        log_var = log_var.unsqueeze(1).expand(-1, num_samples, -1, -1)
+        return mean + torch.randn_like(mean) * (0.5 * log_var).exp()
+
+    def on_after_batch_transfer(self, batch: Batch, dataloader_idx: int) -> Batch:
+        if not self.chunked: return batch
+        num_samples = {0: self.train_sample_size, 1: self.eval_sample_size, 2: self.eval_sample_size}[dataloader_idx]
+        x = self.pre_process(batch.x, num_samples)
+        return Batch(x=x, **{k: batch[k] for k in batch.keys() if k != "x"})
+
     def setup(self, stage: str | None = None) -> None:
         self._validate_features_and_labels_present(self.train_features_path, self.train_labels_path)
-        self._validate_features_and_labels_present(self.val_features_path, self.val_labels_path)
         self._validate_features_and_labels_present(self.test_features_path, self.test_labels_path)
 
         # load features and labels
         train_features = pd.read_parquet(self.train_features_path)
-        val_features = pd.read_parquet(self.val_features_path)
+        if self.val_features_path.exists():
+            val_features = pd.read_parquet(self.val_features_path)
         test_features = pd.read_parquet(self.test_features_path)
         train_labels = pd.read_parquet(self.train_labels_path)
-        val_labels = pd.read_parquet(self.val_labels_path)
+        if self.val_labels_path.exists():
+            val_labels = pd.read_parquet(self.val_labels_path)
         test_labels = pd.read_parquet(self.test_labels_path)
 
         # align train, val and test label columns so we don't train on labels we can't make predictions about
         train_labels = train_labels.loc[:, train_labels.columns[train_labels.sum(axis=0) > self.min_train_label_count]]
-        target_names = list(set(train_labels.columns).intersection(set(test_labels.columns)).intersection(set(val_labels.columns)))
+        target_names = set(train_labels.columns).intersection(set(test_labels.columns))
+        if self.val_labels_path.exists():
+            target_names = target_names.intersection(set(val_labels.columns))
+        target_names = list(target_names)
 
         # test set is fixed across all training regimens
         self.test_data = SoundscapeEmbeddings(
@@ -141,24 +150,26 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
             labels=test_labels[target_names],
             index=test_labels.index.get_level_values(0),
             num_samples=self.eval_sample_size,
+            chunked=self.chunked,
         )
 
         # train on everything when no validation is specified
         if self.val_prop == 0.0:
-            features = pd.concat([train_features, val_features])
-            labels = pd.concat([train_labels, val_labels])
+            features = pd.concat([train_features, val_features]) if self.val_features_path.exists() else train_features
+            labels = pd.concat([train_labels, val_labels]) if self.val_labels_path.exists() else train_labels
             self.train_data = SoundscapeEmbeddings(
                 features=features,
                 labels=labels[target_names],
                 index=labels.index.get_level_values(0),
                 num_samples=self.train_sample_size,
+                chunked=self.chunked,
             )
             return self
 
         # during cross-validation, recombine the original train/val splits before folding
         if self.num_folds is not None and self.fold_id is not None:
-            features = pd.concat([train_features, val_features])
-            labels = pd.concat([train_labels, val_labels])
+            features = pd.concat([train_features, val_features]) if self.val_features_path.exists() else train_features
+            labels = pd.concat([train_labels, val_labels]) if self.val_labels_path.exists() else train_labels
             # same seed across runs ensures we get consistent splits
             # allows for indexing splits by their fold_id
             folder = sklearn.model_selection.KFold(
@@ -175,6 +186,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
                 index=index[train_idx],
                 seed=self.seed,
                 num_samples=self.train_sample_size,
+                chunked=self.chunked,
             )
             self.val_data = SoundscapeEmbeddings(
                 features=features.loc[index[val_idx]],
@@ -182,22 +194,50 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
                 index=index[val_idx],
                 seed=self.seed,
                 num_samples=self.eval_sample_size,
+                chunked=self.chunked,
             )
             return self
 
-        # under a normal training regime, keep the split from pretraining
-        self.data = self.train_data = SoundscapeEmbeddings(
-            features=train_features,
-            labels=train_labels[target_names],
-            index=train_labels.index.get_level_values(0),
-            num_samples=self.train_sample_size,
-        )
-        self.val_data = SoundscapeEmbeddings(
-            features=val_features,
-            labels=val_labels[target_names],
-            index=val_labels.index.get_level_values(0),
-            num_samples=self.eval_sample_size,
-        )
+        if self.val_features_path.exists():
+            # under a normal training regime, keep the split from pretraining
+            self.data = self.train_data = SoundscapeEmbeddings(
+                features=train_features,
+                labels=train_labels[target_names],
+                index=train_labels.index.get_level_values(0),
+                num_samples=self.train_sample_size,
+                chunked=self.chunked,
+            )
+            self.val_data = SoundscapeEmbeddings(
+                features=val_features,
+                labels=val_labels[target_names],
+                index=val_labels.index.get_level_values(0),
+                num_samples=self.eval_sample_size,
+                chunked=self.chunked,
+            )
+        else:
+            index = features.index.get_level_values("file_i").unique()
+            train_idx, val_idx = sklearn.model_selection.train_test_split(
+                list(range(len(index))),
+                test_size=self.val_prop,
+                shuffle=True,
+                random_state=self.seed
+            )
+            self.train_data = SoundscapeEmbeddings(
+                features=features.loc[index[train_idx]],
+                labels=labels.loc[index[train_idx], target_names],
+                index=index[train_idx],
+                seed=self.seed,
+                num_samples=self.train_sample_size,
+                chunked=self.chunked,
+            )
+            self.val_data = SoundscapeEmbeddings(
+                features=features.loc[index[val_idx]],
+                labels=labels.loc[index[val_idx], target_names],
+                index=index[val_idx],
+                seed=self.seed,
+                num_samples=self.eval_sample_size,
+                chunked=self.chunked,
+            )
         return self
 
 
@@ -234,29 +274,35 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
         assert pathlib.Path(features_path).exists(), f"'{features_path}' does not exist"
         assert pathlib.Path(labels_path).exists(), f"'{labels_path}' does not exist"
 
+    def features_path(self, stage: str):
+        return self.root / stage / "features.parquet"
+
     @property
     def train_features_path(self):
-        return self.root / "train" / "features.parquet"
+        return self.features_path("train")
 
     @property
     def val_features_path(self):
-        return self.root / "val" / "features.parquet"
+        return self.features_path("val")
 
     @property
     def test_features_path(self):
-        return self.root / "test" / "features.parquet"
+        return self.features_path("test")
+
+    def labels_path(self, stage: str):
+        return self.root / stage / "labels.parquet"
 
     @property
     def train_labels_path(self):
-        return self.root / "train" / "labels.parquet"
+        return self.labels_path("train")
 
     @property
     def val_labels_path(self):
-        return self.root / "val" / "labels.parquet"
+        return self.labels_path("val")
 
     @property
     def test_labels_path(self):
-        return self.root / "test" / "labels.parquet"
+        return self.labels_path("test")
 
     @property
     def dataloader_params(self) -> Dict[str, Any]:

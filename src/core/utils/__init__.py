@@ -20,6 +20,15 @@ class Batch(NamedTuple):
     def __getitem__(self, key):
         return {"x": self.x, "y": self.y, "s": self.s, "metadata": self.metadata}[key]
 
+    def to(self, *args, **kwargs):
+        return Batch(**{
+            k: self[k].to("cuda")
+            if isinstance(self[k], torch.Tensor)
+            else self[k]
+            for k in self.keys()
+        })
+
+
 from collections.abc import Mapping
 import torch
 

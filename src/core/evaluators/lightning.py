@@ -16,11 +16,11 @@ class LightningTest(Evaluator):
         ckpt_path = config.get("ckpt_path")
         assert ckpt_path is not None, f"No checkpoint found at {ckpt_path}"
         log.info(f"Encoding <{config.data.get('_target_')}> with <{config.model.get('_target_')}>")
-        trainer.test(model, data_module.predict_dataloader(), ckpt_path=config.get("ckpt_path"))
+        trainer.test(model, datamodule=data_module, ckpt_path=config.get("ckpt_path"))
 
 class LightningPredict(Evaluator):
     def __call__(self, trainer: None, model: Callable, data_module: L.LightningDataModule, config: DictConfig, **kwargs: Any):
         ckpt_path = config.get("ckpt_path")
         assert ckpt_path is not None, f"No checkpoint found at {ckpt_path}"
         log.info(f"Encoding <{config.data.get('_target_')}> with <{config.model.get('_target_')}>")
-        trainer.predict(model, data_module.predict_dataloader(), ckpt_path=config.get("ckpt_path"))
+        trainer.predict(model, datamodule=data_module, ckpt_path=config.get("ckpt_path"))

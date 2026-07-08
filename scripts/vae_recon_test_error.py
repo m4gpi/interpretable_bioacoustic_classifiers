@@ -36,15 +36,15 @@ def main(results_dir, save_dir):
         log.warn("save_dir not assigned, will not persist results")
     else:
         save_dir.mkdir(exist_ok=True, parents=True)
-    df = pd.read_parquet(results_dir)
+    df = pd.read_parquet(results_dir).reset_index()
     df["stage"] = df["dataloader_idx"].map({0: "Train", 1: "Validation", 2: "Test"})
     df = df.sort_values(by=["sigma_x", "latent_dim"])
-    df["group"] = "sigma_x=" + df["sigma_x"].map(str) + " latent_dim=" + df["latent_dim"].map(str) + " version=" + df["version"].map(str)
+    df["group"] = "sigma_x=" + df["sigma_x"].map(str) + " latent_dim=" + df["latent_dim"].map(str) + " run_id=" + df["run_id"].map(str)
 
-    summary_stats = df.groupby(["dataset", "model_name", "stage", "latent_dim", "sigma_x"])[["mae", "mse", "dkl_norm", "elbo"]].agg(["mean", "std"])
+    summary_stats = df.groupby(["dataset_name", "model_name", "stage", "latent_dim", "sigma_x"])[["mae", "mse", "dkl_norm", "elbo"]].agg(["mean", "std"])
     print(summary_stats)
 
-    palette = list(sns.color_palette("colorblind", len(df["version"].unique())))
+    palette = list(sns.color_palette("colorblind", len(df["group"].unique())))
 
     fig = plt.figure(figsize=(10, 4), constrained_layout=True)
     g = sns.catplot(
@@ -53,7 +53,7 @@ def main(results_dir, save_dir):
         x="model_name",
         y="mae",
         col="stage",
-        row="dataset",
+        row="dataset_name",
         hue="group",
         sharey="row",
         palette=palette,
@@ -84,7 +84,7 @@ def main(results_dir, save_dir):
         x="model_name",
         y="mse",
         col="stage",
-        row="dataset",
+        row="dataset_name",
         hue="group",
         sharey="row",
         palette=palette,
@@ -115,7 +115,7 @@ def main(results_dir, save_dir):
         x="model_name",
         y="dkl_norm",
         col="stage",
-        row="dataset",
+        row="dataset_name",
         hue="group",
         sharey="row",
         palette=palette,

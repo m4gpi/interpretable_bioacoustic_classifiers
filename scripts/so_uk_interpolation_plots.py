@@ -151,7 +151,7 @@ def main(
 
     class_map = {"vae": VAE, "sivae": SIVAE}
 
-    model_path = pathlib.Path("/its/home/kag25/models/v1")
+    model_path = pathlib.Path("/its/home/kag25/models/v3")
     for i, row in df.iterrows():
         model_cls = class_map[row.model]
         vae_ckpt_path = model_path / row.model / row.version / "step=180000.ckpt"
@@ -159,7 +159,7 @@ def main(
         vaes.append(vae.eval().to(device))
         log.info(f"Loaded {row.model}/{row.version} from {vae_ckpt_path}")
         # load species logistic regression model weights
-        clf = SpeciesDetector.load_from_checkpoint(model_path / "species_detectors_l1" / f"{row.version}_SO_UK.ckpt", map_location=device).eval()
+        clf = SpeciesDetector.load_from_checkpoint(model_path / "species_detectors" / f"{row.version}_SO_UK.ckpt", map_location=device).eval()
         clf = dict(zip(clf.classifiers.keys(), map(lambda layer: layer.weight, clf.classifiers.values())))
         clfs.append(clf)
         # compute the habitat model average embedding

@@ -277,6 +277,10 @@ class SIVAE(L.LightningModule):
         x_tilde = F.grid_sample(x_flat, grid, mode=mode, padding_mode="zeros", align_corners=True)
         return x_tilde.view(bs, ch, fq, ts)
 
+    @property
+    def frame_params(self):
+        return dict(window_length=self.frame_window_length, hop_length=self.frame_window_length)
+
     @staticmethod
     def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:
         if x.size(-2) == window_length:
@@ -1349,6 +1353,10 @@ class SIVAEFreqOffset(L.LightningModule):
         grid[..., 0] = ((xx + 1) % 2) - 1
         x_tilde = F.grid_sample(x_flat, grid, mode=mode, padding_mode="zeros", align_corners=True)
         return x_tilde.view(bs, ch, fq, ts)
+
+    @property
+    def frame_params(self):
+        return dict(window_length=self.window_length, hop_length=self.window_length)
 
     @staticmethod
     def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:

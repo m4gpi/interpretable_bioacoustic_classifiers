@@ -65,12 +65,12 @@ class MultiLabelLogisticRegression(torch.nn.Module):
 class MultiLabelBayesianLogisticRegression(torch.nn.Module):
     def __init__(self, num_features: int, num_targets: int) -> None:
         super().__init__()
+        # NB: isotropic multivariate gaussian
         weight_mu = torch.empty(num_targets, num_features, 1)
         bias_mu = torch.empty(num_targets, 1)
         self.reset_parameters(weight_mu, bias_mu)
         self.weight_mu = torch.nn.Parameter(weight_mu.squeeze())
         self.bias_mu = torch.nn.Parameter(bias_mu.squeeze())
-        # NB: assumption of a diagonal covariance
         weight_log_var = torch.empty(num_targets, num_features, 1)
         bias_log_var = torch.empty(num_targets, 1)
         self.reset_parameters(weight_log_var, bias_log_var)
@@ -137,7 +137,7 @@ class MILSpeciesDetector(L.LightningModule):
             for i in range(buf.size(0))
         ]
 
-    @property
+    @functools.cached_property
     def target_names(self):
         return self.from_buffer_matrix(self.target_names_enc)
 
@@ -226,8 +226,6 @@ class MILSpeciesDetector(L.LightningModule):
         y: torch.Tensor,
         y_probs: torch.Tensor,
         s: torch.Tensor,
-        mu_a: torch.Tensor | None = None,
-        sigma_sq_a: torch.Tensor | None = None,
         **kwargs: Any
     ) -> pd.DataFrame:
         s = s.expand(y.size(-1), -1).permute(1, 0).flatten().cpu().numpy()
@@ -264,6 +262,7 @@ class MILSpeciesDetector(L.LightningModule):
         log.info(f"Saving model configuration to {config_path}")
         omegaconf.OmegaConf.save(config, config_path)
         # run validation
+        log.info(f"Final validation run <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.limit_val_batches = 1.0
         trainer.validate(self, datamodule=data_module)
         # running test

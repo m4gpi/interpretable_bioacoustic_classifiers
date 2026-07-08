@@ -51,6 +51,7 @@ class WeightActivationUncertainty(L.Callback):
         dataloader_idx: int = 0,
     ) -> None:
         y_t_probs, mu_a, sigma_sq_a, attn_w = outputs["y_t_probs"], outputs["mu_a"], outputs["sigma_sq_a"], outputs["attn_w"]
+        # cel = metrics.class_balanced_binary_cross_entropy(y, y_t_probs.mean(dim=1), samples_per_class=pl_module.target_counts, **self.cel_params).mean(dim=0)
         file_idx = batch.s.expand(y_t_probs.size(1), y_t_probs.size(2), y_t_probs.size(3), -1).permute(3, 0, 1, 2).flatten()
         _, i1, i2, i3 = torch.meshgrid(*[torch.arange(dim, device=y_t_probs.device) for dim in y_t_probs.size()], indexing="ij")
         table = torch.stack([file_idx, i1.flatten(), i2.flatten(), i3.flatten(), y_t_probs.flatten(), mu_a.flatten(), sigma_sq_a.flatten(), attn_w.flatten()], dim=1).cpu().numpy()

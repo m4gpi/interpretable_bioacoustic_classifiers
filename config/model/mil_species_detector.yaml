@@ -5,8 +5,6 @@ gamma_clf: 1.e-3
 gamma_attn: 1.e-3
 beta: 0.0
 label_smoothing: 0.0
-train_sample_size: 1
-eval_sample_size: 100
 attention:
   _target_: src.core.models.mil_species_detector.GatedAttention
   in_features: 128
