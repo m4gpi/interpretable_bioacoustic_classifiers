@@ -17,7 +17,7 @@ class VAEMetrics(L.Callback):
         self.data = []
         self.model_name = model_name
         self.dataset_name = dataset_name.split(".")[-1]
-        self.save_path = pathlib.Path(save_path) / f"{model_name}.parquet"
+        self.save_path = pathlib.Path(save_path)
 
     def on_test_start(
         self,
