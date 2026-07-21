@@ -198,14 +198,12 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
                 features=train_features,
                 labels=train_labels[target_names],
                 index=train_labels.index.get_level_values(0),
-                num_samples=self.train_sample_size,
                 chunked=self.chunked,
             )
             self.val_data = SoundscapeEmbeddings(
                 features=val_features,
                 labels=val_labels[target_names],
                 index=val_labels.index.get_level_values(0),
-                num_samples=self.eval_sample_size,
                 chunked=self.chunked,
             )
         else:

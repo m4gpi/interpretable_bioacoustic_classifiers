@@ -111,12 +111,19 @@ class GatedAttention(torch.nn.Module):
         if bias is not None:
             torch.nn.init.zeros_(bias)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.unsqueeze(2)
-        A_V = torch.tanh(x @ self.A_V_weight + self.A_V_bias) # (N, 1, T, D)
-        A_U = torch.sigmoid(x @ self.A_U_weight + self.A_U_bias) # (N, C, T, D)
-        A = F.softmax((A_V * A_U) @ self.A_w, dim=-2) # (N, C, T, 1)
-        return A.squeeze(-1).transpose(-1, -2) # (N, T, C)
+    def forward(self, x: torch.Tensor, target_i: int | None = None) -> torch.Tensor:
+        if target_i is not None:
+            A_V = torch.tanh(x @ self.A_V_weight + self.A_V_bias) # (N, T, D)
+            A_U = torch.sigmoid(x @ self.A_U_weight[target_i] + self.A_U_bias[target_i]) # (N, T, D)
+            A = F.softmax((A_V * A_U) @ self.A_w[target_i], dim=-2) # (N, T, 1)
+            A = A.squeeze(-1)
+        else:
+            x = x.unsqueeze(1) # (N, 1, T, D)
+            A_V = torch.tanh(x @ self.A_V_weight + self.A_V_bias) # (N, 1, T, D)
+            A_U = torch.sigmoid(x @ self.A_U_weight + self.A_U_bias) # (N, C, T, D)
+            A = F.softmax((A_V * A_U) @ self.A_w, dim=-2) # (N, C, T, 1)
+            A = A.squeeze(-1).transpose(-1, -2) # (N, T, C)
+        return A
 
     def get_weights(self):
         return self.A_V_weight, self.A_U_weight, self.A_w
@@ -144,6 +151,13 @@ class MILSpeciesDetector(L.LightningModule):
     @functools.cached_property
     def target_names(self):
         return self.from_buffer_matrix(self.target_names_enc)
+
+    def species_weights(self, species_name: str) -> torch.Tensor:
+        weights = self.classifiers.get_weights()
+        return weights[self.target_names.index(species_name)]
+
+    def attention_weights(self, x: torch.Tensor, species_name: str) -> torch.Tensor:
+        return self.attention(x, self.target_names.index(species_name))
 
     def __init__(
         self,

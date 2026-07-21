@@ -22,24 +22,20 @@ from tqdm import tqdm
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.core.data.soundscape_embeddings import SoundscapeEmbeddingsDataModule
-from src.core.models.species_detector import SpeciesDetector
-from src.core.models.base_vae import BaseVAE
-from src.core.models.smooth_nifti_vae import SmoothNiftiVAE
+from src.core.models.mil_species_detector import MILSpeciesDetector
 from src.core.data.rainforest_connection import RainforestConnection
-from src.core.utils.sketch import plot_mel_spectrogram, make_ax_invisible
-from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
-from src.core.utils import tree
-from src.cli.utils.instantiators import instantiate_transforms
+from src.core.utils.sketch import make_ax_invisible
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 plt.rcParams.update({
-    'axes.labelsize': 12,
-    'xtick.labelsize': 8,
-    'ytick.labelsize': 12,
-    'legend.fontsize': 12,
-    'legend.title_fontsize': 12,
+    'axes.labelsize': 10,
+    'xtick.labelsize': 10,
+    'ytick.labelsize': 10,
+    'axes.titlesize': 10,
+    'legend.fontsize': 10,
+    'legend.title_fontsize': 10,
 })
 
 def darken_color(color, amount=0.7):
@@ -49,69 +45,40 @@ def lighten_color(color, amount=0.7):
     return tuple(1 - (1 - channel) * amount for channel in mcolors.to_rgb(color))
 
 @torch.no_grad()
-def main(
-    data_dir,
-    results_dir,
-    save_dir,
-    format: str = "pdf",
-):
+def main(data_dir, results_dir, model_dir, save_dir: str | Path | None = None, format: str = "pdf"):
     results = []
     groups = {
         "SO_EC": {
-            "base_vae": ["v4","v5","v6"],
-            "nifti_vae": ["v12","v17","v18"],
+            "vae": ["lumpy-gibson", "slow-partner", "unique-tiger"],
+            "sivae": ["just-drum", "dynamic-malta", "daring-system"],
         },
         "SO_UK": {
-            "base_vae": ["v4", "v5", "v6"],
-            "nifti_vae": ["v12","v17","v18"],
+            "vae": ["lumpy-gibson", "slow-partner", "unique-tiger"],
+            "sivae": ["just-drum", "dynamic-malta", "daring-system"],
         },
         "RFCX_bird": {
-            "base_vae": ["v7", "v8", "v9"],
-            "nifti_vae": ["v14", "v15", "v16"],
+            "vae": ["jumpy-engine", "quaint-pilot", "numb-chef"],
+            "sivae": ["earthy-virgo", "part-armor", "secluded-montana"],
         },
         "RFCX_frog": {
-            "base_vae": ["v7", "v8", "v9"],
-            "nifti_vae": ["v14", "v15", "v16"],
+            "vae": ["jumpy-engine", "quaint-pilot", "numb-chef"],
+            "sivae": ["earthy-virgo", "part-armor", "secluded-montana"],
         }
     }
+    results_df = pd.read_parquet(results_dir, columns=["file_i", "species_name", "label", "prob", "model", "scope"])
     for scope, scope_group in groups.items():
         for model, versions in scope_group.items():
             for version in versions:
                 log.info(f"{scope} {model} {version}")
-                dm = SoundscapeEmbeddingsDataModule(
-                    root=data_dir,
-                    model=model,
-                    version=version,
-                    scope=scope,
-                    transforms=None,
-                )
+                dm = SoundscapeEmbeddingsDataModule(root=data_dir / version / scope)
                 dm.setup()
-                results_df = pd.read_parquet(results_dir, columns=["file_i", "species_name", "label", "prob", "model", "version", "scope"])
-                df = (
-                    results_df[
-                        (results_df["model"] == model) &
-                        (results_df["version"] == version) &
-                        (results_df["scope"] == scope)
-                    ]
-                    .drop(["model", "version", "scope"], axis=1)
-                    .pivot(index="file_i", columns="species_name")
-                )
-                clf = SpeciesDetector(
-                    target_names=dm.train_data.target_names,
-                    target_counts=dm.train_data.target_counts,
-                    in_features=128,
-                    attn_dim=10,
-                    pool_method="prob_attn",
-                    beta=0.0,
-                    key_per_target=True,
-                )
-                checkpoint = torch.load(f"results/species_detectors/checkpoints/{scope.lower()}_{model}.pt:{version}.ckpt", map_location="cpu")
-                clf.load_state_dict(checkpoint["state_dict"])
+                df = results_df[(results_df["model"] == version) & (results_df["scope"] == scope)].drop(["model", "scope"], axis=1).pivot(index="file_i", columns="species_name")
+                clf = MILSpeciesDetector.load_from_checkpoint(model_dir / f"{version}_{scope}.ckpt", map_location="cpu")
 
                 labels, probs  = df["label"], df["prob"]
-                target_counts = np.array(dm.train_data.target_counts)
-                sort_idx = np.argsort(-np.array(dm.train_data.target_counts))[:len(dm.train_data.target_counts)]
-                species_names = np.array(dm.train_data.target_names)[sort_idx]
+                target_counts = clf.target_counts
+                sort_idx = np.argsort(-np.array(target_counts))[:len(target_counts)]
+                species_names = np.array(clf.target_names)[sort_idx]
                 target_counts = target_counts[sort_idx]
                 features = dm.test_data.features
 
@@ -125,12 +92,12 @@ def main(
                 D_avg = D.mean()
 
                 for i, species in enumerate(species_names):
-                    y_true = labels.loc[labels[species] > 0, species]
+                    y_true = labels.loc[labels[species] == 1, species]
                     y_prob = probs.loc[y_true.index, species]
                     z_mean = torch.tensor(features.loc[y_true.index, [f"z_mean_{i}" for i in range(128)]].values.reshape(len(y_true), -1, 128), dtype=torch.float32)
                     z = z_mean
                     A = clf.attention_weights(z, species)
-                    W = clf.classifier_weights(species).unsqueeze(0)
+                    W = clf.species_weights(species)
                     # apply the weights of the classifier to select features, will near zero out irrelevant features
                     z = z * W
                     attn_w, idx = torch.max(A.squeeze(-1), dim=1)
@@ -139,7 +106,7 @@ def main(
                     # prob_diff = abs(y_prob - y_prob.T)
                     # w_diff = abs(attn_w - attn_w.T)
                     z_t = z[torch.arange(z.shape[0]), idx]
-                    # l2 distance between vectors
+                    # pairwise euclidean distance between vectors
                     norm = torch.sum(z_t**2, dim=1, keepdims=True)
                     D = torch.clamp((norm + norm.T - 2 * (z_t @ z_t.T)), min=0).sqrt()
                     # set upper triangle to zero
@@ -150,15 +117,16 @@ def main(
                     for d in D.numpy():
                         results.append({
                             "model": model,
+                            "version": version,
                             "scope": scope,
                             "distance": d,
                             "species_name": species.split("_")[-1],
-                            "count": target_counts[i]
+                            "count": target_counts[i].item()
                         })
     df = pd.DataFrame(results)
-    df["model_name"] = df.model.map(dict(base_vae="VAE", nifti_vae="SIVAE"))
+    df["model_name"] = df["model"].str.upper()
 
-    fig, ax = plt.subplots(figsize=(8.1, 4), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(11, 4), constrained_layout=True)
     palette = sns.color_palette("colorblind", 4)[1:3]
 
     so_uk_species = df.loc[df["scope"] == "SO_UK", "species_name"].unique()
@@ -193,13 +161,14 @@ def main(
         ncols=2,
         title="",
     )
-    save_path = save_dir / f"so_z_distances.{format}"
-    fig.savefig(save_path, format=format, bbox_inches="tight")
-    print(f"Saved: {save_path}")
+    if save_dir is not None:
+        save_path = save_dir / f"so_z_distances.{format}"
+        fig.savefig(save_path, format=format, bbox_inches="tight")
+        print(f"Saved: {save_path}")
 
     # plot the remaining species distances
     for scope, order in zip(["SO UK", "SO EC"], [so_uk_species[num_per_ds:], so_ec_species[num_per_ds:]]):
-        fig, ax = plt.subplots(figsize=(8.1, 4), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(11, 4), constrained_layout=True)
         sns.boxenplot(
             df,
             x="species_name",
@@ -224,12 +193,13 @@ def main(
             ncols=2,
             title="",
         )
-        save_path = save_dir / f"{scope.lower().replace(' ', '_')}_z_distances_rem.{format}"
-        fig.savefig(save_path, format=format, bbox_inches="tight")
-        print(f"Saved: {save_path}")
+        if save_dir is not None:
+            save_path = save_dir / f"{scope.lower().replace(' ', '_')}_z_distances_rem.{format}"
+            fig.savefig(save_path, format=format, bbox_inches="tight")
+            print(f"Saved: {save_path}")
 
     order = [*rfcx_bird_species, *rfcx_frog_species]
-    fig, ax = plt.subplots(figsize=(8.1, 4), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(11, 4), constrained_layout=True)
     sns.boxenplot(
         df,
         x="species_name",
@@ -254,9 +224,10 @@ def main(
         ncols=2,
         title="",
     )
-    save_path = save_dir / f"rfcx_z_distances.{format}"
-    fig.savefig(save_path, format=format, bbox_inches="tight")
-    print(f"Saved: {save_path}")
+    if save_dir is not None:
+        save_path = save_dir / f"rfcx_z_distances.{format}"
+        fig.savefig(save_path, format=format, bbox_inches="tight")
+        print(f"Saved: {save_path}")
 
 
 if __name__ == "__main__":
@@ -265,13 +236,19 @@ if __name__ == "__main__":
         "--data-dir",
         type=lambda p: Path(p),
         required=True,
-        help="/path/to/saved/",
+        help="/path/to/data/",
     )
     parser.add_argument(
         "--results-dir",
         type=lambda p: Path(p),
         required=True,
-        help="/path/to/saved/",
+        help="/path/to/results/",
+    )
+    parser.add_argument(
+        "--model-dir",
+        type=lambda p: Path(p),
+        required=False,
+        help="/path/to/models/",
     )
     parser.add_argument(
         "--save-dir",
