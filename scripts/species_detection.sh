@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # last run on 21.07.2026
-# commit ref: c1d3a34bb724ce9610420923469a064fec0bfd8f
+# commit ref: 9b5ced9b1e008fc15b07759b2042b3902b6f8ddc
 
 
 GPU_IDS=0

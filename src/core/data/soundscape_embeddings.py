@@ -1,6 +1,7 @@
 import attrs
 import pathlib
 import lightning as L
+import logging
 import numpy as np
 import pandas as pd
 import sklearn
@@ -9,6 +10,9 @@ import torch
 from typing import Any, Callable, Dict, List, Tuple
 
 from src.core.utils import Batch
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 __all__ = [
     "SoundscapeEmbeddings",
@@ -22,7 +26,6 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
     index: List[int] = attrs.field()
     seed: int = attrs.field(default=None)
     download: bool = attrs.field(default=False)
-    chunked: bool = attrs.field(default=True)
 
     x: torch.Tensor = attrs.field(init=False)
     y: torch.Tensor = attrs.field(init=False)
@@ -102,25 +105,6 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     def check_fold_is_integer_if_not_none(self, attribute, value):
         return isinstance(value, int) if value is not None else True
 
-    @property
-    def model_params(self):
-        return dict(
-            target_names=self.train_data.target_names,
-            target_counts=self.train_data.target_counts,
-        )
-
-    def pre_process(self, x: torch.Tensor, num_samples: int):
-        mean, log_var = x.chunk(2, dim=-1)
-        mean = mean.unsqueeze(1).expand(-1, num_samples, -1, -1)
-        log_var = log_var.unsqueeze(1).expand(-1, num_samples, -1, -1)
-        return mean + torch.randn_like(mean) * (0.5 * log_var).exp()
-
-    def on_after_batch_transfer(self, batch: Batch, dataloader_idx: int) -> Batch:
-        if not self.chunked: return batch
-        num_samples = {0: self.train_sample_size, 1: self.eval_sample_size, 2: self.eval_sample_size}[dataloader_idx]
-        x = self.pre_process(batch.x, num_samples)
-        return Batch(x=x, **{k: batch[k] for k in batch.keys() if k != "x"})
-
     def setup(self, stage: str | None = None) -> None:
         self._validate_features_and_labels_present(self.train_features_path, self.train_labels_path)
         self._validate_features_and_labels_present(self.test_features_path, self.test_labels_path)
@@ -147,7 +131,6 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
             features=test_features,
             labels=test_labels[target_names],
             index=test_labels.index.get_level_values(0),
-            chunked=self.chunked,
         )
 
         # train on everything when no validation is specified
@@ -158,7 +141,6 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
                 features=features,
                 labels=labels[target_names],
                 index=labels.index.get_level_values(0),
-                chunked=self.chunked,
             )
             return self
 
@@ -181,33 +163,28 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
                 labels=labels.loc[index[train_idx], target_names],
                 index=index[train_idx],
                 seed=self.seed,
-                chunked=self.chunked,
             )
             self.val_data = SoundscapeEmbeddings(
                 features=features.loc[index[val_idx]],
                 labels=labels.loc[index[val_idx], target_names],
                 index=index[val_idx],
                 seed=self.seed,
-                chunked=self.chunked,
             )
             return self
 
         if self.val_features_path.exists():
-            # under a normal training regime, keep the split from pretraining
             self.data = self.train_data = SoundscapeEmbeddings(
                 features=train_features,
                 labels=train_labels[target_names],
                 index=train_labels.index.get_level_values(0),
-                chunked=self.chunked,
             )
             self.val_data = SoundscapeEmbeddings(
                 features=val_features,
                 labels=val_labels[target_names],
                 index=val_labels.index.get_level_values(0),
-                chunked=self.chunked,
             )
         else:
-            index = features.index.get_level_values("file_i").unique()
+            index = train_features.index.get_level_values("file_i").unique()
             train_idx, val_idx = sklearn.model_selection.train_test_split(
                 list(range(len(index))),
                 test_size=self.val_prop,
@@ -215,18 +192,16 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
                 random_state=self.seed
             )
             self.train_data = SoundscapeEmbeddings(
-                features=features.loc[index[train_idx]],
-                labels=labels.loc[index[train_idx], target_names],
+                features=train_features.loc[index[train_idx]],
+                labels=train_labels.loc[index[train_idx], target_names],
                 index=index[train_idx],
                 seed=self.seed,
-                chunked=self.chunked,
             )
             self.val_data = SoundscapeEmbeddings(
-                features=features.loc[index[val_idx]],
-                labels=labels.loc[index[val_idx], target_names],
+                features=train_features.loc[index[val_idx]],
+                labels=train_labels.loc[index[val_idx], target_names],
                 index=index[val_idx],
                 seed=self.seed,
-                chunked=self.chunked,
             )
         return self
 
@@ -251,9 +226,9 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
         return Batch(x=torch.stack(xs), y=torch.stack(ys), s=torch.tensor(ss))
 
     def on_after_batch_transfer(self, batch, dataloader_idx: int):
-        num_samples = self.train_sample_size if dataloader_idx == 0 else self.eval_sample_size
         x = batch.x.unsqueeze(1)
         if self.chunked:
+            num_samples = self.train_sample_size if dataloader_idx == 0 else self.eval_sample_size
             mean, log_var = x.chunk(2, dim=-1)
             mean = mean.expand(-1, num_samples, -1, -1)
             log_var = log_var.expand(-1, num_samples, -1, -1)
@@ -275,6 +250,13 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
 
     def features_path(self, stage: str):
         return self.root / stage / "features.parquet"
+
+    @property
+    def model_params(self):
+        return dict(
+            target_names=self.train_data.target_names,
+            target_counts=self.train_data.target_counts,
+        )
 
     @property
     def train_features_path(self):

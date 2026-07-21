@@ -27,7 +27,7 @@ callbacks:
     filename: ${model_name}_${scope}
   species_scores:
     _target_: src.core.callbacks.species_scores.SpeciesScores
-    save_dir: ${paths.results_dir}/v3/bayesian_species_detectors/scores
+    save_dir: ${paths.results_dir}
     model_name: ${model_name}
     scope: ${scope}
     run_id: ${run_id}
