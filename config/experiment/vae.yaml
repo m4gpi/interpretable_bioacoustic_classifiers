@@ -6,24 +6,33 @@ defaults:
   - override /trainer: gpu
   - override /logger: wandb
 
+version: v4
+
 trainer:
   max_steps: 180_000
   max_epochs: -1
   log_every_n_steps: 50
-  limit_val_batches: 0.0
+  val_check_interval: 2500
 
 callbacks:
   primary_model_checkpoint:
     _target_: lightning.pytorch.callbacks.ModelCheckpoint
-    dirpath: ${paths.checkpoint_dir}/vae/${run_id}
+    dirpath: ${paths.checkpoint_dir}/${version}/vae/${run_id}
     filename: '{step}'
     every_n_train_steps: 20_000
     save_top_k: -1
+  # figure_logger:
+  #   _target_: src.core.callbacks.figure_logger.FigureLogger
+  #   log_every_n_train_steps: 1000
+  #   num_train_samples_per_batch: 1
+  #   num_val_samples_per_batch: 1
+  #   max_val_samples: 12
+  #   num_frames_per_sample: 6
   vae_metrics:
     _target_: src.core.callbacks.vae_metrics.VAEMetrics
     model_name: ${run_id}
     dataset_name: ${data._target_}
-    save_path: ${paths.results_dir}/metrics.parquet/${run_id}.parquet
+    save_path: ${paths.results_dir}/${version}/vae_evaluation/metrics.parquet
   vae_embeddings:
     _target_: src.core.callbacks.vae_embeddings.VAEEmbeddings
     frame_hop_length: 96

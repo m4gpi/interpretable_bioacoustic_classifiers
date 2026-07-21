@@ -59,7 +59,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         default_devices = list(range(torch.cuda.device_count()))
         available_devices = list(map(int, filter(None, os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")))) or default_devices
         log.info(f"GPU devices made available at runtime: {available_devices}")
-        gpu_num = job_num % cfg.num_gpus
+        gpu_num = job_num % len(available_devices)
         cfg.trainer.devices = [gpu_num]
         log.info(f"Assigning GPU: {gpu_num}, GPU ID: {available_devices[gpu_num]}")
 

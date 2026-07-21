@@ -15,18 +15,18 @@ def main(
     scores = pd.read_parquet(results_dir / "test_scores.parquet")
 
     model_map = {
-        "tan-ohio": "sivae",
-        "brave-vincent": "sivae",
-        "small-peru": "sivae",
-        "uncanny-burma": "sivae",
-        "detailed-ticket": "sivae",
-        "mossy-andrea": "sivae",
-        "silly-byte": "vae",
-        "meek-zebra": "vae",
-        "rude-money": "vae",
-        "misty-lecture": "vae",
-        "ultimate-story": "vae",
-        "tusked-chief": "vae",
+        "just-drum": "sivae",
+        "dynamic-malta": "sivae",
+        "daring-system": "sivae",
+        "earthy-virgo": "sivae",
+        "part-armor": "sivae",
+        "secluded-montana": "sivae",
+        "lumpy-gibson": "vae",
+        "slow-partner": "vae",
+        "unique-tiger": "vae",
+        "jumpy-engine": "vae",
+        "quaint-pilot": "vae",
+        "numb-chef": "vae",
     }
     results["version"] = results["model"]
     results["model"] = results["version"].map(model_map)

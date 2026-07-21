@@ -27,7 +27,7 @@ plt.rcParams.update({
     'xtick.labelsize': 8,
     'ytick.labelsize': 8,
     'axes.titlesize': 10,
-    'legend.fontsize': 6,
+    'legend.fontsize': 8,
 })
 
 def main(results_dir, save_dir):
@@ -38,8 +38,10 @@ def main(results_dir, save_dir):
         save_dir.mkdir(exist_ok=True, parents=True)
     df = pd.read_parquet(results_dir).reset_index()
     df["stage"] = df["dataloader_idx"].map({0: "Train", 1: "Validation", 2: "Test"})
+    test_idx = df["dataloader_idx"] == 2
     df = df.sort_values(by=["sigma_x", "latent_dim"])
-    df["group"] = "sigma_x=" + df["sigma_x"].map(str) + " latent_dim=" + df["latent_dim"].map(str) + " run_id=" + df["run_id"].map(str)
+    df["group"] = df["model_name"]
+    df["dataset_name"] = df["dataset_name"].map({"SoundingOutChorusDataModule": "SO", "RainforestConnectionDataModule": "RFCX"})
 
     summary_stats = df.groupby(["dataset_name", "model_name", "stage", "latent_dim", "sigma_x"])[["mae", "mse", "dkl_norm", "elbo"]].agg(["mean", "std"])
     print(summary_stats)
@@ -49,19 +51,20 @@ def main(results_dir, save_dir):
     fig = plt.figure(figsize=(10, 4), constrained_layout=True)
     g = sns.catplot(
         data=df,
-        kind="box",
+        kind="boxen",
         x="model_name",
         y="mae",
         col="stage",
         row="dataset_name",
         hue="group",
+        hue_order=["VAE", "SIVAE"],
         sharey="row",
         palette=palette,
+        log_scale=True,
         legend=True,
         gap=.1,
         width=0.9,
         showfliers=False,
-        whis=2.0,
         # common_norm=True,
         # density_norm="area",
         # gap=.1,
@@ -80,19 +83,20 @@ def main(results_dir, save_dir):
     fig = plt.figure(figsize=(10, 4), constrained_layout=True)
     g = sns.catplot(
         data=df,
-        kind="box",
+        kind="boxen",
         x="model_name",
         y="mse",
         col="stage",
         row="dataset_name",
         hue="group",
+        hue_order=["VAE", "SIVAE"],
+        log_scale=True,
         sharey="row",
         palette=palette,
         legend=True,
         gap=.1,
         width=0.9,
         showfliers=False,
-        whis=2.0,
         # common_norm=True,
         # density_norm="area",
         # gap=.1,
@@ -111,24 +115,61 @@ def main(results_dir, save_dir):
     fig = plt.figure(figsize=(10, 4), constrained_layout=True)
     g = sns.catplot(
         data=df,
-        kind="box",
+        kind="boxen",
         x="model_name",
         y="dkl_norm",
         col="stage",
         row="dataset_name",
         hue="group",
+        hue_order=["VAE", "SIVAE"],
         sharey="row",
         palette=palette,
         legend=True,
         gap=.1,
         width=0.9,
         showfliers=False,
-        whis=2.0,
     )
     g.set_axis_labels("Model", "DKL / d")
     if save_dir:
         file_name = (save_dir / "dkl.pdf").expanduser()
         plt.savefig(file_name, format="pdf", bbox_inches="tight")
+        log.info(f"Saved: {file_name}")
+
+    fig, (ax1, ax2) = plt.subplots(ncols=2, figsize=(10, 3), constrained_layout=True)
+    palette = list(sns.color_palette("colorblind", 3))
+    sns.boxenplot(
+        data=df[test_idx],
+        x="mse",
+        y="dataset_name",
+        hue="model_name",
+        hue_order=["VAE", "SIVAE"],
+        palette=palette[1:],
+        legend=False,
+        gap=.1,
+        ax=ax1,
+        showfliers=False,
+    )
+    ax1.set_xscale("log")
+    sns.boxenplot(
+        data=df[test_idx],
+        x="dkl_norm",
+        y="dataset_name",
+        hue="model_name",
+        hue_order=["VAE", "SIVAE"],
+        palette=palette[1:],
+        legend=True,
+        gap=.1,
+        ax=ax2,
+        showfliers=False,
+    )
+    ax1.set_ylabel("Dataset")
+    ax1.set_xlabel("Frame-wise MSE")
+    ax2.set_ylabel("")
+    ax2.set_xlabel(r"KL Divergence")
+    sns.move_legend(ax2, loc="upper left", bbox_to_anchor=(1.0, 1.0), title=None, frameon=False)
+    if save_dir:
+        file_name = (save_dir / "mse_dkl.pdf").expanduser()
+        fig.savefig(file_name, format="pdf", bbox_inches="tight")
         log.info(f"Saved: {file_name}")
 
 if __name__ == "__main__":

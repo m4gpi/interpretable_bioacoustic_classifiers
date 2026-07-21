@@ -52,8 +52,8 @@ class SpeciesScores(L.Callback):
         dataloader_idx: int = 0,
     ) -> None:
         if self.log_every_n_train_epochs is not None and trainer.current_epoch % self.log_every_n_train_epochs == 0:
-            df = pl_module.predict(**outputs)
-            self.train_predictions.append(df)
+            data = pl_module.predict(**outputs)
+            self.train_predictions.append(data.cpu())
 
     def on_train_epoch_end(
         self,
@@ -61,8 +61,11 @@ class SpeciesScores(L.Callback):
         pl_module: L.LightningModule,
     ) -> None:
         if len(self.train_predictions):
-            results = pd.concat(self.train_predictions)
-            scores = self._on_epoch_end(results, pl_module)
+            data = torch.cat(self.train_predictions)
+            df = pd.DataFrame(data=data, columns=["file_i", "species_i", "label", "prob"]).astype({"file_i": int, "species_i": int})
+            species_df = pd.DataFrame(data=zip(pl_module.target_names, torch.arange(pl_module.target_names_enc.size(0)).numpy()), columns=["species_name", "species_i"])
+            df = df.merge(species_df, on="species_i", how="left")
+            scores = self._on_epoch_end(df, pl_module)
             pl_module.log_dict({
                 f"train/{metric}": value
                 for metric, value in scores[["auROC", "AP"]].mean(axis=0).to_dict().items()
@@ -78,8 +81,8 @@ class SpeciesScores(L.Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        df = pl_module.predict(**outputs)
-        self.val_predictions.append(df)
+        data = pl_module.predict(**outputs)
+        self.val_predictions.append(data.cpu())
 
     def on_validation_epoch_end(
         self,
@@ -87,8 +90,11 @@ class SpeciesScores(L.Callback):
         pl_module: L.LightningModule,
     ) -> None:
         if len(self.val_predictions):
-            results = pd.concat(self.val_predictions)
-            scores = self._on_epoch_end(results, pl_module)
+            data = torch.cat(self.val_predictions)
+            df = pd.DataFrame(data=data, columns=["file_i", "species_i", "label", "prob"]).astype({"file_i": int, "species_i": int})
+            species_df = pd.DataFrame(data=zip(pl_module.target_names, torch.arange(pl_module.target_names_enc.size(0)).numpy()), columns=["species_name", "species_i"])
+            df = df.merge(species_df, on="species_i", how="left")
+            scores = self._on_epoch_end(df, pl_module)
             pl_module.log_dict({
                 f"val/{metric}": value
                 for metric, value in scores[["auROC", "AP"]].mean(axis=0).to_dict().items()
@@ -106,8 +112,8 @@ class SpeciesScores(L.Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        df = pl_module.predict(**outputs)
-        self.test_predictions.append(df)
+        data = pl_module.predict(**outputs)
+        self.test_predictions.append(data.cpu())
 
     def on_test_end(
         self,
@@ -115,9 +121,12 @@ class SpeciesScores(L.Callback):
         pl_module: L.LightningModule,
     ) -> None:
         if len(self.test_predictions):
-            results = pd.concat(self.test_predictions)
-            scores = self._on_epoch_end(results, pl_module)
-            results = self._attach_hparams(results, pl_module.hparams)
+            data = torch.cat(self.test_predictions)
+            df = pd.DataFrame(data=data, columns=["file_i", "species_i", "label", "prob"]).astype({"file_i": int, "species_i": int})
+            species_df = pd.DataFrame(data=zip(pl_module.target_names, torch.arange(pl_module.target_names_enc.size(0)).numpy()), columns=["species_name", "species_i"])
+            df = df.merge(species_df, on="species_i", how="left")
+            scores = self._on_epoch_end(df, pl_module)
+            results = self._attach_hparams(df, pl_module.hparams)
             # if pl_module.logger is not None and hasattr(pl_module.logger, "experiment"):
                 # pl_module.logger.experiment.log({"test_scores": wandb.Table(dataframe=scores)})
             scores.to_parquet(self.save_dir / "test_scores.parquet" / f"model_{self.model_name}_run_id={self.run_id}.parquet")

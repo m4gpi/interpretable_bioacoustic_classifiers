@@ -137,6 +137,10 @@ class MILSpeciesDetector(L.LightningModule):
             for i in range(buf.size(0))
         ]
 
+    @property
+    def target_index(self):
+        return torch.arange(self.target_names_enc.size(0))
+
     @functools.cached_property
     def target_names(self):
         return self.from_buffer_matrix(self.target_names_enc)
@@ -228,12 +232,11 @@ class MILSpeciesDetector(L.LightningModule):
         s: torch.Tensor,
         **kwargs: Any
     ) -> pd.DataFrame:
-        s = s.expand(y.size(-1), -1).permute(1, 0).flatten().cpu().numpy()
-        target_names = np.array(list(itertools.chain(*[self.target_names for _ in range(y_probs.size(0))])))
-        y, y_probs = y.flatten().cpu().numpy(), y_probs.flatten().cpu().numpy()
-        data = [s, target_names, y, y_probs]
-        columns = ["file_i", "species_name", "label", "prob"]
-        return pd.DataFrame(data={k: v.ravel() for k, v in zip(columns, data)})
+        s = s.unsqueeze(1).expand(-1, self.target_names_enc.size(0))
+        species_i = torch.arange(self.target_names_enc.size(0), device=y_probs.device).unsqueeze(0).expand(y_probs.size(0), -1)
+        # target_names = np.array(list(itertools.chain(*[self.target_names for _ in range(y_probs.size(0))])))
+        data = torch.stack([s.ravel(), species_i.ravel(), y.ravel(), y_probs.ravel()], dim=1)
+        return data
 
     @property
     def cel_params(self):

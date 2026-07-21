@@ -23,7 +23,6 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
     seed: int = attrs.field(default=None)
     download: bool = attrs.field(default=False)
     chunked: bool = attrs.field(default=True)
-    num_samples: int = attrs.field(default=1)
 
     x: torch.Tensor = attrs.field(init=False)
     y: torch.Tensor = attrs.field(init=False)
@@ -52,10 +51,8 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
     @property
     def model_params(self):
         return dict(
-            in_features=self.x.shape[-1] // 2 if self.chunked else self.x.shape[-1],
             target_names=self.target_names,
             target_counts=self.target_counts,
-            seed=self.seed,
         )
 
     def _download_files(self):
@@ -82,6 +79,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     eval_batch_size: int | None = attrs.field(default=None)
     train_sample_size: int = attrs.field(default=1)
     eval_sample_size: int = attrs.field(default=1)
+    chunked: bool = attrs.field(default=True)
     val_prop: float = attrs.field(default=0.2, validator=attrs.validators.instance_of(float))
     min_train_label_count: int = attrs.field(default=10, validator=attrs.validators.instance_of(int))
     chunked: bool = attrs.field(default=True)
@@ -149,7 +147,6 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
             features=test_features,
             labels=test_labels[target_names],
             index=test_labels.index.get_level_values(0),
-            num_samples=self.eval_sample_size,
             chunked=self.chunked,
         )
 
@@ -161,7 +158,6 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
                 features=features,
                 labels=labels[target_names],
                 index=labels.index.get_level_values(0),
-                num_samples=self.train_sample_size,
                 chunked=self.chunked,
             )
             return self
@@ -185,7 +181,6 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
                 labels=labels.loc[index[train_idx], target_names],
                 index=index[train_idx],
                 seed=self.seed,
-                num_samples=self.train_sample_size,
                 chunked=self.chunked,
             )
             self.val_data = SoundscapeEmbeddings(
@@ -193,7 +188,6 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
                 labels=labels.loc[index[val_idx], target_names],
                 index=index[val_idx],
                 seed=self.seed,
-                num_samples=self.eval_sample_size,
                 chunked=self.chunked,
             )
             return self
@@ -227,7 +221,6 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
                 labels=labels.loc[index[train_idx], target_names],
                 index=index[train_idx],
                 seed=self.seed,
-                num_samples=self.train_sample_size,
                 chunked=self.chunked,
             )
             self.val_data = SoundscapeEmbeddings(
@@ -235,11 +228,9 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
                 labels=labels.loc[index[val_idx], target_names],
                 index=index[val_idx],
                 seed=self.seed,
-                num_samples=self.eval_sample_size,
                 chunked=self.chunked,
             )
         return self
-
 
     def train_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
         return self._build_dataloader(self.train_data, batch_size=self.train_batch_size, shuffle=True)
@@ -260,6 +251,16 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     def batch_converter(self, batch: List[List[torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, float]]:
         xs, ys, ss = zip(*batch)
         return Batch(x=torch.stack(xs), y=torch.stack(ys), s=torch.tensor(ss))
+
+    def on_after_batch_transfer(self, batch, dataloader_idx: int):
+        num_samples = self.train_sample_size if dataloader_idx == 0 else self.eval_sample_size
+        x = batch.x.unsqueeze(1)
+        if self.chunked:
+            mean, log_var = x.chunk(2, dim=-1)
+            mean = mean.expand(-1, num_samples, -1, -1)
+            log_var = log_var.expand(-1, num_samples, -1, -1)
+            x = mean + torch.randn_like(mean) * (0.5 * log_var).exp()
+        return Batch(x=x, y=batch.y, s=batch.s)
 
     def _build_dataloader(self, dataset: torch.utils.data.Dataset, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
         return torch.utils.data.DataLoader(

@@ -194,15 +194,12 @@ class SIVAE(L.LightningModule):
         )
 
     def predict(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
-        q_z, (theta, dx, dy) = self.encode(x)
-        if self.align_only:
-            delta = torch.zeros_like(theta)
-        else:
-            delta = theta / torch.pi
+        q_z, (theta_hat, dx, dy) = self.encode(x)
+        theta = theta_hat if self.align_only else torch.zeros_like(theta_hat)
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
         z = torch.distributions.Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample()
         U = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1)))
-        x_hat = self.cnn_decode(U, delta)
+        x_hat = self.cnn_decode(U, theta / torch.pi)
         x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
         x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_window_length)
         return dict(
@@ -211,7 +208,7 @@ class SIVAE(L.LightningModule):
             x_framed=x_framed,
             x_hat_framed=x_hat_framed,
             q_z=q_z,
-            delta=delta,
+            theta=theta,
         )
 
     def sample_circle(self, *args: Any, scaling_factor: float = 1.0, **kwargs: Any):
@@ -507,25 +504,6 @@ class SIVAE(L.LightningModule):
             fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
             figures.append((f"frames/j", fig))
         return figures
-
-    # @property
-    # def delta_sigma_params(self):
-    #     return dict(
-    #         x_min=self.delta_sigma_step_start,
-    #         x_max=self.delta_sigma_step_end,
-    #         y_min=self.delta_sigma_min,
-    #         y_max=self.delta_sigma_max,
-    #         k=self.delta_sigma_step_slope,
-    #     )
-
-#     @property
-#     def delta_prob_params(self):
-#         return dict(
-#             minimum=self.delta_prob_min,
-#             maximum=self.delta_prob_max,
-#             t_start=self.delta_prob_step_start,
-#             t_end=self.delta_prob_step_end,
-#         )
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
         # run training

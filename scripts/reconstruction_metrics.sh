@@ -1,18 +1,24 @@
 #!/bin/bash
 
-uv run main.py eval +experiment=vae data=sounding_out_chorus "ckpt_path=./models/v1/vae/silly-byte/step\=180000.ckpt" paths.results_dir=./results/v1/vae_evaluation run_id=silly-byte seed=8
-uv run main.py eval +experiment=vae data=sounding_out_chorus "ckpt_path=./models/v1/vae/meek-zebra/step\=180000.ckpt" paths.results_dir=./results/v1/vae_evaluation run_id=meek-zebra seed=16
-uv run main.py eval +experiment=vae data=sounding_out_chorus "ckpt_path=./models/v1/vae/rude-money/step\=180000.ckpt" paths.results_dir=./results/v1/vae_evaluation run_id=rude-money seed=24
+GPU_IDS=0
+MODEL_DIR=/mnt/data0/kag25/models/v4
+RESULTS_DIR=/mnt/data0/kag25/experients/v4/vae_evaluation
+CKPT_STEP="step\=180000.ckpt"
 
-uv run main.py eval +experiment=vae data=rainforest_connection "ckpt_path=./models/v1/vae/tusked-chief/step\=180000.ckpt" paths.results_dir=./results/v1/vae_evaluation run_id=tusked-chief seed=8
-uv run main.py eval +experiment=vae data=rainforest_connection "ckpt_path=./models/v1/vae/ultimate-story/step\=180000.ckpt" paths.results_dir=./results/v1/vae_evaluation run_id=ultimate-story seed=16
-uv run main.py eval +experiment=vae data=rainforest_connection "ckpt_path=./models/v1/vae/misty-lecture/step\=180000.ckpt" paths.results_dir=./results/v1/vae_evaluation run_id=misty-lecture seed=24
+wandb offline
 
-uv run main.py eval +experiment=sivae data=sounding_out_chorus "ckpt_path=./models/v1/sivae/tan-ohio/step\=180000.ckpt" paths.results_dir=./results/v1/vae_evaluation run_id=tan-ohio seed=8
-uv run main.py eval +experiment=sivae data=sounding_out_chorus "ckpt_path=./models/v1/sivae/brave-vincent/step\=180000.ckpt" paths.results_dir=./results/v1/vae_evaluation run_id=brave-vincent seed=16
-uv run main.py eval +experiment=sivae data=sounding_out_chorus "ckpt_path=./models/v1/sivae/small-peru/step\=180000.ckpt" paths.results_dir=./results/v1/vae_evaluation run_id=small-peru seed=24
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py eval +experiment=vae run_id=lumpy-gibson seed=8 paths=vili data=sounding_out_chorus ckpt_path=$MODEL_DIR/vae/lumpy-gibson/$CKPT_STEP paths.results_dir=$RESULTS_DIR
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py eval +experiment=vae run_id=slow-partner seed=16 paths=vili data=sounding_out_chorus ckpt_path=$MODEL_DIR/vae/slow-partner/$CKPT_STEP paths.results_dir=$RESULTS_DIR
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py eval +experiment=vae run_id=unique-tiger seed=24 paths=vili data=sounding_out_chorus ckpt_path=$MODEL_DIR/vae/unique-tiger/$CKPT_STEP paths.results_dir=$RESULTS_DIR
 
-uv run main.py eval +experiment=sivae data=rainforest_connection "ckpt_path=./models/v1/sivae/uncanny-burma/step\=180000.ckpt" paths.results_dir=./results/v1/vae_evaluation run_id=uncanny-burma seed=8
-uv run main.py eval +experiment=sivae data=rainforest_connection "ckpt_path=./models/v1/sivae/detailed-ticket/step\=180000.ckpt" paths.results_dir=./results/v1/vae_evaluation run_id=detailed-ticket seed=16
-uv run main.py eval +experiment=sivae data=rainforest_connection "ckpt_path=./models/v1/sivae/mossy-andrea/step\=180000.ckpt" paths.results_dir=./results/v1/vae_evaluation run_id=mossy-andrea seed=24
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py eval +experiment=vae run_id=jumpy-engine seed=8 paths=vili data=rainforest_connection ckpt_path=$MODEL_DIR/vae/jumpy-engine/$CKPT_STEP paths.results_dir=$RESULTS_DIR
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py eval +experiment=vae run_id=quaint-pilot seed=16 paths=vili data=rainforest_connection ckpt_path=$MODEL_DIR/vae/quaint-pilot/$CKPT_STEP paths.results_dir=$RESULTS_DIR
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py eval +experiment=vae run_id=numb-chef seed=24 paths=vili data=rainforest_connection ckpt_path=$MODEL_DIR/vae/numb-chef/$CKPT_STEP paths.results_dir=$RESULTS_DIR
 
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py eval +experiment=sivae run_id=just-drum seed=8 paths=vili data=sounding_out_chorus ckpt_path=$MODEL_DIR/sivae/just-drum/$CKPT_STEP paths.results_dir=$RESULTS_DIR
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py eval +experiment=sivae run_id=daring-system seed=16 paths=vili data=sounding_out_chorus ckpt_path=$MODEL_DIR/sivae/daring-system/$CKPT_STEP paths.results_dir=$RESULTS_DIR
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py eval +experiment=sivae run_id=dymamic-malta seed=24 paths=vili data=sounding_out_chorus ckpt_path=$MODEL_DIR/sivae/dymamic-malta/$CKPT_STEP paths.results_dir=$RESULTS_DIR
+
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py eval +experiment=sivae run_id=earthy-virgo seed=8 paths=vili data=rainforest_connection ckpt_path=$MODEL_DIR/sivae/earthy-virgo/$CKPT_STEP paths.results_dir=$RESULTS_DIR
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py eval +experiment=sivae run_id=part-armor seed=16 paths=vili data=rainforest_connection ckpt_path=$MODEL_DIR/sivae/part-armor/$CKPT_STEP paths.results_dir=$RESULTS_DIR
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py eval +experiment=sivae run_id=secluded-montana seed=24 paths=vili data=rainforest_connection ckpt_path=$MODEL_DIR/sivae/secluded-montana/$CKPT_STEP paths.results_dir=$RESULTS_DIR
