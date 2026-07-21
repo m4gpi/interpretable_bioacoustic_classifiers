@@ -48,13 +48,6 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
     def target_counts(self) -> List[int]:
         return self.labels.sum(axis=0).tolist()
 
-    @property
-    def model_params(self):
-        return dict(
-            target_names=self.target_names,
-            target_counts=self.target_counts,
-        )
-
     def _download_files(self):
         import requests
         import zipfile
@@ -108,6 +101,13 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     @fold_id.validator
     def check_fold_is_integer_if_not_none(self, attribute, value):
         return isinstance(value, int) if value is not None else True
+
+    @property
+    def model_params(self):
+        return dict(
+            target_names=self.train_data.target_names,
+            target_counts=self.train_data.target_counts,
+        )
 
     def pre_process(self, x: torch.Tensor, num_samples: int):
         mean, log_var = x.chunk(2, dim=-1)

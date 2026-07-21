@@ -45,7 +45,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     log.info(f"Instantiating model <{cfg.model._target_}>")
     model_cls = hydra.utils.get_class(cfg.model._target_)
-    filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.data.model_params)
+    filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.model_params)
     model: L.LightningModule = hydra.utils.instantiate(cfg.model, _recursive_=False, **filtered_params)
 
     log.info("Instantiating callbacks...")

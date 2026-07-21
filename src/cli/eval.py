@@ -44,7 +44,7 @@ def evaluate(cfg):
     if (ckpt_path := cfg.get("ckpt_path")):
         model = model_cls.load_from_checkpoint(ckpt_path, map_location=torch.device("cuda"))
     else:
-        filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.data.model_params)
+        filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.model_params)
         model = hydra.utils.instantiate(cfg.model, _recursive_=False, **filtered_params)
 
     log.info("Instantiating callbacks...")

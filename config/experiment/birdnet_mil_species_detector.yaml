@@ -1,0 +1,51 @@
+# @package _global_
+
+# python src/cli/train.py +experiment=species_detector
+
+defaults:
+  - override /data: soundscape_embeddings
+  - override /model: mil_species_detector
+  - override /trainer: gpu
+  - override /logger: wandb
+
+model_name: birdnet
+scope: null
+test: true
+
+data:
+  chunked: false
+  train_sample_size: 1
+  eval_sample_size: 1
+  val_prop: 0.0
+  root: ${paths.data_dir}/soundscape_birdnet_embeddings/${scope}
+
+model:
+  attention:
+    in_features: 1024
+  classifiers:
+    num_features: 1024
+
+trainer:
+  max_epochs: 2000
+  log_every_n_steps: 1
+  limit_val_batches: 0.0
+
+callbacks:
+  model_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ${paths.checkpoint_dir}
+    filename: ${model_name}_${scope}
+  species_scores:
+    _target_: src.core.callbacks.species_scores.SpeciesScores
+    save_dir: ${paths.results_dir}/v3/bayesian_species_detectors/scores
+    model_name: ${model_name}
+    scope: ${scope}
+    run_id: ${run_id}
+    seed: ${seed}
+    fold_id: ${data.fold_id}
+    log_every_n_train_epochs: 20
+
+logger:
+  wandb:
+    id: ${run_id}
+    project: soundscape_species_detection

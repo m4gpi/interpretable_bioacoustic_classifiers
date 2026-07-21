@@ -109,13 +109,6 @@ class PAMSet(torch.utils.data.Dataset):
     def target_counts(self) -> List[int]:
         return self.labels.sum(axis=0).tolist()
 
-    @property
-    def model_params(self):
-        return dict(
-            target_names=self.target_names,
-            target_counts=self.target_counts,
-        )
-
     def load_sample(self, file_path: str) -> torch.Tensor:
         metadata = torchaudio.info(file_path)
         num_frames_segment = int(self.num_frames_in_segment / self.sample_rate * metadata.sample_rate)
@@ -178,6 +171,10 @@ class PAMSetDataModule(L.LightningDataModule):
         self.val_data, self.train_data = torch.utils.data.random_split(self.data, (self.val_prop, 1 - self.val_prop), generator=self.generator)
         self.test_data = PAMSet(self.root, test=True, **self.dataset_params)
         return self
+
+    @property
+    def model_params(self) -> Dict:
+        return {}
 
     @property
     def generator(self):

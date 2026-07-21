@@ -209,6 +209,10 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
         return self
 
     @property
+    def model_params(self) -> Dict:
+        return {}
+
+    @property
     def generator(self):
         return torch.Generator().manual_seed(self.seed)
 
