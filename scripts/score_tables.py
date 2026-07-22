@@ -15,10 +15,10 @@ def main(
     scores = pd.read_parquet(results_dir / "test_scores.parquet")
 
     model_map = {
-        "birdnet_native": "BirdNET (OOB)",
-        "birdnet_8": "BirdNET (FT)",
-        "birdnet_16": "BirdNET (FT)",
-        "birdnet_24": "BirdNET (FT)",
+        "birdnet_native": "BirdNET V2.4 (OOB)",
+        "birdnet_8": "BirdNET V2.4 (FT)",
+        "birdnet_16": "BirdNET V2.4 (FT)",
+        "birdnet_24": "BirdNET V2.4 (FT)",
         "just-drum": "SIVAE",
         "dynamic-malta": "SIVAE",
         "daring-system": "SIVAE",
@@ -33,12 +33,12 @@ def main(
         "numb-chef": "VAE",
     }
 
-    results["version"] = results["model"]
-    results["model"] = results["version"].map(model_map)
-    scores["version"] = scores["model"]
-    scores["model"] = scores["version"].map(model_map)
+    results["run"] = results["model"]
+    results["model"] = results["model"].map(model_map)
+    scores["run"] = scores["model"]
+    scores["model"] = scores["run"].map(model_map)
 
-    score_summary = scores.groupby(["model", "version", "scope"]).agg(
+    score_summary = scores.groupby(["model", "run", "scope"]).agg(
         auROC=("auROC", "mean"),
         mAP=("AP", "mean"),
     ).reset_index()
@@ -49,13 +49,13 @@ def main(
         results_pivot = (
             results[results.scope == scope]
             .drop("scope", axis=1)
-            .pivot(columns="species_name", index=["file_i", "model", "version"])
+            .pivot(columns="species_name", index=["file_i", "model", "run"])
             .dropna(axis=1, how="any") # drop nulls for species we can't compare
         )
         recall_df = (
             results_pivot
             .reset_index()
-            .groupby(["model", "version"])
+            .groupby(["model", "run"])
             .apply(lambda df: metrics.recall_at_k(df["label"].to_numpy(), df["prob"].to_numpy()))
             .reset_index()
             .rename(columns={0: "recall_at_k"})
@@ -65,7 +65,7 @@ def main(
     recall_df = pd.concat(recall_results)
     score_summary = (
         score_summary
-        .merge(recall_df, how="inner", on=["model", "scope", "version"])
+        .merge(recall_df, how="inner", on=["model", "scope", "run"])
         # calculate the mean/std across model class
         .groupby(["model", "scope"]).agg(
             auROC_mean=("auROC", "mean"),
@@ -108,7 +108,7 @@ def main(
             df1.columns.names = ["Dataset", "Metric"]
             dataset_results.append(df1)
         results_table = pd.concat(dataset_results, axis=1)
-        results_table.loc["BirdNET (OOB)"].loc["RFCX frog"] = "-"
+        results_table.loc["BirdNET V2.4 (OOB)"].loc["RFCX frog"] = "-"
         results_table.index.name = "Model"
 
         if save_dir is not None:
