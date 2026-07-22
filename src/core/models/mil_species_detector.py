@@ -248,7 +248,6 @@ class MILSpeciesDetector(L.LightningModule):
     ) -> pd.DataFrame:
         s = s.unsqueeze(1).expand(-1, self.target_names_enc.size(0))
         species_i = torch.arange(self.target_names_enc.size(0), device=y_probs.device).unsqueeze(0).expand(y_probs.size(0), -1)
-        # target_names = np.array(list(itertools.chain(*[self.target_names for _ in range(y_probs.size(0))])))
         data = torch.stack([s.ravel(), species_i.ravel(), y.ravel(), y_probs.ravel()], dim=1)
         return data
 
@@ -279,9 +278,10 @@ class MILSpeciesDetector(L.LightningModule):
         log.info(f"Saving model configuration to {config_path}")
         omegaconf.OmegaConf.save(config, config_path)
         # run validation
-        log.info(f"Final validation run <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-        trainer.limit_val_batches = 1.0
-        trainer.validate(self, datamodule=data_module)
+        if data_module.val_prop > 0.0:
+            log.info(f"Final validation run <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+            trainer.limit_val_batches = 1.0
+            trainer.validate(self, datamodule=data_module)
         # running test
         if config.get("test"):
             log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")

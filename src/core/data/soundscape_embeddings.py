@@ -209,6 +209,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
         return self._build_dataloader(self.train_data, batch_size=self.train_batch_size, shuffle=True)
 
     def val_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
+        if self.val_prop == 0.0: return None
         return self._build_dataloader(self.val_data, batch_size=self.eval_batch_size, shuffle=False)
 
     def test_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:
@@ -216,7 +217,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
 
     def predict_dataloader(self) -> List[torch.utils.data.DataLoader]:
         return [
-            self._build_dataloader(self.train_data, batch_size=self.eval_batch_size),
+            self._build_dataloader(self.train_data, batch_size=self.eval_batch_size, shuffle=False),
             self.val_dataloader(),
             self.test_dataloader(),
         ]
