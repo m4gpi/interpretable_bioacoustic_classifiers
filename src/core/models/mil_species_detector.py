@@ -43,11 +43,11 @@ class Elastic:
 class MultiLabelLogisticRegression(torch.nn.Module):
     def __init__(self, num_features: int, num_targets: int) -> None:
         super().__init__()
-        weight = torch.empty(num_targets, num_features, 1)
-        bias = torch.empty(num_targets, 1)
+        weight = torch.empty(num_targets, num_features)
+        bias = torch.empty(num_targets)
         self.reset_parameters(weight, bias)
-        self.weight = torch.nn.Parameter(weight.squeeze())
-        self.bias = torch.nn.Parameter(bias.squeeze())
+        self.weight = torch.nn.Parameter(weight)
+        self.bias = torch.nn.Parameter(bias)
 
     def reset_parameters(self, weight: torch.Tensor, bias: torch.Tensor) -> None:
         torch.nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
@@ -57,7 +57,7 @@ class MultiLabelLogisticRegression(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, ...]:
         y_prob = torch.sigmoid(x @ self.weight.t() + self.bias)
-        return y_prob,
+        return y_prob, {}
 
     def get_weights(self):
         return self.weight
@@ -66,16 +66,16 @@ class MultiLabelBayesianLogisticRegression(torch.nn.Module):
     def __init__(self, num_features: int, num_targets: int) -> None:
         super().__init__()
         # NB: isotropic multivariate gaussian
-        weight_mu = torch.empty(num_targets, num_features, 1)
-        bias_mu = torch.empty(num_targets, 1)
+        weight_mu = torch.empty(num_targets, num_features)
+        bias_mu = torch.empty(num_targets)
         self.reset_parameters(weight_mu, bias_mu)
-        self.weight_mu = torch.nn.Parameter(weight_mu.squeeze())
-        self.bias_mu = torch.nn.Parameter(bias_mu.squeeze())
-        weight_log_var = torch.empty(num_targets, num_features, 1)
-        bias_log_var = torch.empty(num_targets, 1)
+        self.weight_mu = torch.nn.Parameter(weight_mu)
+        self.bias_mu = torch.nn.Parameter(bias_mu)
+        weight_log_var = torch.empty(num_targets, num_features)
+        bias_log_var = torch.empty(num_targets)
         self.reset_parameters(weight_log_var, bias_log_var)
-        self.weight_log_var = torch.nn.Parameter(weight_log_var.squeeze())
-        self.bias_log_var = torch.nn.Parameter(bias_log_var.squeeze())
+        self.weight_log_var = torch.nn.Parameter(weight_log_var)
+        self.bias_log_var = torch.nn.Parameter(bias_log_var)
 
     def reset_parameters(self, weight: torch.Tensor, bias: torch.Tensor) -> None:
         torch.nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
@@ -89,7 +89,7 @@ class MultiLabelBayesianLogisticRegression(torch.nn.Module):
         sigma_sq_a = x.pow(2) @ self.weight_log_var.exp().t() + self.bias_log_var.exp()
         # approximating the expectation of a sigmoid under a Gaussian distribution using the mackay approximation
         y_prob = torch.sigmoid(mu_a / torch.sqrt(1.0 + torch.pi * sigma_sq_a / 8.0))
-        return y_prob, mu_a, sigma_sq_a
+        return y_prob, dict(mu_a=mu_a, sigma_sq_a=sigma_sq_a)
 
     def get_weights(self):
         return self.weight_mu
@@ -193,12 +193,12 @@ class MILSpeciesDetector(L.LightningModule):
 
     def forward(self, x: torch.Tensor, y: torch.Tensor, s: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
         attn_w = self.attention(x)
-        y_t_probs, mu_a, sigma_sq_a = self.classifiers(x)
+        y_t_probs, other_args = self.classifiers(x)
         y_probs = (y_t_probs * attn_w).sum(dim=-2)
         return dict(
             y=y, y_probs=y_probs, y_t_probs=y_t_probs, attn_w=attn_w, s=s,
-            mu_a=mu_a, sigma_sq_a=sigma_sq_a,
             samples_per_class=self.target_counts,
+            **other_args,
         )
 
     def loss(self, y: torch.Tensor, y_probs: torch.Tensor, samples_per_class: torch.Tensor, epsilon: float = 1e-6, **kwargs: Any) -> Dict[str, torch.Tensor]:
