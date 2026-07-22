@@ -190,6 +190,10 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
     test_data: torch.utils.data.Dataset | None = attrs.field(default=None, init=False)
     sampler: Callable = attrs.field(default=None, init=False)
 
+    @property
+    def name(self):
+        return f"SO_{self.scope}"
+
     def _batch_converter(self, batch: Tuple):
         xs, ys, ss = zip(*batch)
         return Batch(x=torch.stack(xs, dim=0), y=torch.stack(ys, dim=0), s=torch.tensor(ss), metadata=self.data.target_names)

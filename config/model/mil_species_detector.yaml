@@ -11,7 +11,7 @@ attention:
   hidden_dim: 10
   out_features: 1
 classifiers:
-  _target_: src.core.models.mil_species_detector.MultiLabelBayesianLogisticRegression
+  _target_: src.core.models.mil_species_detector.MultiLabelLogisticRegression
   num_features: 128
 clf_regulariser:
   _target_: src.core.models.mil_species_detector.L1

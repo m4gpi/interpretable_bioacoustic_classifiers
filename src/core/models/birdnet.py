@@ -5,7 +5,6 @@ import os
 import sys
 import attrs
 import functools
-import multiprocessing as mp
 import tqdm
 import birdnetlib
 
@@ -22,12 +21,6 @@ from typing import Any, List, Dict, Tuple
 
 from src.core.utils import metrics
 
-BIRDNET_LABEL_TXT_FILE = (
-    "https://raw.githubusercontent.com/kahst/BirdNET-Analyzer"
-    "/refs/tags/v1.5.0/birdnet_analyzer/checkpoints/V2.4/"
-    "BirdNET_GLOBAL_6K_V2.4_Labels.txt"
-)
-
 __all__ = ["BirdNET", "BirdNETEmbeddings"]
 
 _analyzer = None
@@ -39,91 +32,82 @@ def suppress_output():
             yield
 
 @suppress_output()
-def _fetch_analyzer():
+def _fetch_analyzer(**kwargs: Any) -> birdnetlib.analyzer.Analyzer:
     global _analyzer
     if _analyzer is None:
-        _analyzer = birdnetlib.analyzer.Analyzer()
+        _analyzer = birdnetlib.analyzer.Analyzer(**kwargs)
     return _analyzer
 
-def chunked(items: List[Any], batch_size: int):
-    for i in range(0, len(items), batch_size):
-        yield items[i:i + batch_size]
+class BirdNETPredictions:
+    def __init__(self, min_confidence: float = 0.0):
+        self.min_confidence = min_confidence
 
-@attrs.define()
-class BirdNET:
-    min_confidence: float = attrs.field(default=0.0)
-    version: str = attrs.field(default="v2.4")
+    def __call__(self, batch: List[Dict[str, Any]], **kwargs: Any) -> pd.DataFrame:
+        return self.process_batch(batch, **kwargs)
 
-    def __call__(self, file_names: List[str], target_names: List[str]) -> pd.DataFrame:
-        results = []
-        for batch in birdnet.predict_species_within_audio_files_mp(file_names, min_confidence=self.min_confidence, species_filter=set(target_names)):
-            df = self.step(*batch)
-            results.append(df)
-        df = pd.DataFrame(results)
-        import code; code.interact(local=locals())
-        return df
-        # TODO: pad missing species with zeros
-
-    def step(self, file_path: str, predictions: Dict[float, Dict[str, float]]):
-        results = []
-        y_prob = defaultdict(lambda: 0.0)
-        for window, prediction in predictions.items():
-            for target, prob in prediction.items():
-                y_prob[target] = max(prob, y_prob[target])
-        for target, prob in y_prob.items():
-            results.append({
-                "file_name": file_path.name,
-                "species_name": target,
-                "prob": prob,
-            })
-        return pd.DataFrame(results)
-
-    @property
-    def target_names(self):
-        return [label for label in requests.get(BIRDNET_LABEL_TXT_FILE).text.split("\n")]
-
-@attrs.define()
-class BirdNETEmbeddings:
-    version: str = attrs.field(default="v2.4")
-
-    def __call__(self, data_module: L.LightningDataModule):
-        data = data_module.data
-        inputs = chunked(list(zip(data.metadata.index, data.metadata.file_path)), data_module.eval_batch_size)
-        dfs, failed = [], []
-        with tqdm.tqdm(total=len(data.metadata)) as pbar:
-            with mp.Pool(processes=data_module.num_workers, initializer=_fetch_analyzer) as pool:
-                for df, fps in pool.imap(self.step, inputs):
-                    dfs.append(df)
-                    failed.extend(fps)
-                    pbar.update(data_module.eval_batch_size)
-        return pd.concat(dfs, axis=0)
-
-    def step(self, batch: List[Tuple[int, str]]) -> pd.DataFrame:
+    def process_batch(self, batch: List[Dict[str, Any]], **kwargs: Any) -> Any:
         batched, failed = [], []
-        for x in batch:
-            df, file_path = self.embed_file(*x)
-            batched.append(df)
+        for audio_dict in batch:
+            predictions, file_path = self.forward(**audio_dict, **kwargs)
+            batched.append(predictions)
             failed.append(file_path)
         return pd.concat(batched, axis=0), list(filter(None, failed))
 
-    def embed_file(self, file_i: int, file_path: str) -> pd.DataFrame:
+    @suppress_output()
+    def forward(
+        self,
+        file_i: int,
+        file_path: str,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        timestamp: float | None = None,
+        **kwargs: Any,
+    ) -> pd.DataFrame:
         try:
-            with suppress_output():
-                analyzer = _fetch_analyzer()
-                recording = birdnetlib.Recording(analyzer, str(file_path))
-                recording.extract_embeddings()
-                df = pd.DataFrame([
-                    pd.concat([
-                        pd.Series({str(dim): value for dim, value in enumerate(embedding_info["embeddings"])}),
-                        pd.Series({k: v for k, v in embedding_info.items() if k != "embeddings"}),
-                    ])
-                    for embedding_info in recording.embeddings
+            analyzer = _fetch_analyzer(**kwargs)
+            recording = birdnetlib.Recording(analyzer, file_path, min_conf=self.min_confidence)
+            recording.analyze()
+            if not len(recording.detections):
+                return pd.DataFrame(), None
+            df = pd.DataFrame(recording.detections)
+            df = df.drop(["common_name", "scientific_name", "start_time", "end_time"], axis=1)
+            df = df.rename(columns={"confidence": "prob", "label": "species_name"})
+            df["file_i"] = file_i
+            df["file_name"] = file_path.name
+            return df, None
+        except:
+            return pd.DataFrame(), file_path
+
+class BirdNETEmbeddings:
+    def __call__(self, batch: List[Dict[str, Any]], **kwargs: Any) -> pd.DataFrame:
+        return self.process_batch(batch, **kwargs)
+
+    def process_batch(self, batch: List[Dict[str, Any]], **kwargs: Any) -> Any:
+        batched, failed = [], []
+        for audio_dict in batch:
+            predictions, file_path = self.forward(**audio_dict, **kwargs)
+            batched.append(predictions)
+            failed.append(file_path)
+        return pd.concat(batched, axis=0), list(filter(None, failed))
+
+    @suppress_output()
+    def forward(self, file_i: int, file_path: str, **kwargs: Any) -> pd.DataFrame:
+        try:
+            analyzer = _fetch_analyzer(**kwargs)
+            recording = birdnetlib.Recording(analyzer, str(file_path))
+            recording.extract_embeddings()
+            df = pd.DataFrame([
+                pd.concat([
+                    pd.Series({str(dim): value for dim, value in enumerate(embedding_info["embeddings"])}),
+                    pd.Series({k: v for k, v in embedding_info.items() if k != "embeddings"}),
                 ])
-                df = df.drop(["start_time", "end_time"], axis=1)
-                df["file_i"] = file_i
-                df = df.reset_index(names="timestep")
-                df = df.set_index(["file_i", "timestep"])
-                return df, None
+                for embedding_info in recording.embeddings
+            ])
+            df = df.drop(["start_time", "end_time"], axis=1)
+            df["file_i"] = file_i
+            df = df.reset_index(names="timestep")
+            df = df.set_index(["file_i", "timestep"])
+            return df, None
         except:
             return pd.DataFrame(), file_path
 

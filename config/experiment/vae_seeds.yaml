@@ -6,11 +6,11 @@ defaults:
   - override /trainer: gpu
   - override /logger: wandb
 
-# hydra:
-#   mode: MULTIRUN
-#   sweeper:
-#     params:
-#       seed: 8,16,24
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      seed: 8,16,24
 
 data:
   num_workers: 0
