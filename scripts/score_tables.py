@@ -15,32 +15,28 @@ def main(
     scores = pd.read_parquet(results_dir / "test_scores.parquet")
 
     model_map = {
-        "just-drum": "sivae",
-        "dynamic-malta": "sivae",
-        "daring-system": "sivae",
-        "earthy-virgo": "sivae",
-        "part-armor": "sivae",
-        "secluded-montana": "sivae",
-        "lumpy-gibson": "vae",
-        "slow-partner": "vae",
-        "unique-tiger": "vae",
-        "jumpy-engine": "vae",
-        "quaint-pilot": "vae",
-        "numb-chef": "vae",
+        "birdnet_native": "BirdNET (OOB)",
+        "birdnet_8": "BirdNET (FT)",
+        "birdnet_16": "BirdNET (FT)",
+        "birdnet_24": "BirdNET (FT)",
+        "just-drum": "SIVAE",
+        "dynamic-malta": "SIVAE",
+        "daring-system": "SIVAE",
+        "earthy-virgo": "SIVAE",
+        "part-armor": "SIVAE",
+        "secluded-montana": "SIVAE",
+        "lumpy-gibson": "VAE",
+        "slow-partner": "VAE",
+        "unique-tiger": "VAE",
+        "jumpy-engine": "VAE",
+        "quaint-pilot": "VAE",
+        "numb-chef": "VAE",
     }
+
     results["version"] = results["model"]
     results["model"] = results["version"].map(model_map)
     scores["version"] = scores["model"]
     scores["model"] = scores["version"].map(model_map)
-    # name_map = {
-    #     "birdnet": "BirdNET V2.4",
-    #     "base_vae": "VAE",
-    #     "nifti_vae": "SIVAE",
-    #     "smooth_nifti_vae": "TSSIVAE",
-    # }
-
-    # results["model_class"] = results["model"].map(name_map)
-    # scores["model_class"] = scores["model"].map(name_map)
 
     score_summary = scores.groupby(["model", "version", "scope"]).agg(
         auROC=("auROC", "mean"),
@@ -112,6 +108,7 @@ def main(
             df1.columns.names = ["Dataset", "Metric"]
             dataset_results.append(df1)
         results_table = pd.concat(dataset_results, axis=1)
+        results_table.loc["BirdNET (OOB)"].loc["RFCX frog"] = "-"
         results_table.index.name = "Model"
 
         if save_dir is not None:
