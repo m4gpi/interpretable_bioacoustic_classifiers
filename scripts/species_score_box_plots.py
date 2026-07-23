@@ -12,25 +12,38 @@ from matplotlib import lines as mlines
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 plt.rcParams.update({
-    'axes.labelsize': 12,
-    'xtick.labelsize': 8,
+    'axes.labelsize': 10,
+    'xtick.labelsize': 7,
     'ytick.labelsize': 10,
-    'legend.fontsize': 12,
-    'legend.title_fontsize': 12,
+    'legend.fontsize': 10,
+    'legend.title_fontsize': 10,
 })
+
 
 def main(
     results_dir: pathlib.Path,
     save_dir: pathlib.Path,
 ):
-    df = pd.read_parquet(results_dir / "test_scores.parquet", columns=["species_name", "AP", "auROC", "model", "scope", "version", "train_label_counts"])
-    name_map = {
-        "birdnet": "BirdNET V2.4",
-        "base_vae": "VAE",
-        "nifti_vae": "SIVAE",
-        # "smooth_nifti_vae": "TSSIVAE",
+    df = pd.read_parquet(results_dir / "test_scores.parquet")
+    model_map = {
+        "birdnet_native": "BirdNET V2.4 (OOB)",
+        "birdnet_8": "BirdNET V2.4 (FT)",
+        "birdnet_16": "BirdNET V2.4 (FT)",
+        "birdnet_24": "BirdNET V2.4 (FT)",
+        "just-drum": "SIVAE",
+        "dynamic-malta": "SIVAE",
+        "daring-system": "SIVAE",
+        "earthy-virgo": "SIVAE",
+        "part-armor": "SIVAE",
+        "secluded-montana": "SIVAE",
+        "lumpy-gibson": "VAE",
+        "slow-partner": "VAE",
+        "unique-tiger": "VAE",
+        "jumpy-engine": "VAE",
+        "quaint-pilot": "VAE",
+        "numb-chef": "VAE",
     }
-    df["model_class"] = df["model"].map(name_map)
+    df["model_class"] = df["model"].map(model_map)
     df["dataset_name"] = df["scope"].str.replace("_", " ")
     df["species_name"] = df["species_name"].map(lambda s: s.split("_")[-1])
 
@@ -38,11 +51,11 @@ def main(
     df = df.reset_index()
 
     # show the top 6 from each dataset
-    vae_df = df[df["model"].isin(["base_vae", "nifti_vae"])]
-    order = vae_df.groupby("species_name")["AP"].max().sort_values(ascending=False).index[:24]
+    df1 = df[df["model_class"].isin(["BirdNET V2.4 (FT)", "VAE", "SIVAE"]) & (df["scope"] == scope)]
+    order = df1.groupby("species_name")["AP"].max().sort_values(ascending=False).index[:24]
     fig, (ax1, ax2) = plt.subplots(figsize=(8.1, 6), nrows=2)
     sns.boxplot(
-        data=vae_df,
+        data=df1,
         x="species_name",
         y="auROC",
         hue="model_class",
@@ -58,7 +71,7 @@ def main(
     ax1.set_xlabel("")
     sns.move_legend(ax1, loc="lower right", bbox_to_anchor=(1.0, 1.01), ncols=2, title="")
     sns.boxplot(
-        data=vae_df,
+        data=df1,
         x="species_name",
         y="AP",
         hue="model_class",
@@ -79,20 +92,12 @@ def main(
     fig.savefig(save_dir / f"species_box_plot.pdf", format="pdf", bbox_inches="tight")
     print(f"Saved: {(save_dir / f'species_box_plot.pdf').expanduser()}")
 
-    plt.rcParams.update({
-        'axes.labelsize': 12,
-        'xtick.labelsize': 6,
-        'ytick.labelsize': 10,
-        'legend.fontsize': 12,
-        'legend.title_fontsize': 12,
-    })
-
     for scope in df["scope"].unique():
-        vae_df = df[df["model"].isin(["base_vae", "nifti_vae"]) & (df["scope"] == scope)]
-        order = vae_df.groupby("species_name")["train_label_counts"].first().sort_values(ascending=False).index
+        df1 = df[df["model_class"].isin(["BirdNET V2.4 (FT)", "VAE", "SIVAE"]) & (df["scope"] == scope)]
+        order = df1.groupby("species_name")["train_label_counts"].first().sort_values(ascending=False).index
         fig, (ax1, ax2) = plt.subplots(figsize=(8.1, 3.5), nrows=2)
         sns.boxplot(
-            data=vae_df,
+            data=df1,
             x="species_name",
             y="auROC",
             hue="model_class",
@@ -108,7 +113,7 @@ def main(
         ax1.set_xlabel("")
         sns.move_legend(ax1, loc="lower right", bbox_to_anchor=(1.0, 1.01), ncols=2, title="")
         sns.boxplot(
-            data=vae_df,
+            data=df1,
             x="species_name",
             y="AP",
             hue="model_class",
