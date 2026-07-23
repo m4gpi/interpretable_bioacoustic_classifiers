@@ -1,12 +1,9 @@
 #!/bin/bash
 
-# last run on 21.07.2026
-# commit ref: 9b5ced9b1e008fc15b07759b2042b3902b6f8ddc
-
-
 GPU_IDS=0
-RESULTS_DIR=$ROOT/experiments/v4/birdnet_species_detectors/
-CKPT_DIR=$ROOT/models/v4/birdnet_species_detectors/
+VERSION=v4
+RESULTS_DIR=$ROOT/experiments/$VERSION/species_detectors/
+CKPT_DIR=$ROOT/models/$VERSION/species_detectors/
 
 wandb offline
 
@@ -54,18 +51,21 @@ CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=mil_species_detec
 # ----------------------------------- BirdNET representations --------------------------------- #
 # --------------------------------------------------------------------------------------------- #
 
-CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_8 scope=SO_UK seed=8 trainer.max_epochs=300 model.clf_learning_rate=0.01 model.gamma_clf=0.005 model.attn_learning_rate=0.0005 model.gamma_attn=0.001
-CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_16 scope=SO_UK seed=16 trainer.max_epochs=300 model.clf_learning_rate=0.01 model.gamma_clf=0.005 model.attn_learning_rate=0.0005 model.gamma_attn=0.001
-CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_24 scope=SO_UK seed=24 trainer.max_epochs=300 model.clf_learning_rate=0.01 model.gamma_clf=0.005 model.attn_learning_rate=0.0005 model.gamma_attn=0.001
+RESULTS_DIR=$ROOT/experiments/$VERSION/birdnet_species_detectors/
+CKPT_DIR=$ROOT/models/$VERSION/birdnet_species_detectors/
 
-CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_8 scope=SO_EC seed=8 trainer.max_epochs=1000 model.clf_learning_rate=0.01 model.gamma_clf=0.005 model.attn_learning_rate=0.0005 model.gamma_attn=0.001
-CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_16 scope=SO_EC seed=16 trainer.max_epochs=1000 model.clf_learning_rate=0.01 model.gamma_clf=0.005 model.attn_learning_rate=0.0005 model.gamma_attn=0.001
-CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_24 scope=SO_EC seed=24 trainer.max_epochs=1000 model.clf_learning_rate=0.01 model.gamma_clf=0.005 model.attn_learning_rate=0.0005 model.gamma_attn=0.001
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_8 scope=SO_UK seed=8 trainer.max_epochs=300 model.clf_learning_rate=0.01 model.gamma_clf=0.0005 model.attn_learning_rate=0.0005 model.gamma_attn=0.001
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_16 scope=SO_UK seed=16 trainer.max_epochs=300 model.clf_learning_rate=0.01 model.gamma_clf=0.0005 model.attn_learning_rate=0.0005 model.gamma_attn=0.001
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_24 scope=SO_UK seed=24 trainer.max_epochs=300 model.clf_learning_rate=0.01 model.gamma_clf=0.0005 model.attn_learning_rate=0.0005 model.gamma_attn=0.001
 
-CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_8 scope=RFCX_bird seed=8 trainer.max_epochs=600 model.clf_learning_rate=0.01 model.gamma_clf=0.005 model.attn_learning_rate=0.001 model.gamma_attn=0.001
-CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_16 scope=RFCX_bird seed=16 trainer.max_epochs=600 model.clf_learning_rate=0.01 model.gamma_clf=0.005 model.attn_learning_rate=0.001 model.gamma_attn=0.001
-CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_24 scope=RFCX_bird seed=24 trainer.max_epochs=600 model.clf_learning_rate=0.01 model.gamma_clf=0.005 model.attn_learning_rate=0.001 model.gamma_attn=0.001
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_8 scope=SO_EC seed=8 trainer.max_epochs=1000 model.clf_learning_rate=0.01 model.gamma_clf=0.0005 model.attn_learning_rate=0.0005 model.gamma_attn=0.001
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_16 scope=SO_EC seed=16 trainer.max_epochs=1000 model.clf_learning_rate=0.01 model.gamma_clf=0.0005 model.attn_learning_rate=0.0005 model.gamma_attn=0.001
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_24 scope=SO_EC seed=24 trainer.max_epochs=1000 model.clf_learning_rate=0.01 model.gamma_clf=0.0005 model.attn_learning_rate=0.0005 model.gamma_attn=0.001
 
-CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_8 scope=RFCX_frog seed=8 trainer.max_epochs=950 model.clf_learning_rate=0.01 model.gamma_clf=0.001 model.attn_learning_rate=0.001 model.gamma_attn=0.01
-CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_16 scope=RFCX_frog seed=16 trainer.max_epochs=950 model.clf_learning_rate=0.01 model.gamma_clf=0.001 model.attn_learning_rate=0.001 model.gamma_attn=0.01
-CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_24 scope=RFCX_frog seed=24 trainer.max_epochs=950 model.clf_learning_rate=0.01 model.gamma_clf=0.001 model.attn_learning_rate=0.001 model.gamma_attn=0.01
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_8 scope=RFCX_bird seed=8 trainer.max_epochs=600 model.clf_learning_rate=0.01 model.gamma_clf=0.0005 model.attn_learning_rate=0.001 model.gamma_attn=0.001
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_16 scope=RFCX_bird seed=16 trainer.max_epochs=600 model.clf_learning_rate=0.01 model.gamma_clf=0.0005 model.attn_learning_rate=0.001 model.gamma_attn=0.001
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_24 scope=RFCX_bird seed=24 trainer.max_epochs=600 model.clf_learning_rate=0.01 model.gamma_clf=0.0005 model.attn_learning_rate=0.001 model.gamma_attn=0.001
+
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_8 scope=RFCX_frog seed=8 trainer.max_epochs=950 model.clf_learning_rate=0.01 model.gamma_clf=0.0001 model.attn_learning_rate=0.001 model.gamma_attn=0.01
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_16 scope=RFCX_frog seed=16 trainer.max_epochs=950 model.clf_learning_rate=0.01 model.gamma_clf=0.0001 model.attn_learning_rate=0.001 model.gamma_attn=0.01
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run main.py train +experiment=birdnet_mil_species_detector paths=$DEVICE paths.results_dir=$RESULTS_DIR paths.checkpoint_dir=$CKPT_DIR model_name=birdnet_24 scope=RFCX_frog seed=24 trainer.max_epochs=950 model.clf_learning_rate=0.01 model.gamma_clf=0.0001 model.attn_learning_rate=0.001 model.gamma_attn=0.01
