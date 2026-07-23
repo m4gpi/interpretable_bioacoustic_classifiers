@@ -126,7 +126,7 @@ def main(data_dir, results_dir, model_dir, save_dir: str | Path | None = None, f
     df = pd.DataFrame(results)
     df["model_name"] = df["model"].str.upper()
 
-    fig, ax = plt.subplots(figsize=(11, 6), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(8.1, 5), constrained_layout=True)
     palette = sns.color_palette("colorblind", 4)[1:3]
 
     so_uk_species = df.loc[df["scope"] == "SO_UK", "species_name"].unique()
@@ -168,7 +168,7 @@ def main(data_dir, results_dir, model_dir, save_dir: str | Path | None = None, f
 
     # plot the remaining species distances
     for scope, order in zip(["SO UK", "SO EC"], [so_uk_species[num_per_ds:], so_ec_species[num_per_ds:]]):
-        fig, ax = plt.subplots(figsize=(11, 6), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(8.1, 5), constrained_layout=True)
         sns.boxenplot(
             df,
             x="species_name",
@@ -199,7 +199,7 @@ def main(data_dir, results_dir, model_dir, save_dir: str | Path | None = None, f
             print(f"Saved: {save_path}")
 
     order = [*rfcx_bird_species, *rfcx_frog_species]
-    fig, ax = plt.subplots(figsize=(11, 6), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(8.1, 5), constrained_layout=True)
     sns.boxenplot(
         df,
         x="species_name",

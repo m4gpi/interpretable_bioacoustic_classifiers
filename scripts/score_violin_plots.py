@@ -14,11 +14,10 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 from src.core.utils import metrics
 
 plt.rcParams.update({
-    'axes.labelsize': 12,
+    'axes.labelsize': 10,
     'xtick.labelsize': 10,
     'ytick.labelsize': 10,
     'legend.fontsize': 10,
-    'legend.title_fontsize': 12,
 })
 
 def flatten_label(label):
@@ -95,7 +94,7 @@ def main(
         hue_order = ["BirdNET V2.4 (OOB)", "BirdNET V2.4 (OOB) (Occlusions only)", "BirdNET V2.4 (FT)", "BirdNET V2.4 (FT) (Occlusions only)", "VAE", "VAE (Occlusions only)", "SIVAE", "SIVAE (Occlusions only)"]
 
     so_df = so_df.reset_index()
-    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(12, 4), constrained_layout=True)
+    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(8.1, 4), constrained_layout=True)
 
     sns.violinplot(
         data=so_df,
@@ -152,7 +151,7 @@ def main(
         print(f"Saved: {(save_dir / 'so_violin.pdf').expanduser()}")
 
     rfcx_df = df[df["dataset_name"].isin(['RFCX bird', 'RFCX frog'])]
-    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(12, 4), constrained_layout=True)
+    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(8.1, 4), constrained_layout=True)
     palette = list(sns.color_palette("colorblind", 4))
     palette = [darken_color(palette[0], 0.8), darken_color(palette[3], 0.8),darken_color(palette[1], 0.8), darken_color(palette[2], 0.8)]
     hue_order = ["BirdNET V2.4 (OOB)", "BirdNET V2.4 (FT)", "VAE", "SIVAE"]

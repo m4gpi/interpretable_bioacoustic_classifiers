@@ -13,22 +13,38 @@ from pathlib import Path
 
 from src.core.utils.sketch import make_ax_invisible
 
+plt.rcParams.update({
+    'axes.labelsize': 10,
+    'xtick.labelsize': 10,
+    'ytick.labelsize': 10,
+    'legend.fontsize': 10,
+    'legend.title_fontsize': 10,
+})
+
 def main(
     results_dir: Path,
     save_dir: Path,
 ) -> None:
-    save_dir.mkdir(exist_ok=True, parents=True)
-
-    plt.rcParams.update({
-        'axes.labelsize': 12,
-        'xtick.labelsize': 12,
-        'ytick.labelsize': 12,
-        'legend.fontsize': 12,
-        'legend.title_fontsize': 12,
-    })
-
     s = pd.read_parquet(results_dir / "test_scores.parquet")
-    models = ["base_vae", "nifti_vae"]
+    model_map = {
+        "just-drum": "SIVAE",
+        "dynamic-malta": "SIVAE",
+        "daring-system": "SIVAE",
+        "earthy-virgo": "SIVAE",
+        "part-armor": "SIVAE",
+        "secluded-montana": "SIVAE",
+        "lumpy-gibson": "VAE",
+        "slow-partner": "VAE",
+        "unique-tiger": "VAE",
+        "jumpy-engine": "VAE",
+        "quaint-pilot": "VAE",
+        "numb-chef": "VAE",
+    }
+
+    s["run"] = s["model"]
+    s["model"] = s["run"].map(model_map)
+
+    models = ["VAE", "SIVAE"]
     scopes = ["SO_UK", "SO_EC", "RFCX_bird", "RFCX_frog"]
     name_map = lambda x: {
         "SO_UK": "SO UK",
@@ -72,12 +88,14 @@ def main(
     ax = fig.add_subplot(grid_spec[1, :])
     make_ax_invisible(ax)
     ax.set_xlabel("Count of Presence Labels")
-    save_path = save_dir / "label_precision_by_dataset.pdf"
-    plt.savefig(save_path, format="pdf", bbox_inches="tight")
-    print(save_path)
+    if save_dir is not None:
+        save_dir.mkdir(exist_ok=True, parents=True)
+        save_path = save_dir / "label_precision_by_dataset.pdf"
+        plt.savefig(save_path, format="pdf", bbox_inches="tight")
+        print(save_path)
 
     # frequency by accuracy split on count threshold
-    label_threshold = 50
+    label_threshold = 60
     palette = sns.color_palette("colorblind", len(scopes))
     fig = plt.figure(figsize=(8.1, 3), constrained_layout=True)
     grid_spec = fig.add_gridspec(nrows=2, ncols=2, height_ratios=[0.999, 0.01], hspace=0.01)
@@ -130,24 +148,20 @@ def main(
     ax.set_xlabel("Count of Presence Labels")
 
 
-    save_path = save_dir / "label_precision_by_count.pdf"
-    plt.savefig(save_path, format="pdf", bbox_inches="tight")
-    print(save_path)
+    if save_dir is not None:
+        save_dir.mkdir(exist_ok=True, parents=True)
+        save_path = save_dir / "label_precision_by_count.pdf"
+        plt.savefig(save_path, format="pdf", bbox_inches="tight")
+        print(save_path)
 
-    plt.rcParams.update({
-        'axes.labelsize': 12,
-        'xtick.labelsize': 6,
-        'ytick.labelsize': 12,
-        'legend.fontsize': 12,
-        'legend.title_fontsize': 12,
-    })
+    plt.rcParams["xtick.labelsize"] = 8
 
     counts = s[["scope", "species_name", "train_label_counts"]].groupby(["scope", "species_name"]).first().reset_index().sort_values(by="train_label_counts", ascending=False)
     for dataset in ["SO", "RFCX"]:
         df = counts[counts["scope"].str.startswith(dataset)].copy()
         df["species"] = df["species_name"].str.split("_", expand=True)[1]
         for scope in df["scope"].unique():
-            fig, ax = plt.subplots(figsize=(8.1, 3), constrained_layout=True)
+            fig, ax = plt.subplots(figsize=(8.1, 4), constrained_layout=True)
             sns.barplot(
                 data=df[df["scope"] == scope],
                 x="species",
@@ -158,9 +172,11 @@ def main(
             ax.set_xlabel("Species")
             ax.set_ylabel("Label Count")
             ax.tick_params(axis="x", rotation=90)
-            save_path = save_dir / f"{scope}_label_frequency.pdf"
-            plt.savefig(save_path, format="pdf", bbox_inches="tight")
-            print(save_path)
+            if save_dir is not None:
+                save_dir.mkdir(exist_ok=True, parents=True)
+                save_path = save_dir / f"{scope}_label_frequency.pdf"
+                plt.savefig(save_path, format="pdf", bbox_inches="tight")
+                print(save_path)
 
 
 
@@ -177,7 +193,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save-dir",
         type=lambda p: Path(p),
-        required=True,
+        required=False,
         help="/path/to/saved/",
     )
 
