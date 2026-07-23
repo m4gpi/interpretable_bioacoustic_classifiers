@@ -76,7 +76,7 @@ class BirdNETPredictor(Evaluator):
         results["scope"] = data_module.name
         # compute scores
         scores = metrics.score(results)
-        scores["model"] = "birdnet"
+        scores["model"] = "birdnet_native"
         scores["scope"] = data_module.name
 
         print(scores.to_markdown())
