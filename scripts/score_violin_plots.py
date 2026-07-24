@@ -17,7 +17,7 @@ plt.rcParams.update({
     'axes.labelsize': 10,
     'xtick.labelsize': 10,
     'ytick.labelsize': 10,
-    'legend.fontsize': 10,
+    'legend.fontsize': 7,
 })
 
 def flatten_label(label):
@@ -144,10 +144,10 @@ def main(
 
     handles, labels = ax1.get_legend_handles_labels()
     ax1.legend_.remove()
-    ax1.legend(handles, list(map(flatten_label, labels)), loc="lower center", bbox_to_anchor=(0.5, 1.0), ncols=4, title="")
+    ax1.legend(handles, list(map(flatten_label, labels)), loc="lower center", bbox_to_anchor=(0.5, 1.1), ncols=4, title="")
 
     if save_dir is not None:
-        plt.savefig(save_dir / "so_violin.pdf", format="pdf", bbox_inches="tight")
+        fig.savefig(save_dir / "so_violin.pdf", format="pdf")
         print(f"Saved: {(save_dir / 'so_violin.pdf').expanduser()}")
 
     rfcx_df = df[df["dataset_name"].isin(['RFCX bird', 'RFCX frog'])]
@@ -200,7 +200,7 @@ def main(
     ax2.set_ylabel("AP")
     handles, labels = ax1.get_legend_handles_labels()
     ax1.legend_.remove()
-    ax1.legend(handles, list(map(flatten_label, labels)), loc="lower center", bbox_to_anchor=(0.5, 1.0), ncols=4, title="")
+    ax1.legend(handles, list(map(flatten_label, labels)), loc="lower center", bbox_to_anchor=(0.5, 1.1), ncols=4, title="")
 
     if save_dir is not None:
         plt.savefig(save_dir / "rfcx_violin.pdf", format="pdf", bbox_inches="tight")
