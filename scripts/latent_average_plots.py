@@ -37,9 +37,10 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 plt.rcParams.update({
+    'axes.titlesize': 10,
     'axes.labelsize': 10,
-    'xtick.labelsize': 10,
-    'ytick.labelsize': 10,
+    'xtick.labelsize': 8,
+    'ytick.labelsize': 8,
     'legend.fontsize': 10,
 })
 
@@ -53,14 +54,14 @@ def main(
 ) -> None:
     device = f"cuda:{device_id}" if device_id is not None else "cpu"
 
-    so_model = "dynamic-malta" # "just-drum"
-    rfcx_model = "part-armor" # "earthy-vigor"
+    so_model = "just-drum" # "dynamic-malta" # "just-drum"
+    rfcx_model = "earthy-virgo" # "part-armor" # "earthy-vigor"
     model_map = {
         "just-drum": "SIVAE",
-        # "dynamic-malta": "SIVAE",
+        "dynamic-malta": "SIVAE",
         # "daring-system": "SIVAE",
         "earthy-virgo": "SIVAE",
-        # "part-armor": "SIVAE",
+        "part-armor": "SIVAE",
         # "secluded-montana": "SIVAE",
         # "lumpy-gibson": "VAE",
         # "slow-partner": "VAE",
@@ -94,14 +95,14 @@ def main(
     x_hat = 20 * np.log10(x_hat.exp().cpu())
     specs.append(("RFCX", x_hat))
 
-    fig, axes = plt.subplots(ncols=len(specs), figsize=(8.1, 1.5), constrained_layout=True)
+    fig, axes = plt.subplots(ncols=len(specs), figsize=(8, 2), constrained_layout=True)
     vmax, vmin = 10.0, -60
     for i, (ax, (title, x_hat_db)) in enumerate(zip(axes, specs)):
         vae.front_end.plot(x_hat_db.squeeze().t(), vmax=vmax, vmin=vmin, cmap="Greys", ax=ax)
         if i != 0:
             ax.set_yticks([])
             ax.set_ylabel("")
-        if i != 2:
+        if i != 3:
             ax.set_xlabel("")
         ax.set_xticks([0, 191], [0, 1.536])
         ax.set_title(title)

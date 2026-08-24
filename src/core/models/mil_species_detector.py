@@ -118,7 +118,7 @@ class GatedAttention(torch.nn.Module):
             A = F.softmax((A_V * A_U) @ self.A_w[target_i], dim=-2) # (N, T, 1)
             A = A.squeeze(-1)
         else:
-            x = x.unsqueeze(1) # (N, 1, T, D)
+            x = x.unsqueeze(-3) # (N, 1, T, D)
             A_V = torch.tanh(x @ self.A_V_weight + self.A_V_bias) # (N, 1, T, D)
             A_U = torch.sigmoid(x @ self.A_U_weight + self.A_U_bias) # (N, C, T, D)
             A = F.softmax((A_V * A_U) @ self.A_w, dim=-2) # (N, C, T, 1)
@@ -151,6 +151,10 @@ class MILSpeciesDetector(L.LightningModule):
     @functools.cached_property
     def target_names(self):
         return self.from_buffer_matrix(self.target_names_enc)
+
+    @property
+    def species_df(self):
+        return pd.DataFrame(data=zip(self.target_index.numpy(), self.target_names), columns=["species_i", "species_name"])
 
     def species_weights(self, species_name: str) -> torch.Tensor:
         weights = self.classifiers.get_weights()
@@ -200,6 +204,17 @@ class MILSpeciesDetector(L.LightningModule):
             samples_per_class=self.target_counts,
             **other_args,
         )
+
+    def frame_probs(self, x: torch.Tensor):
+        attn_w = self.attention(x)
+        y_t_probs, other_args = self.classifiers(x)
+        return y_t_probs, attn_w
+
+    def target_frame_probs(self, x: torch.Tensor, target_name: str):
+        target_i = self.target_names.index(target_name)
+        attn_w = self.attention(x)
+        y_t_probs, other_args = self.classifiers(x)
+        return y_t_probs[:, :, :, target_i], attn_w[:, :, :, target_i]
 
     def loss(self, y: torch.Tensor, y_probs: torch.Tensor, samples_per_class: torch.Tensor, epsilon: float = 1e-6, **kwargs: Any) -> Dict[str, torch.Tensor]:
         outputs = TensorDict()

@@ -23,11 +23,11 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 plt.rcParams.update({
-    'axes.labelsize': 8,
-    'xtick.labelsize': 8,
-    'ytick.labelsize': 8,
+    'axes.labelsize': 10,
+    'xtick.labelsize': 10,
+    'ytick.labelsize': 10,
     'axes.titlesize': 10,
-    'legend.fontsize': 8,
+    'legend.fontsize': 10,
 })
 
 def main(results_dir, save_dir):
@@ -48,7 +48,7 @@ def main(results_dir, save_dir):
 
     palette = list(sns.color_palette("colorblind", len(df["group"].unique())))
 
-    fig = plt.figure(figsize=(10, 4), constrained_layout=True)
+    fig = plt.figure(figsize=(8, 4), constrained_layout=True)
     g = sns.catplot(
         data=df,
         kind="boxen",
@@ -80,7 +80,7 @@ def main(results_dir, save_dir):
         plt.savefig(file_name, format="pdf", bbox_inches="tight")
         log.info(f"Saved: {file_name}")
 
-    fig = plt.figure(figsize=(10, 4), constrained_layout=True)
+    fig = plt.figure(figsize=(8, 4), constrained_layout=True)
     g = sns.catplot(
         data=df,
         kind="boxen",
@@ -112,7 +112,7 @@ def main(results_dir, save_dir):
         plt.savefig(file_name, format="pdf", bbox_inches="tight")
         log.info(f"Saved: {file_name}")
 
-    fig = plt.figure(figsize=(10, 4), constrained_layout=True)
+    fig = plt.figure(figsize=(8, 4), constrained_layout=True)
     g = sns.catplot(
         data=df,
         kind="boxen",
@@ -135,7 +135,7 @@ def main(results_dir, save_dir):
         plt.savefig(file_name, format="pdf", bbox_inches="tight")
         log.info(f"Saved: {file_name}")
 
-    fig, (ax1, ax2) = plt.subplots(ncols=2, figsize=(10, 3), constrained_layout=True)
+    fig, (ax1, ax2, ax3) = plt.subplots(ncols=3, figsize=(8, 2.5), constrained_layout=True)
     palette = list(sns.color_palette("colorblind", 3))
     sns.boxenplot(
         data=df[test_idx],
@@ -157,7 +157,7 @@ def main(results_dir, save_dir):
         hue="model_name",
         hue_order=["VAE", "SIVAE"],
         palette=palette[1:],
-        legend=True,
+        legend=False,
         gap=.1,
         ax=ax2,
         showfliers=False,
@@ -165,8 +165,29 @@ def main(results_dir, save_dir):
     ax1.set_ylabel("Dataset")
     ax1.set_xlabel("Frame-wise MSE")
     ax2.set_ylabel("")
+    ax2.tick_params(axis="y", labelleft=False)
     ax2.set_xlabel(r"KL Divergence")
-    sns.move_legend(ax2, loc="upper left", bbox_to_anchor=(1.0, 1.0), title=None, frameon=False)
+
+    # total shift variation
+    df3 = pd.read_parquet(results_dir.parent / "total_shift_variation.parquet")
+    df3["dzdt_sum"] = df3["dzdt_sum"] / 128
+    sns.boxenplot(
+        data=df3,
+        x="dzdt_sum",
+        y="dataset_name",
+        hue="model",
+        hue_order=["VAE", "SIVAE"],
+        palette=sns.color_palette("colorblind", n_colors=3)[1:],
+        ax=ax3,
+        legend=True,
+        showfliers=False,
+    )
+    sns.move_legend(ax3, loc="lower right", bbox_to_anchor=(1.0, 1.01), title=None, frameon=True, ncols=2)
+    ax3.set_xlabel(r"Total Shift Variation")
+    ax3.set_xscale("log")
+    ax3.set_ylabel("")
+    ax3.tick_params(axis="y", labelleft=False)
+
     if save_dir:
         file_name = (save_dir / "mse_dkl.pdf").expanduser()
         fig.savefig(file_name, format="pdf", bbox_inches="tight")

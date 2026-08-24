@@ -22,7 +22,8 @@ rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 
 from src.core.data.rainforest_connection import RainforestConnection, RainforestConnectionDataModule
 from src.core.data.soundscape_embeddings import SoundscapeEmbeddingsDataModule
-from src.core.models.species_detector import SpeciesDetector
+from src.core.models.mil_species_detector import MILSpeciesDetector
+from src.core.models.sivae import SIVAE
 from src.core.utils.sketch import plot_mel_spectrogram, make_ax_invisible
 from src.core.transforms.log_mel_spectrogram import LogMelSpectrogram
 from src.cli.utils.instantiators import instantiate_transforms
@@ -40,30 +41,6 @@ plt.rcParams.update({
     'axes.titlesize': 10,
     'legend.fontsize': 6,
 })
-
-def get_transforms():
-    with open(rootutils.find_root() / "config" / "transforms" / "cropped_log_mel_spectrogram.yaml", "r") as f:
-        transform_conf = yaml.safe_load(f.read())
-        transforms = instantiate_transforms(transform_conf)
-        log_mel_spectrogram_params = transform_conf["log_mel_spectrogram"]
-        del log_mel_spectrogram_params["_target_"]
-    return transforms
-
-def get_vae(model_dict):
-    with open(rootutils.find_root() / "config" / "model" / f"{model_dict['model_name']}.yaml", "r") as f:
-        model_conf = yaml.safe_load(f.read())
-        vae = hydra.utils.instantiate(model_conf)
-    checkpoint = torch.load(model_dict["vae_checkpoint_path"], map_location="cpu")
-    vae.load_state_dict(checkpoint["model_state_dict"])
-    log.info(f"Loaded {model_dict['model_name']} from {model_dict['vae_checkpoint_path']}")
-    return vae
-
-def get_clf(model_dict):
-    log.info(f"Loaded {model_dict['clf_checkpoint_path']}")
-    checkpoint = torch.load(model_dict["clf_checkpoint_path"], map_location=device)
-    clf = SpeciesDetector(**checkpoint["hyper_parameters"])
-    clf.load_state_dict(checkpoint["state_dict"])
-    return clf
 
 def plot_frame_probs_spectrogram(
     x, y_probs, attn_weights,
@@ -135,43 +112,29 @@ def main(
     device = f"cuda:{device_id}" if device_id is not None else "cpu"
 
     scope = "RFCX_bird"
-    model_name = "nifti_vae"
-    version = "v14"
+    model_name = "sivae"
+    version = "earthy-virgo"
 
-    index = pd.read_parquet(embedding_dir / "index.parquet")
-    df = index[(index["scope"] == scope) & (index["model_name"] == model_name) & (index["version"] == version)].copy()
-    results_df = pd.read_parquet(results_dir / "test_results.parquet", columns=["model", "version", "scope", "file_i", "species_name", "prob", "label"])
-    results_df = results_df[(results_df["scope"] == scope) & (results_df["model"] == model_name) & (results_df["version"] == version)].drop(["scope", "model", "version"], axis=1).copy()
-    scores_df = pd.read_parquet(results_dir / "test_scores.parquet")
-    scores_df = scores_df[(scores_df["scope"] == scope) & (scores_df["model"] == model_name)].groupby(["scope", "model", "species_name"])[["auROC", "AP"]].mean()
+    results_df = pd.read_parquet(results_dir / "test_results.parquet" / "model_earthy-virgo_run_id=dazzling-albert.parquet")
+    scores_df = pd.read_parquet(results_dir / "test_scores.parquet" / "model_earthy-virgo_run_id=dazzling-albert.parquet")
     scores_df = scores_df.reset_index().set_index("species_name")
 
-    model_dict = df.iloc[0].to_dict()
-    vae = get_vae(model_dict).to(device)
-    clf = get_clf(model_dict).to(device)
+    vae = SIVAE.load_from_checkpoint("/its/home/kag25/models/v4/sivae/earthy-virgo/step=180000.ckpt", map_location="cuda")
+    clf = MILSpeciesDetector.load_from_checkpoint("/its/home/kag25/models/v4/species_detectors/earthy-virgo_RFCX_bird.ckpt", map_location="cuda")
 
-    dm = SoundscapeEmbeddingsDataModule(root=embedding_dir, model="nifti_vae", version="v14", scope="RFCX_bird")
+    dm = SoundscapeEmbeddingsDataModule(root=embedding_dir / "earthy-virgo" / "RFCX_bird")
     dm.setup()
     embedding_data = dm.data
-    audio_data = RainforestConnection(audio_dir, test=True, scope="RFCX_bird")
-    transforms = get_transforms()
-    spectrogram = transforms.transforms[0]
-    spectrogram_params = dict(
-        hop_length=spectrogram.hop_length,
-        sample_rate=spectrogram.sample_rate,
-        mel_min_hertz=spectrogram.mel_min_hertz,
-        mel_max_hertz=spectrogram.mel_max_hertz,
-        mel_scaling_factor=spectrogram.mel_scaling_factor,
-        mel_break_frequency=spectrogram.mel_break_frequency,
-    )
+    audio_data = RainforestConnection(audio_dir, test=True, scope="bird")
 
+    spectrogram = vae.front_end
     train_embeddings = pd.read_parquet(dm.train_features_path)
     z0 = train_embeddings.iloc[:, :128].mean(axis=0).to_numpy()
     z0 = torch.tensor(z0.reshape(1, 1, -1), dtype=torch.float32, device=device)
 
-    hops_per_second = spectrogram.sample_rate / spectrogram.hop_length
-    frame_length_seconds = vae.frame_hop_length / hops_per_second
-    frame_length_hops = vae.frame_hop_length
+    hops_per_second = spectrogram.sample_rate / spectrogram.fft_hop_length
+    frame_length_seconds = vae.frame_window_length / hops_per_second
+    frame_length_hops = vae.frame_window_length
 
     test_labels = pd.read_parquet(audio_data.base_dir / "test_labels.parquet")
 
@@ -200,9 +163,10 @@ def main(
         record = test_labels[(test_labels.file_name == file_name) & (test_labels.species_name == species_name)]
         bounding_boxes = record[["t_min_hops", "t_max_hops", "f_min_bin", "f_max_bin"]].to_numpy()
 
-        x = transforms(audio_data.load_sample(file_name)).to(device).unsqueeze(0)
+        x = vae.pre_process(audio_data.load_sample(file_name).to(device).unsqueeze(0))
         q, *_ = vae.encode(x)
-        frame_probs, weighted_frame_probs, attn_weights = clf.species_frame_probs(q, species_name)
+        z, _ = q.chunk(2, dim=-1)
+        frame_probs, attn_weights = clf.target_frame_probs(z.unsqueeze(0), species_name)
 
         # plot the region around the bounding box
         t_start, t_end, _, _ = bounding_boxes[0]
@@ -212,9 +176,8 @@ def main(
         ts = np.arange(t_start, t_end)
         ts = ts[start_idx:start_idx+192*2]
         x_t = x.squeeze().exp().cpu().numpy()[ts]
-        im = plot_mel_spectrogram(
+        im = vae.front_end.plot(
             20 * np.log10(x_t.T),
-            **spectrogram_params,
             vmin=-80.0,
             vmax=10.0,
             cmap="Greys",
@@ -233,9 +196,8 @@ def main(
         p_y_t = frame_probs[seq_idx].item()
         t_start, t_end = seq_idx * frame_length_hops, (seq_idx + 1) * frame_length_hops
         x_t = x.squeeze().exp().cpu().numpy()[t_start:t_end]
-        im = plot_mel_spectrogram(
+        im = vae.front_end.plot(
             20 * np.log10(x_t.T),
-            **spectrogram_params,
             vmin=-80.0,
             vmax=10.0,
             cmap="Greys",
@@ -249,14 +211,13 @@ def main(
         axes[j, 1].set_ylabel("")
 
         if j == 0:
-            W = clf.classifier_weights(species_name)
+            W = clf.species_weights(species_name)
             norm = torch.linalg.norm(W)
-            z_tilde = z0 + ((z0 @ W.T / norm) + delta) * (W / norm)
+            z_tilde = z0 + ((z0 @ W / norm) + delta) * (W / norm)
             x_tilde = vae.decode(z_tilde, dt)
             x_tilde = x_tilde.squeeze().exp().cpu()
-            im = plot_mel_spectrogram(
+            im = vae.front_end.plot(
                 20 * np.log10(x_tilde.T),
-                **spectrogram_params,
                 vmin=-80.0,
                 vmax=10.0,
                 cmap="Greys",
@@ -274,9 +235,10 @@ def main(
             make_ax_invisible(axes[j, 2])
 
     fig.suptitle(title)
-    save_file = save_dir / f"spindalis.pdf"
-    print(save_file)
-    fig.savefig(save_file, format="pdf")
+    if save_dir is not None:
+        save_file = save_dir / f"spindalis.pdf"
+        print(save_file)
+        fig.savefig(save_file, format="pdf")
 
 
 if __name__ == "__main__":

@@ -71,12 +71,11 @@ class WeightActivationUncertainty(L.Callback):
             train_results_df = results_df[results_df.index.get_level_values("dataloader_idx") == 0]
             val_results_df = results_df[results_df.index.get_level_values("dataloader_idx") == 1]
             test_results_df = results_df[results_df.index.get_level_values("dataloader_idx") == 2]
-            results_df.to_parquet(self.train_save_path / f"{self.model_name}-{self.scope}.parquet")
+            train_results_df.to_parquet(self.train_save_path / f"{self.model_name}-{self.scope}.parquet")
             log.info(f"Train results saved to {(self.train_save_path  / f'{self.model_name}-{self.scope}.parquet').resolve()}")
             val_results_df.to_parquet(self.val_save_path / f"{self.model_name}-{self.scope}.parquet")
             log.info(f"Train results saved to {(self.val_save_path  / f'{self.model_name}-{self.scope}.parquet').resolve()}")
             test_results_df.to_parquet(self.test_save_path / f"{self.model_name}-{self.scope}.parquet")
             log.info(f"Test results saved to {(self.test_save_path / f'{self.model_name}-{self.scope}.parquet').resolve()}")
-
         self.predictions.clear()
 

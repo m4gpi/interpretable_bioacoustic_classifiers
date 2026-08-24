@@ -24,7 +24,7 @@ def main(
     results_dir: pathlib.Path,
     save_dir: pathlib.Path,
 ):
-    df = pd.read_parquet(results_dir / "test_scores.parquet")
+    df = pd.read_parquet(results_dir / "test_scores.parquet").reset_index()
     model_map = {
         "birdnet_native": "BirdNET V2.4 (OOB)",
         "birdnet_8": "BirdNET V2.4 (FT)",
@@ -47,38 +47,40 @@ def main(
     df["dataset_name"] = df["scope"].str.replace("_", " ")
     df["species_name"] = df["species_name"].map(lambda s: s.split("_")[-1])
 
-    palette = np.stack([color for color in sns.color_palette("colorblind", 4)]).reshape(4, 3).tolist()
-    df = df.reset_index()
+    palette = list(sns.color_palette("colorblind", 5))
+    palette = [palette[0], palette[4], palette[1], palette[2]]
 
     # show the top 6 from each dataset
-    df1 = df[df["model_class"].isin(["BirdNET V2.4 (FT)", "VAE", "SIVAE"]) & (df["scope"] == scope)]
-    order = df1.groupby("species_name")["AP"].max().sort_values(ascending=False).index[:24]
-    fig, (ax1, ax2) = plt.subplots(figsize=(8.1, 6), nrows=2)
+    df1 = df[df["model_class"].isin(["BirdNET V2.4 (FT)", "VAE", "SIVAE"])]
+    order = df[df["model_class"].isin(["VAE", "SIVAE"])].groupby("species_name")["AP"].mean().sort_values(ascending=False).index[:24]
+    fig, (ax1, ax2) = plt.subplots(figsize=(8, 4), nrows=2)
     sns.boxplot(
         data=df1,
         x="species_name",
         y="auROC",
         hue="model_class",
-        hue_order=list(name_map.values())[1:],
+        hue_order=["BirdNET V2.4 (FT)", "VAE", "SIVAE"],
+        linewidth=1,
         order=order,
         ax=ax1,
-        palette=palette[1:-1],
+        palette=palette[1:],
         legend=True,
     )
     ax1.set_ylim([0.75, 1.0])
     ax1.set_ylabel("auROC")
     ax1.set_xticklabels([])
     ax1.set_xlabel("")
-    sns.move_legend(ax1, loc="lower right", bbox_to_anchor=(1.0, 1.01), ncols=2, title="")
+    sns.move_legend(ax1, loc="lower right", bbox_to_anchor=(1.0, 1.01), ncols=3, title="")
     sns.boxplot(
         data=df1,
         x="species_name",
         y="AP",
         hue="model_class",
-        hue_order=list(name_map.values())[1:],
+        hue_order=["BirdNET V2.4 (FT)", "VAE", "SIVAE"],
         order=order,
+        linewidth=1,
         ax=ax2,
-        palette=palette[1:-1],
+        palette=palette[1:],
         legend=False,
     )
     # ax2.tick_params("x", ha='right', rotation_mode='anchor', rotation=60)
@@ -95,32 +97,33 @@ def main(
     for scope in df["scope"].unique():
         df1 = df[df["model_class"].isin(["BirdNET V2.4 (FT)", "VAE", "SIVAE"]) & (df["scope"] == scope)]
         order = df1.groupby("species_name")["train_label_counts"].first().sort_values(ascending=False).index
-        fig, (ax1, ax2) = plt.subplots(figsize=(8.1, 3.5), nrows=2)
+        fig, (ax1, ax2) = plt.subplots(figsize=(11, 8), nrows=2)
         sns.boxplot(
             data=df1,
             x="species_name",
             y="auROC",
             hue="model_class",
-            hue_order=list(name_map.values())[1:],
+            hue_order=["BirdNET V2.4 (FT)", "VAE", "SIVAE"],
             order=order,
+            linewidth=1,
             ax=ax1,
-            palette=palette[1:-1],
+            palette=palette[1:],
             legend=True,
         )
         ax1.set_ylim([0.5, 1.0])
         ax1.set_ylabel("auROC")
         ax1.set_xticklabels([])
         ax1.set_xlabel("")
-        sns.move_legend(ax1, loc="lower right", bbox_to_anchor=(1.0, 1.01), ncols=2, title="")
+        sns.move_legend(ax1, loc="lower right", bbox_to_anchor=(1.0, 1.01), ncols=3, title="")
         sns.boxplot(
             data=df1,
             x="species_name",
             y="AP",
             hue="model_class",
-            hue_order=list(name_map.values())[1:],
+            hue_order=["BirdNET V2.4 (FT)", "VAE", "SIVAE"],
             order=order,
             ax=ax2,
-            palette=palette[1:-1],
+            palette=palette[1:],
             legend=False,
         )
         for label in ax2.get_xticklabels():

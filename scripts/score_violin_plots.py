@@ -37,8 +37,8 @@ def main(
     df = pd.read_parquet(results_dir / "test_scores.parquet")
 
     # switch around colours for consistency across the paper
-    palette = list(sns.color_palette("colorblind", 4))
-    palette = [palette[0], palette[3], palette[1], palette[2]]
+    palette = list(sns.color_palette("colorblind", 5))
+    palette = [palette[0], palette[4], palette[1], palette[2]]
     hue_order = ["BirdNET V2.4 (OOB)", "BirdNET V2.4 (FT)", "VAE", "SIVAE"]
 
     model_map = {
@@ -94,7 +94,7 @@ def main(
         hue_order = ["BirdNET V2.4 (OOB)", "BirdNET V2.4 (OOB) (Occlusions only)", "BirdNET V2.4 (FT)", "BirdNET V2.4 (FT) (Occlusions only)", "VAE", "VAE (Occlusions only)", "SIVAE", "SIVAE (Occlusions only)"]
 
     so_df = so_df.reset_index()
-    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(8.1, 4), constrained_layout=True)
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(nrows=4, ncols=1, figsize=(8.1, 6), constrained_layout=True)
 
     sns.violinplot(
         data=so_df,
@@ -139,21 +139,17 @@ def main(
     )
     ax2.set_yticks(np.arange(0.0, 1.1, 0.2))
     ax2.set_ylim([0.0, 1.0])
-    ax2.set_xlabel("Dataset")
+    ax2.set_xlabel("")
     ax2.set_ylabel("AP")
 
     handles, labels = ax1.get_legend_handles_labels()
     ax1.legend_.remove()
     ax1.legend(handles, list(map(flatten_label, labels)), loc="lower center", bbox_to_anchor=(0.5, 1.1), ncols=4, title="")
 
-    if save_dir is not None:
-        fig.savefig(save_dir / "so_violin.pdf", format="pdf")
-        print(f"Saved: {(save_dir / 'so_violin.pdf').expanduser()}")
-
     rfcx_df = df[df["dataset_name"].isin(['RFCX bird', 'RFCX frog'])]
-    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(8.1, 4), constrained_layout=True)
-    palette = list(sns.color_palette("colorblind", 4))
-    palette = [darken_color(palette[0], 0.8), darken_color(palette[3], 0.8),darken_color(palette[1], 0.8), darken_color(palette[2], 0.8)]
+    # fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(8.1, 4), constrained_layout=True)
+    palette = list(sns.color_palette("colorblind", 5))
+    palette = [darken_color(palette[0], 0.8), darken_color(palette[4], 0.8),darken_color(palette[1], 0.8), darken_color(palette[2], 0.8)]
     hue_order = ["BirdNET V2.4 (OOB)", "BirdNET V2.4 (FT)", "VAE", "SIVAE"]
 
     sns.violinplot(
@@ -168,16 +164,17 @@ def main(
         density_norm="area",
         gap=.1,
         bw_adjust=0.75,
-        legend=True,
-        ax=ax1,
+        legend=False,
+        ax=ax3,
         width=0.9,
     )
-    ax1.margins(y=0.00)
-    ax1.set_yticks(np.arange(0.0, 1.1, 0.2))
-    ax1.set_ylim([0.0, 1.0])
-    ax1.set_xlabel("")
-    ax1.set_ylabel("auROC")
-    ax1.set_xticks([])
+    ax3.margins(y=0.00)
+    ax3.set_yticks(np.arange(0.0, 1.1, 0.2))
+    ax3.set_ylim([0.0, 1.0])
+    ax3.set_xlabel("")
+    ax3.set_ylabel("auROC")
+    ax3.set_xticks([])
+
     sns.violinplot(
         data=rfcx_df,
         x="dataset_name",
@@ -190,21 +187,21 @@ def main(
         density_norm="area",
         gap=.1,
         bw_adjust=0.75,
-        ax=ax2,
+        ax=ax4,
         legend=False,
         width=0.9,
     )
-    ax2.set_yticks(np.arange(0.0, 1.1, 0.2))
-    ax2.set_ylim([0.0, 1.0])
-    ax2.set_xlabel("Dataset")
-    ax2.set_ylabel("AP")
-    handles, labels = ax1.get_legend_handles_labels()
-    ax1.legend_.remove()
-    ax1.legend(handles, list(map(flatten_label, labels)), loc="lower center", bbox_to_anchor=(0.5, 1.1), ncols=4, title="")
+    ax4.set_yticks(np.arange(0.0, 1.1, 0.2))
+    ax4.set_ylim([0.0, 1.0])
+    ax4.set_xlabel("Dataset")
+    ax4.set_ylabel("AP")
+    # handles, labels = ax1.get_legend_handles_labels()
+    # ax1.legend_.remove()
+    # ax1.legend(handles, list(map(flatten_label, labels)), loc="lower center", bbox_to_anchor=(0.5, 1.1), ncols=4, title="")
 
     if save_dir is not None:
-        plt.savefig(save_dir / "rfcx_violin.pdf", format="pdf", bbox_inches="tight")
-        print(f"Saved: {(save_dir / 'rfcx_violin.pdf').expanduser()}")
+        plt.savefig(save_dir / "scores_violin.pdf", format="pdf", bbox_inches="tight")
+        print(f"Saved: {(save_dir / 'scores_violin.pdf').expanduser()}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
