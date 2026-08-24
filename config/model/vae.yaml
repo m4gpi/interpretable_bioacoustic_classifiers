@@ -1,0 +1,65 @@
+_target_: src.core.models.vae.VAE
+latent_dim: 128
+frequency_dim: 64
+frame_window_length: 192
+frame_padding_mode: circular
+beta: 1.0
+sigma_x: 0.2
+sigma_z_min: 1.e-5
+learning_rate: 4.e-5
+optimiser_cls: torch.optim.AdamW
+scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
+scheduler_config:
+  eta_min: 1.e-5
+  T_max: 180000
+scheduler_interval: step
+scheduler_frequency: 1
+front_end:
+  _target_: src.core.transforms.log_mel_spectrogram.LogMelSpectrogram
+  sample_rate: 48000
+  num_fft: 512
+  fft_window_length: 512
+  fft_hop_length: 384
+  num_mel_bins: 64
+  mel_min_hertz: 150
+  mel_max_hertz: 15_000
+  mel_scaling_factor: 4581.0
+  mel_break_frequency: 1_750.0
+feature_encoder:
+  _target_: src.core.models.components.CNNFeatureEncoder
+  in_channels: 1
+  block_sizes: [8, 16, 32, 64, 128]
+  block_width: 4
+  block_depth: 3
+  block_resample: [CONV_DOWN, CONV_DOWN, CONV_DOWN, CONV_DOWN]
+  padding_mode: circular
+  activation: LEAK
+  norm_type: LN
+  dropout_prob: 0.2
+content_encoder:
+  _target_: src.core.models.components.ContentEncoder
+  in_channels: 512
+  out_channels: 128
+  layer_sizes: [3072, 768, 256]
+  dropout_prob: 0.1
+  activation: LEAK
+content_decoder:
+  _target_: src.core.models.components.ContentDecoder
+  in_channels: 128
+  out_channels: 512
+  out_height: 6
+  out_width: 4
+  layer_sizes: [128, 768, 3072]
+  dropout_prob: 0.0
+  activation: LEAK
+feature_decoder:
+  _target_: src.core.models.components.CNNFeatureDecoder
+  out_channels: 1
+  block_sizes: [128, 64, 32, 16, 8]
+  block_width: 4
+  block_depth: 3
+  block_resample: [CONV_UP, CONV_UP, CONV_UP, CONV_UP]
+  padding_mode: circular
+  activation: LEAK
+  norm_type: LN
+  dropout_prob: 0.0

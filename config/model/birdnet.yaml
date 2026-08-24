@@ -1,2 +1,2 @@
-_target_: src.core.models.birdnet.BirdNET
+_target_: src.core.models.birdnet.BirdNETPredictions
 min_confidence: 0.0

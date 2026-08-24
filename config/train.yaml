@@ -1,9 +1,8 @@
  # @package _global_
  # order of defaults determines the order in which configs override each other
 defaults:
-  - data: soundscape_embeddings
-  - model: species_detector
-  - transforms: default
+  - data: null
+  - model: null
   - callbacks: default
   - logger: null
   - trainer: default
@@ -12,8 +11,10 @@ defaults:
   - _self_
 
 task_name: train
+test: false
 tags: ["dev"]
-train: True
-test: True
+resume: false
 ckpt_path: null
-seed: null
+seed: 42
+run_id: null
+num_gpus: 1

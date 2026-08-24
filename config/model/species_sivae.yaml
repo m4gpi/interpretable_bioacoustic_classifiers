@@ -1,0 +1,13 @@
+_target_: src.core.algorithms.soundscape_classifier.SpeciesVAE
+latent_dim: 128
+frequency_dim: 64
+frame_window_length: 192
+frame_padding_mode: circular
+translation_mode: bicubic
+translation_idx: 3
+cross_decode_method: soft
+beta: 1.0
+sigma_x: 0.2
+sigma_z_min: 1.e-5
+learning_rate: 4.e-5
+optimiser_cls: torch.optim.AdamW

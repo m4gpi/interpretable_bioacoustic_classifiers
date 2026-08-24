@@ -65,10 +65,6 @@ class BirdClef2024Soundscapes(torch.utils.data.Dataset):
     def target_names(self):
         return self.labels.columns.tolist()
 
-    @property
-    def model_params(self) -> Dict:
-        return {}
-
     def load_sample(self, file_path: pathlib.Path, frame_offset: int = 0):
         metadata = torchaudio.info(file_path)
         num_frames = int(metadata.sample_rate * self.segment_len)

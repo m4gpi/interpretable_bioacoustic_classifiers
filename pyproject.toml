@@ -43,6 +43,11 @@ dependencies = [
   "kagglehub==0.3.13",
   "birdnetlib>=0.18.0",
   "kaggle>=1.7.4.5",
+  "duckdb>=1.5.2",
+  "nemony>=0.0.2",
+  "torchsummary>=1.5.1",
+  "scikit-image>=0.25.2",
+  "colorcet>=3.2.1",
 ]
 
 [dependency-groups]

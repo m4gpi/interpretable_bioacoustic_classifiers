@@ -1,48 +1,24 @@
 import numpy as np
 import torch
 
-from torch import Tensor
 from torch.functional import F
-from typing import Union, Tuple
 
 __all__ = ["circular_boundary", "translation", "Translation"]
 
-def circular_boundary(xx: Tensor) -> Tensor:
-    x = torch.zeros_like(xx)
-    mask = (xx == 0).any(dim=(-2, -1))
-    x[mask] = xx[mask]
-    x[~mask] = (xx[~mask] + 1) - torch.floor((xx[~mask] + 1) / 2.0) * 2.0 - 1.0
-    return x
+def circular_boundary(xx: torch.Tensor) -> torch.Tensor:
+    return ((xx + 1) % 2) - 1
 
-def translation(x, dx, padding_mode: str = "circular"):
-    """
-    Translate x by dx along the H dimension
-    using a circular boundary condition along the H border. Note: translations
-    where zero exists in co-ordinates are ignored to prevent division by zero
-
-    :param Tensor x: a tensor of shape (B, C, H, W)
-    :param Tensor dx: a tensor of shape (B, C, H, 1)
-    :returns x_tilde: a tensor of shape (B, C, H, W)
-    """
-    B, C, H, W = x.size()
-    mesh = torch.stack(torch.meshgrid(
-        torch.linspace(-1, 1, H),
-        torch.linspace(-1, 1, W),
-        indexing="ij",
-    ), dim=-1).expand(B, H, W, 2).to(x.device)
-    xx, yy = mesh.chunk(2, dim=-1)
-    xx = xx + dx
+def translation_1d(x: torch.Tensor, delta: torch.Tensor, mode: str = "bilinear", padding_mode: str = "circular") -> torch.Tensor:
+    bs, ch, fq, ts = x.shape
+    x_flat = x.view(bs, ch * fq, 1, ts)
+    xs = torch.linspace(-1, 1, ts, device=x.device)
+    grid_x = xs.view(1, 1, ts).expand(bs, 1, ts)
+    grid_y = torch.zeros_like(grid_x)
+    grid = torch.stack((grid_x, grid_y), dim=-1)
+    xx = grid[..., 0] + delta.view(bs, 1, 1)
     if padding_mode == "circular":
-        xx = circular_boundary(xx)
-        padding_mode = "zeros" # doesn't matter because they're all now within bounds
-    grid = torch.cat([yy, xx], dim=-1).squeeze(-2)
-    x_tilde = F.grid_sample(x, grid, mode="bilinear", padding_mode=padding_mode, align_corners=True)
-    return x_tilde.view(B, C, H, W)
-
-class Translation:
-    def __init__(dx: float, padding_mode: str) -> None:
-        self.dx = dx
-        self.padding_mode = padding_mode
-
-    def __call__(self, x: Tensor) -> Tensor:
-        return translation(x, self.dx, self.padding_mode)
+        xx = ((xx + 1) % 2) - 1
+        padding_mode = "zeros"
+    grid[..., 0] = xx
+    x_tilde = F.grid_sample(x_flat, grid, mode=mode, padding_mode=padding_mode, align_corners=True)
+    return x_tilde.view(bs, ch, fq, ts)

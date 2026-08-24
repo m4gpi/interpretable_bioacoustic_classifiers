@@ -1,0 +1,14 @@
+#!/bin/bash
+
+STORAGE=/mnt/data0/kag25
+JOBS_PER_GPU=2
+GPU_IDS=1,3,4,5
+NUM_GPUS="$(echo $CUDA_VISIBLE_DEVICES | awk -F ',' '{print NF}')"
+NUM_JOBS="$((echo $NUM_GPUS * $JOBS_PER_GPU))"
+
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=8 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=tusked-chief scope=RFCX_frog paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=16 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=ultimate-story scope=RFCX_frog paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=24 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=misty-lecture scope=RFCX_frog paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=8 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=uncanny-burma scope=RFCX_frog paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=16 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=detailed-ticket scope=RFCX_frog paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation
+CUDA_VISIBLE_DEVICES=$GPU_IDS uv run src/cli/train.py --multirun hydra/launcher=joblib hydra.launcher.n_jobs=$NUM_JOBS seed=24 num_gpus=$NUM_GPUS +experiment=species_detector_cross_validation model_name=mossy-andrea scope=RFCX_frog paths.data_dir=$STORAGE paths.results_dir=$STORAGE/results/v1/species_cross_validation

@@ -1,0 +1,6 @@
+tensorboard:
+  _target_: lightning.pytorch.loggers.TensorBoardLogger
+  name: ${run_id}
+  save_dir: ${paths.output_dir}
+  version: null
+  sub_dir: null

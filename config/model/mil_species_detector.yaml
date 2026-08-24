@@ -1,0 +1,19 @@
+_target_: src.core.models.mil_species_detector.MILSpeciesDetector
+clf_learning_rate: 1.e-1
+attn_learning_rate: 5.e-4
+gamma_clf: 1.e-3
+gamma_attn: 1.e-3
+beta: 0.0
+label_smoothing: 0.0
+attention:
+  _target_: src.core.models.mil_species_detector.GatedAttention
+  in_features: 128
+  hidden_dim: 10
+  out_features: 1
+classifiers:
+  _target_: src.core.models.mil_species_detector.MultiLabelLogisticRegression
+  num_features: 128
+clf_regulariser:
+  _target_: src.core.models.mil_species_detector.L1
+attn_regulariser:
+  _target_: src.core.models.mil_species_detector.L2

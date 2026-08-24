@@ -2,7 +2,9 @@
  # order of defaults determines the order in which configs override each other
 defaults:
   - data: null
+  - algorithm: null
   - model: null
+  - evaluator: lightning_test
   - callbacks: null
   - logger: null
   - trainer: null
@@ -13,5 +15,5 @@ defaults:
 task_name: test
 tags: ["dev"]
 ckpt_path: null
-seed: null
-
+seed: 42
+run_id: null

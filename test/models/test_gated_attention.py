@@ -1,4 +1,10 @@
-from src.core.models.components import GatedAttention
+import pytest
+import torch
+
+from src.core.models.species_detector import GatedAttention
 
 def test_gated_attention():
-    model = GatedAttention(in_features=128, hidden_dim=5, out_features=1)
+    z = torch.randn(6, 39, 128)
+    model = GatedAttention(128, 10, 1, 10)
+    A = model(z)
+    assert A.shape == (6, 39, 10)

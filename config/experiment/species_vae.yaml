@@ -1,0 +1,47 @@
+# @package _global_
+
+# python main.py +experiment=species_vae
+
+defaults:
+  - override /model: vae
+  - override /trainer: gpu
+  - override /logger: wandb
+
+model:
+  _target_: src.core.models.species_vae.SpeciesVAE
+  clf_checkpoint_path: null # FILLMEIN
+  classifier:
+    _target_: src.core.models.species_detector.SpeciesDetector
+    in_features: 128
+    lamdba: 0.1
+    beta: 0.0
+    label_smoothing: 0.0
+    attn_dim: 10
+
+trainer:
+  max_epochs: 10
+  log_every_n_steps: 50
+  check_val_every_n_epoch: 1
+
+# callbacks:
+#   model_checkpoint:
+#     dirpath: ./checkpoints/species_vae.pt:v2
+#     filename: model
+#     every_n_epochs: 10
+#     save_top_k: 1
+#   species_scores:
+#     _target_: src.core.callbacks.species_scores.SpeciesScores
+#     model: species_vae
+#     version: v2
+#     scope: UK
+#     save_dir: ${paths.output_dir}
+#     run_id: ${run_id}
+#   vae_metrics:
+#     _target_: src.core.callbacks.vae_metrics.VAEMetrics
+#     save_path: ${paths.output_dir}/metrics.parquet
+
+logger:
+  wandb:
+    id: ${run_id}
+    project: species_vae
+    group: vae

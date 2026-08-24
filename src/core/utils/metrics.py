@@ -8,6 +8,16 @@ warnings.filterwarnings("ignore", category=sklearn.exceptions.UndefinedMetricWar
 
 from numpy.typing import NDArray
 from torch.nn import functional as F
+from typing import Any
+
+def l1(weights: torch.Tensor, dim: int, **kwargs: Any) -> torch.Tensor:
+    return torch.sum(weights.abs(), dim=dim)
+
+def l2(weights: torch.Tensor, dim: int, **kwargs: Any) -> torch.Tensor:
+    return torch.sum(weights.pow(2), dim=dim)
+
+def elastic(weights: torch.Tensor, dim: int, alpha: float = 0.5) -> torch.Tensor:
+    return alpha * l1(weights, dim=dim) + ((1 - alpha) / 2) * l2(weights, dim=dim)
 
 def negative_log_likelihood(x: torch.Tensor, mu: torch.Tensor, log_sigma_sq: torch.Tensor) -> torch.Tensor:
     return 1/2 * (log_sigma_sq + (x - mu).pow(2) / log_sigma_sq.exp())
@@ -40,13 +50,16 @@ def class_balanced_binary_cross_entropy(
     label_smoothing: float = 0.0,
     epsilon: float = 1e-6,
 ) -> torch.Tensor:
+    samples_per_class = samples_per_class.to(y.device)
     weights = (torch.ones_like(beta) - beta) / (torch.ones_like(samples_per_class) - torch.pow(beta, samples_per_class.clip(min=1)))
-    weights = weights / weights.sum() * weights.shape[0]
+    weights = weights / weights.sum() * weights.size(-1)
+    y = y.float()
     y_probs = y_probs.clamp(epsilon, 1 - epsilon)
     for values in [y, y_probs, weights]:
         assert torch.isfinite(values).all()
     y = y * (1 - label_smoothing) + (1 - y) * label_smoothing
-    return (-(weights * y * y_probs.log() + (1 - y) * (1 - y_probs).log()))
+    cel = (-(weights * y * y_probs.log() + (1 - y) * (1 - y_probs).log()))
+    return cel
 
 def weight_regularisation(weights: torch.Tensor, lamdba: float, order: int = 2) -> torch.Tensor:
     return lamdba * torch.stack([torch.linalg.norm(layer, order) for layer in weights])
@@ -126,3 +139,10 @@ def score(results: pd.DataFrame) -> pd.DataFrame:
             auROC=sklearn.metrics.roc_auc_score(y, y_prob),
         ))
     return pd.DataFrame(data=scores).set_index("species_name")
+
+def circular_variance(theta: torch.Tensor, dim: int = 1, keepdim: bool = False) -> torch.Tensor:
+    sin_mean = torch.sin(theta).mean(dim=dim, keepdim=keepdim)
+    cos_mean = torch.cos(theta).mean(dim=dim, keepdim=keepdim)
+    R = torch.sqrt(sin_mean**2 + cos_mean**2)
+    return 1 - R
+

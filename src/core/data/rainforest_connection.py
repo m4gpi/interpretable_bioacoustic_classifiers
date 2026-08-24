@@ -56,6 +56,7 @@ class RainforestConnection(torch.utils.data.Dataset):
         reset_index: bool = False,
         test: bool = False,
         seed: int = 42,
+        sort_index: bool = False,
     ) -> None:
         self.base_dir = pathlib.Path(root).expanduser()
         self.data_dir = self.base_dir / self._TRAIN_DATA_DIR
@@ -72,34 +73,31 @@ class RainforestConnection(torch.utils.data.Dataset):
         # rebuild the data split if specified
         if reset_index:
             self._reset_index()
+        assert scope in [None, "bird", "frog"], f"{scope} is not a valid scope for taxa"
         # check files are present and accounted for
         self._check_files()
         # load metadata and labels
         self.metadata = pd.read_parquet(self.base_dir / f"metadata.parquet")
         self.labels = pd.read_parquet(self.base_dir / f"labels.parquet")
-        # scope the dataset by train / test
-        self.test_metadata = pd.read_parquet(self.base_dir / f"test_metadata.parquet")
-        self.test_metadata.index.name = "file_i"
-        self.test_labels = pd.read_parquet(self.base_dir / f"test_labels.parquet")
-        self.test_labels.drop("species_id", axis=1, inplace=True)
-        self.train_metadata = pd.read_parquet(self.base_dir / f"train_metadata.parquet")
-        self.train_metadata.index.name = "file_i"
-        self.train_labels = pd.read_parquet(self.base_dir / f"train_labels.parquet")
-        self.train_labels.drop("species_id", axis=1, inplace=True)
-        self.test_idx = self.test_metadata
-        self.train_idx = self.train_metadata
+        failed = pd.read_csv(self.base_dir / "failed.csv") # some .flac files are corrupt?
+        self.metadata = self.metadata[~self.metadata.file_name.isin(failed.file_name)]
+        self.metadata["file_path"] = self.data_dir / self.metadata["file_name"]
+        self.labels = self.labels[~self.labels.file_name.isin(failed.file_name)]
+        self.labels.drop("species_id", axis=1, inplace=True)
+        if sort_index:
+            self.metadata = self.metadata.sort_index()
+            self.labels = self.labels.sort_index()
         # scope by taxa
         if scope is not None:
-            self.train_labels = self.train_labels[self.train_labels.taxa == scope]
-            self.test_labels = self.test_labels[self.test_labels.taxa == scope]
-        assert len(self.train_labels) and len(self.test_labels), f"{scope} is not a valid scope for taxa"
-
-        self.train_labels = self.format_labels(self.train_metadata, self.train_labels)
-        self.test_labels = self.format_labels(self.test_metadata, self.test_labels)
-
-        self.metadata["file_path"] = self.data_dir / self.metadata["file_name"]
-        self.train_metadata["file_path"] = self.data_dir / self.train_metadata["file_name"]
-        self.test_metadata["file_path"] = self.data_dir / self.test_metadata["file_name"]
+            self.labels = self.labels[self.labels["taxa"] == scope]
+        self.labels = self.format_labels(self.metadata, self.labels)
+        # scope the dataset by train / test
+        self.train_idx = pd.read_parquet(self.base_dir / "train_indices.parquet")
+        self.test_idx = pd.read_parquet(self.base_dir / "test_indices.parquet")
+        self.train_metadata = self.metadata[self.metadata.index.isin(self.train_idx.file_i)]
+        self.train_labels = self.labels.loc[self.labels.index.get_level_values(0).isin(self.train_idx.file_i)]
+        self.test_metadata = self.metadata[self.metadata.index.isin(self.test_idx.file_i)]
+        self.test_labels = self.labels.loc[self.labels.index.get_level_values(0).isin(self.test_idx.file_i)]
 
         if test == True:
             self.x = self.test_metadata.file_path.to_numpy()
@@ -115,12 +113,23 @@ class RainforestConnection(torch.utils.data.Dataset):
             self.s = self.metadata.index
 
     @property
-    def target_names(self):
+    def target_names(self) -> List[str]:
         return self.labels.columns.tolist()
 
     @property
-    def model_params(self) -> Dict:
-        return {}
+    def target_counts(self) -> List[int]:
+        return self.labels.sum(axis=0).tolist()
+
+    @property
+    def model_params(self):
+        return dict(
+            target_names=self.target_names,
+            target_counts=self.target_counts,
+        )
+
+    @property
+    def strong_labels(self):
+        return pd.read_parquet(self.base_dir / f"labels.parquet")
 
     def format_labels(self, metadata, labels):
         # count occurrences and drop duplicates
@@ -185,9 +194,9 @@ class RainforestConnection(torch.utils.data.Dataset):
         if (self.base_dir / f"train_metadata.parquet").exists(): return
         metadata = pd.read_parquet(self.base_dir / "metadata.parquet", index=True)
         train_idx, test_idx = sklearn.model_selection.train_test_split(metadata.index, test_size=0.2, random_state=self.seed)
-        train_metadata, test_metadata = metadata.loc[train_idx], metadata.loc[test_idx]
-        train_metadata.to_parquet(data_dir / "train_metadata.parquet", index=True)
-        test_metadata.to_parquet(data_dir / "test_metadata.parquet", index=True)
+        train_idx, test_idx = metadata.loc[train_idx], metadata.loc[test_idx]
+        train_idx.to_parquet(data_dir / "train_indices.parquet", index=True)
+        test_idx.to_parquet(data_dir / "test_indices.parquet", index=True)
 
     def _extract_labels(self):
         if (self.base_dir / f"train_labels.parquet").exists(): return
@@ -200,10 +209,10 @@ class RainforestConnection(torch.utils.data.Dataset):
         labels["file_i"] = labels.file_name.map(lambda f: metadata.loc[f].file_i)
         labels = labels.set_index("file_i")
         labels = labels.drop(["recording_id", "species_id"], axis=1)
-        train_metadata = pd.read_parquet(data_dir / "train_metadata.parquet").set_index("file_i")
-        test_metadata = pd.read_parquet(data_dir / "test_metadata.parquet").set_index("file_i")
-        labels[labels.index.isin(train_metadata.index)].to_parquet(data_dir / "train_labels.parquet", index=True)
-        labels[labels.index.isin(test_metadata.index)].to_parquet(data_dir / "test_labels.parquet", index=True)
+        train_idx = pd.read_parquet(data_dir / "train_idx.parquet").set_index("file_i")
+        test_idx = pd.read_parquet(data_dir / "test_idx.parquet").set_index("file_i")
+        labels[labels.index.isin(train_idx.file_i)].to_parquet(data_dir / "train_labels.parquet", index=True)
+        labels[labels.index.isin(test_idx.file_i)].to_parquet(data_dir / "test_labels.parquet", index=True)
 
     def species_key(self) -> pd.DataFrame:
         return pd.DataFrame([
@@ -258,23 +267,31 @@ class RainforestConnectionDataModule(L.LightningDataModule):
     test_data: torch.utils.data.Dataset | None = attrs.field(default=None, init=False)
     sampler: Callable = attrs.field(default=None, init=False)
 
+    @property
+    def name(self):
+        return f"RFCX_{self.scope}"
+
     def _batch_converter(self, batch: Tuple):
         xs, ys, ss = zip(*batch)
-        return Batch(x=torch.stack(xs, dim=0), y=torch.stack(ys, dim=0), s=torch.tensor(ss))
+        return Batch(x=torch.stack(xs, dim=0), y=torch.stack(ys, dim=0), s=torch.tensor(ss), metadata=self.data.target_names)
 
     def __attrs_post_init__(self):
         L.LightningDataModule.__init__(self)
         self.training_mode = ranzen.torch.TrainingMode[self.training_mode]
 
     def prepare_data(self):
-        RainforestConnection(root=self.root, download=True)
+        RainforestConnection(root=self.root)
         return self
 
-    def setup(self, stage: str):
+    def setup(self, *args, **kwargs: Any):
         self.data = RainforestConnection(self.root, test=False, download=False, **self.dataset_params)
         self.val_data, self.train_data = torch.utils.data.random_split(self.data, (self.val_prop, 1 - self.val_prop), generator=self.generator)
         self.test_data = RainforestConnection(self.root, test=True, download=False, **self.dataset_params)
         return self
+
+    @property
+    def model_params(self) -> Dict:
+        return {}
 
     @property
     def generator(self):
@@ -296,13 +313,20 @@ class RainforestConnectionDataModule(L.LightningDataModule):
             return dict(batch_size=batch_size, shuffle=True, generator=self.generator, drop_last=False)
 
     def train_dataloader(self, batch_size: int | None = None, batch_sampler: torch.utils.data.Sampler | None = None) -> torch.utils.data.DataLoader:
-        return self._build_dataloader(self.train_data, **self.train_dataloader_params(batch_size))
+        return self._build_dataloader(self.train_data, **self.train_dataloader_params(batch_size or self.train_batch_size))
 
     def val_dataloader(self) -> torch.utils.data.DataLoader:
         return self._build_dataloader(self.val_data, batch_size=self.eval_batch_size, shuffle=False)
 
     def test_dataloader(self) -> torch.utils.data.DataLoader:
         return self._build_dataloader(self.test_data, batch_size=self.eval_batch_size, shuffle=False)
+
+    def predict_dataloader(self) -> List[torch.utils.data.DataLoader]:
+        return [
+            self._build_dataloader(self.train_data, batch_size=self.eval_batch_size),
+            self.val_dataloader(),
+            self.test_dataloader(),
+        ]
 
     @property
     def dataloader_params(self) -> Dict[str, Any]:
@@ -331,7 +355,7 @@ class RainforestConnectionDataModule(L.LightningDataModule):
     def _default_train_sampler(self, batch_size: int | None = None) -> torch.utils.data.Sampler:
         return ranzen.torch.SequentialBatchSampler(
             data_source=self.train_data,
-            batch_size=batch_size or self.train_batch_size,
+            batch_size=batch_size,
             shuffle=False,
             training_mode=self.training_mode,
             drop_last=False,

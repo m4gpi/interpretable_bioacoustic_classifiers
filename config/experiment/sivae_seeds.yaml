@@ -1,0 +1,42 @@
+# @package _global_
+
+# python main.py +experiment=sivae
+defaults:
+  - override /model: sivae
+  - override /trainer: gpu
+  - override /logger: wandb
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      seed: 8,16,24
+
+data:
+  num_workers: 0
+  val_prop: 0.0
+
+trainer:
+  max_steps: 180_000
+  max_epochs: -1
+  log_every_n_steps: 100
+  limit_val_batches: 0.0
+
+callbacks:
+  primary_model_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ${paths.checkpoint_dir}/v4/sivae/${run_id}
+    filename: '{step}'
+    every_n_train_steps: 60_000
+    save_top_k: -1
+  vae_metrics:
+    _target_: src.core.callbacks.vae_metrics.VAEMetrics
+    model_name: ${run_id}
+    dataset_name: ${data._target_}
+    save_path: ${paths.results_dir}/v4/sivae/metrics.parquet
+
+logger:
+  wandb:
+    id: ${run_id}
+    project: soundscape_vae_pt
+    group: sivae

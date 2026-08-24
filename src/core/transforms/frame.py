@@ -10,6 +10,13 @@ from src.core.utils import try_or
 
 __all__ = ["frame_fold", "unframe_fold", "frame_fast", "unframe_fast", "Frame", "Unframe"]
 
+def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:
+    if x.size(-2) == window_length:
+        return x.unsqueeze(1)
+    if hop_length != window_length:
+        return frame_fold(x, window_length=window_length, hop_length=hop_length, padding_mode=padding_mode)
+    return x.view(x.size(0), x.size(1), x.size(2) // window_length, window_length, x.size(3)).transpose(1, 2)
+
 def frame_fold(x: Tensor, hop_length: int, window_length: int, padding_mode: Optional[str] = None) -> Tensor:
     """
     Compute an ordered series of frames across the height of a 3D Tensor

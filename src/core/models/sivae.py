@@ -1,0 +1,1640 @@
+import lightning as L
+import hydra
+import numpy as np
+import pathlib
+import pandas as pd
+import omegaconf
+import torch
+import logging
+import wandb
+
+from matplotlib import pyplot as plt
+from torch import Tensor, nn
+from torch.nn import functional as F
+from torchvision.transforms import functional as T
+from typing import Any, Dict, List, Tuple
+
+from src.core.models.components import MLP
+from src.core.transforms.frame import unframe_fold as unframe, frame_fold as frame
+from src.core.utils import Batch, bounded_sigmoid, linear_schedule, linear_decay, detach_values, prefix_keys, histogram_to_wandb
+from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior, circular_variance
+
+__all__ = ["SIVAE"]
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+class SIVAE(L.LightningModule):
+    def __init__(
+        self,
+        front_end: omegaconf.DictConfig,
+        feature_encoder: omegaconf.DictConfig,
+        content_encoder: omegaconf.DictConfig,
+        feature_decoder: omegaconf.DictConfig,
+        content_decoder: omegaconf.DictConfig,
+        alignment_encoder: omegaconf.DictConfig | None = None,
+        latent_dim: int = 128,
+        frequency_dim: int = 64,
+        frame_window_length: int = 192,
+        frame_padding_mode: int = "circular",
+        translation_mode: str = "bicubic",
+        translation_idx: int = 2,
+        cross_decode_method: str = "soft",
+        beta: float = 1.0,
+        gamma: float = 1.0,
+        sigma_x: float = 0.2,
+        sigma_z_min: float = 1e-5,
+        x_i_frame_prob: float = 0.75,
+        delta_prob_step_start: int = 0,
+        delta_prob_step_end: int = 0,
+        delta_prob_min: int = 1.0,
+        delta_prob_max: int = 1.0,
+        delta_sigma_min: float = 1.0,
+        delta_sigma_max: float = 1.0,
+        delta_sigma_step_slope: float = 0.4,
+        delta_sigma_step_start: int = 0,
+        delta_sigma_step_end: int = 0,
+        align_only: bool = False,
+        learning_rate: float = 1e-4,
+        optimiser_cls: str = "torch.optim.AdamW",
+        optimiser_config: omegaconf.DictConfig | None = None,
+        scheduler_cls: str | None = None,
+        scheduler_config: omegaconf.DictConfig | None = None,
+        scheduler_interval: str = "step",
+        scheduler_frequency: int = 1,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__()
+        self.save_hyperparameters()
+        self.latent_dim = latent_dim
+        self.frequency_dim = frequency_dim
+        self.frame_window_length = frame_window_length
+        self.frame_padding_mode = frame_padding_mode
+        self.translation_mode = translation_mode
+        self.translation_idx = translation_idx
+        self.cross_decode_method = cross_decode_method
+        self.beta = beta
+        self.gamma = gamma
+        self.sigma_x = sigma_x
+        self.sigma_z_min = sigma_z_min
+        self.x_i_frame_prob = x_i_frame_prob
+        # self.delta_prob_step_start = delta_prob_step_start
+        # self.delta_prob_step_end = delta_prob_step_end
+        # self.delta_prob_min = delta_prob_min
+        # self.delta_prob_max = delta_prob_max
+        # self.delta_sigma_min = delta_sigma_min
+        # self.delta_sigma_max = delta_sigma_max
+        # self.delta_sigma_step_slope = delta_sigma_step_slope
+        # self.delta_sigma_step_start = delta_sigma_step_start
+        # self.delta_sigma_step_end = delta_sigma_step_end
+        self.align_only = align_only
+
+        self.learning_rate = learning_rate
+        self.optimiser_cls = optimiser_cls
+        self.optimiser_config = optimiser_config
+        self.scheduler_cls = scheduler_cls
+        self.scheduler_config = scheduler_config
+        self.scheduler_interval = scheduler_interval
+        self.scheduler_frequency = scheduler_frequency
+
+        self.front_end = hydra.utils.instantiate(front_end)
+        self.feature_encoder = hydra.utils.instantiate(feature_encoder)
+        self.content_encoder = hydra.utils.instantiate(content_encoder)
+        self.feature_decoder = hydra.utils.instantiate(feature_decoder)
+        self.content_decoder = hydra.utils.instantiate(content_decoder)
+        self.alignment_encoder = hydra.utils.instantiate(alignment_encoder)
+
+        assert translation_idx <= len(self.feature_decoder.blocks), f"'translation_idx' is too large, set <= {len(self.feature_decoder.blocks)}"
+        if translation_idx == -1 or translation_idx >= len(self.feature_decoder.blocks) and x_i_frame_prob < 1.0:
+            raise AssertionError(
+                f"Cannot apply independent frame-level translations after unframing, "
+                f"set 'translation_idx' < {len(self.feature_decoder.blocks)} to reconstruct without frame continuity"
+            )
+
+        if self.align_only:
+            log.info("Freezing feature and content networks")
+            params = list(self.feature_encoder.parameters()) + list(self.feature_decoder.parameters()) + \
+                list(self.content_encoder.parameters()) + list(self.content_decoder.parameters())
+            for param in params:
+                param.requires_grad = False
+        else:
+            log.info("Freezing alignment encoder")
+            for param in self.alignment_encoder.parameters():
+                param.requires_grad = False
+
+    @torch.no_grad()
+    def pre_process(self, wav: torch.Tensor) -> torch.Tensor:
+        x = self.front_end(wav)
+        x = x.transpose(-1, -2) # transpose time to inner axis
+        return T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
+
+    def forward(self, x: Tensor, *args: Any, t: int | None = None, **kwargs: Any) -> Dict[str, Tensor]:
+        x_i = x
+        # full spectrograms
+        q_z_i, (theta_hat_i, dx_hat_i, dy_hat_i) = self.encode(x_i, t=t) # (bs, seq, ld)
+        theta_i = torch.zeros_like(theta_hat_i)
+        dx_i = torch.ones_like(dx_hat_i)
+        dy_i = torch.zeros_like(dy_hat_i)
+        mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
+        seq_len = q_z_i.size(1)
+        # independent randomly shifted frames
+        x_i_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length).flatten(end_dim=1)
+        theta_j, dx_j, dy_j = self.sample_circle(x_i_framed.size(0), 1, 1, scaling_factor=1.0, device=x.device)
+        x_j = self.translation(x_i_framed.transpose(-1, -2), theta_j / torch.pi, mode=self.translation_mode).transpose(-1, -2)
+        q_z_j, (theta_hat_j, dx_hat_j, dy_hat_j) = self.encode(x_j, t=t) # (bs * seq, 1, ld)
+        delta_hat_j = theta_hat_j / torch.pi
+        mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
+
+        # reparametrise and decode to feature maps
+        if self.cross_decode_method == "soft":
+            # soft cross-decoding averages the distributions
+            # mu_k = (mu_i + mu_j) / 2, sigma^2_k = (sigma^2_i + sigma^2_j) / 2^2
+            mu_z = (1/2 * mu_z_i + 1/2 * mu_z_j.view(mu_z_i.size()))
+            log_sigma_sq_z = (1/4 * (log_sigma_sq_z_i.exp() + log_sigma_sq_z_j.view(log_sigma_sq_z_i.size()).exp())).log()
+            z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()  # (bs, seq, ld)
+            # keep dim 1 as the 'pair' dimension
+            # q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1).view(q_z_j.size())
+            q_z = torch.cat([q_z_i.view(q_z_j.size()), q_z_j], dim=1)
+            U_hat = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1))) # (bs, seq, ch, fr, fq)
+            U_hat_i, U_hat_j = U_hat, U_hat
+        elif self.cross_decode_method == "hard":
+            z_i = torch.distributions.Normal(mu_z_i, (0.5 * log_sigma_sq_z_i).exp()).rsample()  # (bs, seq, ld)
+            z_j = torch.distributions.Normal(mu_z_j, (0.5 * log_sigma_sq_z_j).exp()).rsample()  # (bs * seq, 1, ld)
+            # stack posteriors pairwise
+            q_z = torch.cat([q_z_i.view(q_z_j.size()), q_z_j], dim=1)
+            z_i, z_j = z_j, z_i
+            U_hat_i = self.content_decoder(z_i.flatten(end_dim=1)).unflatten(0, (z_i.size(0), z_i.size(1)))
+            U_hat_j = self.content_decoder(z_j.flatten(end_dim=1)).unflatten(0, (z_j.size(0), z_j.size(1)))
+        else:
+            raise Exception("Cross decode method not specified, terminating")
+
+        # cross-decode representations
+        if self.align_only:
+            x_hat_i = self.cnn_decode(U_hat_i, theta_hat_i / torch.pi) # (bs, 1, fr * seq, fq)
+            # reconstruct independent translations
+            x_hat_j = self.cnn_decode(U_hat_j, theta_hat_j / torch.pi) # (bs * seq, 1, fr, fq)
+        else:
+            x_hat_i = self.cnn_decode(U_hat_i, theta_i / torch.pi) # (bs, 1, fr * seq, fq)
+            # reconstruct independent translations
+            x_hat_j = self.cnn_decode(U_hat_j, theta_j / torch.pi) # (bs * seq, 1, fr, fq)
+
+        # frame for frame-wise loss
+        x_hat_i_framed = self.frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_window_length).flatten(end_dim=1)
+        x_framed = torch.stack([x_i_framed, x_j], dim=1)
+        x_hat_framed = torch.stack([x_hat_i_framed, x_hat_j], dim=1)
+        return dict(
+            x=x,
+            x_framed=x_framed, x_i=x, x_j=x_j,
+            x_hat_framed=x_hat_framed, x_hat_i=x_hat_i, x_hat_j=x_hat_j,
+            q_z=q_z, q_z_i=q_z_i, q_z_j=q_z_j,
+            theta_i=theta_i, theta_j=theta_j, theta_hat_i=theta_hat_i, theta_hat_j=theta_hat_j,
+            dx_i=dx_i, dx_j=dx_j, dx_hat_i=dx_hat_i, dx_hat_j=dx_hat_j,
+            dy_i=dy_i, dy_j=dy_j, dy_hat_i=dy_hat_i, dy_hat_j=dy_hat_j,
+            seq_len=seq_len,
+        )
+
+    def predict(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
+        q_z, (theta_hat, dx, dy) = self.encode(x)
+        theta = theta_hat if self.align_only else torch.zeros_like(theta_hat)
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        z = torch.distributions.Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample()
+        U = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1)))
+        x_hat = self.cnn_decode(U, theta / torch.pi)
+        x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
+        x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_window_length)
+        return dict(
+            x=x,
+            x_hat=x_hat,
+            x_framed=x_framed,
+            x_hat_framed=x_hat_framed,
+            q_z=q_z,
+            theta=theta,
+        )
+
+    def sample_circle(self, *args: Any, scaling_factor: float = 1.0, **kwargs: Any):
+        delta = scaling_factor * ((torch.rand(*args, **kwargs) * 2) - 1)
+        theta = torch.pi * delta
+        dx, dy = torch.cos(theta), torch.sin(theta)
+        return theta, dx, dy
+
+    def encode(self, x: Tensor, hop_length: int | None = None, t: int | None = None) -> Tensor:
+        # feature extraction
+        x, us = self.feature_encoder(x)
+        x_window_length = self.frame_window_length // 2**(self.feature_encoder.num_layers)
+        x_hop_length = (hop_length or self.frame_window_length) // 2**(self.feature_encoder.num_layers)
+        u_window_length = self.frame_window_length // 2**2
+        u_hop_length = (hop_length or self.frame_window_length) // 2**2
+        x = self.frame(x, window_length=x_window_length, hop_length=x_hop_length, padding_mode=self.frame_padding_mode)
+        u = self.frame(us[1], window_length=u_window_length, hop_length=u_hop_length, padding_mode=self.frame_padding_mode)
+        # content bottleneck
+        q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
+        if self.sigma_z_min is not None:
+            mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+            sigma_latent = torch.tensor(self.sigma_z_min, dtype=torch.float32, requires_grad=False, device=mu_z.device)
+            log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*sigma_latent.log())
+            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
+        # alignment bottleneck
+        delta = self.alignment_encoder(x, u)
+        return q_z, delta
+
+    def decode(self, z: Tensor, delta: Tensor | None = None) -> Tensor:
+        U = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1)))
+        x_hat = self.cnn_decode(U, delta)
+        return x_hat
+
+    def cnn_decode(self, U: Tensor, delta: Tensor) -> Tensor:
+        bs, seq, _ = delta.size()
+        U = U.flatten(end_dim=1)
+        for i, block in enumerate(self.feature_decoder.blocks):
+            if self.translation_idx == i:
+                U = U.transpose(-1, -2).contiguous()
+                U = self.translation(U, delta.view(bs * seq), mode=self.translation_mode)
+                U = U.transpose(-1, -2).contiguous()
+            if i == len(self.feature_decoder.blocks) - 1 and self.translation_idx != -1:
+                U = U.unflatten(0, (bs, seq)).transpose(1, 2)
+                # recombine frames with time dimension
+                U = U.flatten(start_dim=2, end_dim=3)
+            U = block(U)
+        if self.translation_idx == -1:
+            U = U.transpose(-1, -2).contiguous()
+            U = self.translation(U, delta.view(bs * seq), mode=self.translation_mode)
+            U = U.transpose(-1, -2).contiguous()
+        return U
+
+    @staticmethod
+    def translation(x: torch.Tensor, delta: torch.Tensor, mode: str) -> torch.Tensor:
+        bs, ch, fq, ts = x.shape
+        x_flat = x.view(bs, ch * fq, 1, ts)
+        xs = torch.linspace(-1, 1, ts, device=x.device)
+        grid_x = xs.view(1, 1, ts).expand(bs, 1, ts)
+        grid_y = torch.zeros_like(grid_x)
+        grid = torch.stack((grid_x, grid_y), dim=-1)
+        xx = grid[..., 0] + delta.view(bs, 1, 1)
+        grid[..., 0] = ((xx + 1) % 2) - 1
+        x_tilde = F.grid_sample(x_flat, grid, mode=mode, padding_mode="zeros", align_corners=True)
+        return x_tilde.view(bs, ch, fq, ts)
+
+    @property
+    def frame_params(self):
+        return dict(window_length=self.frame_window_length, hop_length=self.frame_window_length)
+
+    @staticmethod
+    def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:
+        if x.size(-2) == window_length:
+            return x.unsqueeze(1)
+        if hop_length != window_length:
+            return frame(x, window_length=window_length, hop_length=hop_length, padding_mode=padding_mode)
+        return x.view(x.size(0), x.size(1), x.size(2) // window_length, window_length, x.size(3)).transpose(1, 2)
+
+    def loss(
+        self,
+        x_framed: Tensor,
+        x_hat_framed: Tensor,
+        q_z: Tensor,
+        dx_i: Tensor,
+        dx_j: Tensor,
+        dx_hat_i: Tensor,
+        dx_hat_j: Tensor,
+        dy_i: Tensor,
+        dy_j: Tensor,
+        dy_hat_i: Tensor,
+        dy_hat_j: Tensor,
+        **kwargs: Any,
+    ) -> Dict[str, Tensor]:
+        outputs = dict()
+        losses = []
+        # maximise likelihood p(x_i|z_j) framewise to ensure invariance to sequence length
+        sigma_recon = torch.tensor(self.sigma_x, dtype=torch.float32, requires_grad=False, device=x_framed.device)
+        nll = negative_log_likelihood(x_framed, x_hat_framed, 2*sigma_recon.log()).flatten(start_dim=-3).sum(dim=-1)
+        # average across pairs, then across batch & frames
+        nll = nll.mean(dim=-1).mean()
+        losses.append(nll)
+        outputs |= dict(log_likelihood_x=-nll.detach())
+        # supervision signal for delta, minimise relative angular difference
+        if self.align_only:
+            angular_error_i = 2 * (1 - (dx_hat_i * dx_i + dy_hat_i * dy_i))
+            angular_error_j = 2 * (1 - (dx_hat_j * dx_j + dy_hat_j * dy_j))
+            # sum along angle (always singular), mean across pairs, mean across batch & frames
+            alignment_loss = self.gamma * torch.cat([angular_error_i.view(angular_error_j.size()), angular_error_j], dim=-2).sum(dim=-1).mean(dim=-1).mean()
+            losses.append(alignment_loss)
+            outputs |= dict(alignment_loss=alignment_loss.detach())
+        # standard normal dkl
+        dkl = self.beta * gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
+        # average first across pairs, then across batch & frames
+        dkl = dkl.mean(dim=-1).mean()
+        losses.append(dkl)
+        outputs |= dict(dkl=dkl.detach())
+        # sum the loss components
+        outputs |= dict(loss=sum(losses))
+        return outputs
+
+    # def delta_sigma_current(self, t: int) -> Tensor:
+    #     if self.delta_sigma_min is None or self.delta_sigma_min == self.delta_sigma_max:
+    #         return self.delta_sigma_max
+    #     return torch.tensor(bounded_sigmoid(t, **self.delta_sigma_params))
+
+#     def delta_prob_current(self, t: int) -> float:
+#         if self.delta_prob_min is None or self.delta_prob_min == self.delta_prob_max:
+#             return self.delta_prob_max
+#         return linear_decay(t, **self.delta_prob_params)
+
+    @torch.no_grad()
+    def metrics(
+        self,
+        x_framed: Tensor,
+        x_hat_framed: Tensor,
+        q_z: Tensor,
+        q_z_i: Tensor,
+        q_z_j: Tensor,
+        theta_i: Tensor,
+        theta_j: Tensor,
+        theta_hat_i: Tensor,
+        theta_hat_j: Tensor,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
+        # distribution of z mean and varaince
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        sigma_z = (0.5 * log_sigma_sq_z).exp()
+        mu_hist = np.histogram(mu_z.flatten().cpu().numpy(), bins=32, range=[-5.0, 5.0])
+        sigma_hist = np.histogram(sigma_z.flatten().cpu().numpy(), bins=32, range=[0.0, 2.0])
+        # mean distance between shifted embeddings
+        mu_z_i, mu_z_j = q_z_i.chunk(2, dim=-1)[0], q_z_j.view(q_z_i.size()).chunk(2, dim=-1)[0]
+        z_dist_mean = (mu_z_j - mu_z_i).pow(2).sum(dim=-1).sqrt().mean()
+        z_dist_std = (mu_z_j - mu_z_i).pow(2).sum(dim=-1).sqrt().std()
+        # # distribution of delta predictions
+        # delta = torch.cat([delta_i, delta_j.view(delta_i.size())])
+        # delta_hist = np.histogram(delta.flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
+        # delta_hat = torch.cat([delta_hat_i, delta_hat_j.view(delta_hat_i.size())])
+        # delta_hat_hist = np.histogram(delta_hat.flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
+        # variance of predicted theta both independently and across sequence
+        theta = torch.cat([theta_i, theta_j.view(theta_i.size())])
+        theta_hat = torch.cat([theta_hat_i, theta_hat_j.view(theta_hat_i.size())])
+        theta_hat_var = circular_variance(theta_hat, dim=None).mean()
+        theta_hat_seq_var = circular_variance(theta_hat, dim=1).mean()
+        # anglular error
+        d_theta = theta_hat - theta
+        angular_distance = torch.atan2(torch.sin(d_theta), torch.cos(d_theta))
+        angular_error = 1 - torch.cos(d_theta)
+        d_theta_hist = np.histogram(d_theta.flatten().cpu().numpy(), bins=128, range=[0.0, 2.0])
+        # reconstruction error
+        err = (x_hat_framed - x_framed).flatten(start_dim=-3)
+        mae = err.abs().mean(dim=-1).mean(dim=-1).mean()
+        mse = err.pow(2).mean(dim=-1).mean(dim=-1).mean()
+        # normalised KL
+        dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / mu_z.size(-1)).mean(dim=-1).mean()
+        return dict(
+            mae=mae,
+            mse=mse,
+            mu_z_hist=mu_hist,
+            sigma_z_hist=sigma_hist,
+            z_dist_mean=z_dist_mean,
+            z_dist_std=z_dist_std,
+            # delta_hist=delta_hist,
+            # delta_hat_hist=delta_hat_hist,
+            theta_hat_var=theta_hat_var,
+            theta_hat_seq_var=theta_hat_seq_var,
+            angular_distance_mean=angular_distance.mean(),
+            angular_distance_std=angular_distance.std(),
+            angular_error_mean=angular_error.mean(),
+            angular_error_std=angular_error.std(),
+            dkl_norm=dkl_norm,
+        )
+
+    @torch.no_grad()
+    def predict_delta(self, x: torch.Tensor, num_samples: int = 10):
+        x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
+        delta = (torch.randn(x_framed.size(0), x_framed.size(1), num_samples) * 2) - 1
+        x_framed = x_framed.unsqueeze(2).expand(-1, -1, num_samples, -1, -1, -1)
+        bs, seq, n, *_ = x_framed.size()
+        x_trans = self.translation(
+            x_framed.flatten(end_dim=2).transpose(-1, -2).contiguous(),
+            delta.flatten(end_dim=2),
+            mode=self.translation_mode
+        ).transpose(-1, -2).contiguous().unflatten(0, (bs, seq, n))
+        _, (theta, dx, dy) = self.encode(x_trans.flatten(end_dim=2))
+        delta_hat = theta / torch.pi
+        delta_hat = delta_hat.unflatten(0, (bs, seq, n)).view(delta.size())
+        return dict(x_trans=x_trans, delta=delta, delta_hat=delta_hat)
+
+    @torch.no_grad()
+    def embed(
+        self,
+        batch: Batch,
+        dataloader_idx: int = 0,
+        frame_hop_length: float | None = None,
+        **kwargs: Any
+    ) -> pd.DataFrame:
+        x, *_ = batch
+        frame_hop_length = frame_hop_length or self.frame_window_length // 2
+        q_z, *_ = self.encode(x, hop_length=frame_hop_length)
+        bs, seq, *_ = q_z.size()
+        sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
+        seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
+        dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
+        ref_column_types = dict(file_i=int, dataloader_idx=int, timestep=int)
+        feat_column_types = dict(
+            **{ f"z_mean_{d}": float  for d in range(q_z.size(-1)//2) },
+            **{ f"z_log_var_{d}": float  for d in range(q_z.size(-1)//2) },
+            # **{ "delta": float },
+        )
+        column_types = (ref_column_types | feat_column_types)
+        return pd.DataFrame(
+            data=dict(zip(column_types.keys(), [
+                sample_idx, dl_idx, seq_idx,
+                *q_z.flatten(end_dim=1).cpu().t(),
+                # *delta.flatten(end_dim=1).cpu().squeeze(-1),
+            ])),
+            columns=column_types.keys(),
+        ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
+
+    @torch.no_grad()
+    def tracking_figures(
+        self,
+        x: torch.Tensor,
+        x_i: torch.Tensor,
+        x_hat_i: torch.Tensor,
+        x_j: torch.Tensor,
+        x_hat_j: torch.Tensor,
+        q_z_i: torch.Tensor,
+        seq_len: int,
+        figsize: Tuple[int, int] = (10, 6),
+        dpi: int = 100,
+        num_samples: int = 6,
+        num_frames: int = 6,
+        **kwargs: Any,
+    ) -> List:
+        figures = []
+        num_samples = min(num_samples, x.size(0))
+        if q_z_i.size(1) == seq_len:
+            specs = x_i.squeeze().cpu().numpy()
+            recons = x_hat_i.squeeze().cpu().numpy()
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize, width_ratios=[0.97, 0.03], constrained_layout=True, dpi=dpi)
+                mesh = self.front_end.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
+                mesh = self.front_end.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
+                axes[0, 0].set_title("Original")
+                axes[1, 0].set_title("Reconstruction")
+                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+                figures.append(("spectrogram", fig))
+        else:
+            specs = x_i.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+            recons = x_hat_i.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=figsize, width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True, dpi=dpi)
+                for j in range(num_frames):
+                    mesh = self.front_end.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max())
+                    mesh = self.front_end.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max())
+                axes[0, 0].set_title("Original")
+                axes[1, 0].set_title("Reconstruction")
+                fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
+                figures.append((f"frames/i", fig))
+        # plot translated frames
+        specs = x_j.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+        recons = x_hat_j.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+        for i in range(num_samples):
+            fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=figsize, width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True, dpi=dpi)
+            for j in range(num_frames):
+                mesh = self.front_end.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max())
+                mesh = self.front_end.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max())
+            axes[0, 0].set_title("Original")
+            axes[1, 0].set_title("Reconstruction")
+            fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
+            fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
+            figures.append((f"frames/j", fig))
+        return figures
+
+    def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+        # run training
+        log.info(f"Training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        checkpoint_path, resume = config.get("ckpt_path"), config.get("resume")
+        if checkpoint_path is not None and resume:
+            log.info(f"Resuming from {checkpoint_path}")
+            trainer.fit(self, datamodule=data_module, ckpt_path=checkpoint_path)
+        elif config.get("ckpt_path"):
+            log.info(f"Loading state dict from {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path)
+            self.load_state_dict(checkpoint["state_dict"], strict=False)
+            trainer.fit(self, datamodule=data_module)
+        else:
+            trainer.fit(self, datamodule=data_module)
+        # persist the model configuration
+        checkpoint_dir = pathlib.Path(trainer.checkpoint_callback.dirpath)
+        if checkpoint_dir.exists():
+            config_path = checkpoint_dir / "config.yaml"
+            log.info(f"Saving run configuration to {config_path}")
+            omegaconf.OmegaConf.save(config, config_path)
+        # running test
+        log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        trainer.test(self, dataloaders=data_module.predict_dataloader())
+
+    def step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        step_outputs = self.forward(**batch, t=self.trainer.global_step, **kwargs)
+        loss_outputs = self.loss(**step_outputs, t=self.trainer.global_step)
+        step_outputs = detach_values(step_outputs)
+        return loss_outputs, step_outputs
+
+    def training_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx)
+        self.log_dict(prefix_keys(loss_outputs, "train"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
+        metrics = histogram_to_wandb(self.metrics(**step_outputs))
+        if self.logger is not None and hasattr(self.logger, "experiment"):
+            self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "train")))
+        return loss_outputs | step_outputs
+
+    @torch.no_grad()
+    def validation_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx)
+        self.log_dict(prefix_keys(loss_outputs, "val"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
+        metrics = histogram_to_wandb(self.metrics(**step_outputs))
+        if self.logger is not None and hasattr(self.logger, "experiment"):
+            self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "val")))
+        return loss_outputs | step_outputs
+
+    @torch.no_grad()
+    def test_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        return self.predict(**batch, **kwargs)
+
+    @torch.no_grad()
+    def predict_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        return self.predict(**batch, **kwargs)
+
+    def on_after_batch_transfer(self, batch: Batch, dataloader_idx: int) -> Batch:
+        x = self.pre_process(batch.x)
+        return Batch(x=x, **{k: batch[k] for k in batch.keys() if k != "x"})
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        optimiser_config = omegaconf.DictConfig(dict(_target_=self.optimiser_cls, **(self.optimiser_config or {})))
+        optimiser = hydra.utils.instantiate(optimiser_config, params=self.parameters(), lr=self.learning_rate)
+        if self.scheduler_cls is not None:
+            scheduler_config = omegaconf.DictConfig(dict(_target_=self.scheduler_cls, **(self.scheduler_config or {})))
+            scheduler = hydra.utils.instantiate(scheduler_config, optimizer=optimiser)
+            return [optimiser], [dict(
+                scheduler=scheduler,
+                interval=self.scheduler_interval,
+                frequency=self.scheduler_frequency
+            )]
+        return optimiser
+
+class SIVAE_V0(L.LightningModule):
+    def __init__(
+        self,
+        front_end: omegaconf.DictConfig,
+        feature_encoder: omegaconf.DictConfig,
+        content_encoder: omegaconf.DictConfig,
+        feature_decoder: omegaconf.DictConfig,
+        content_decoder: omegaconf.DictConfig,
+        alignment_encoder: omegaconf.DictConfig | None = None,
+        latent_dim: int = 128,
+        frequency_dim: int = 64,
+        frame_window_length: int = 192,
+        frame_padding_mode: int = "circular",
+        translation_mode: str = "bicubic",
+        translation_idx: int = 2,
+        cross_decode_method: str = "soft",
+        beta: float = 1.0,
+        gamma: float = 1.0,
+        sigma_x: float = 0.2,
+        sigma_z_min: float = 1e-5,
+        x_i_frame_prob: float = 0.75,
+        delta_prob_step_start: int = 0,
+        delta_prob_step_end: int = 0,
+        delta_prob_min: int = 1.0,
+        delta_prob_max: int = 1.0,
+        delta_sigma_min: float = 2.0,
+        delta_sigma_max: float = 2.0,
+        delta_sigma_step_slope: float = 0.4,
+        delta_sigma_step_start: int = 0,
+        delta_sigma_step_end: int = 0,
+        align_only: bool = False,
+        learning_rate: float = 1e-4,
+        optimiser_cls: str = "torch.optim.AdamW",
+        optimiser_config: omegaconf.DictConfig | None = None,
+        scheduler_cls: str | None = None,
+        scheduler_config: omegaconf.DictConfig | None = None,
+        scheduler_interval: str = "step",
+        scheduler_frequency: int = 1,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__()
+        self.save_hyperparameters()
+        self.latent_dim = latent_dim
+        self.frequency_dim = frequency_dim
+        self.frame_window_length = frame_window_length
+        self.frame_padding_mode = frame_padding_mode
+        self.translation_mode = translation_mode
+        self.translation_idx = translation_idx
+        self.cross_decode_method = cross_decode_method
+        self.beta = beta
+        self.gamma = gamma
+        self.sigma_x = sigma_x
+        self.sigma_z_min = sigma_z_min
+        self.delta_sigma_min = delta_sigma_min
+        self.delta_sigma_max = delta_sigma_max
+        self.delta_sigma_step_slope = delta_sigma_step_slope
+        self.delta_sigma_step_start = delta_sigma_step_start
+        self.delta_sigma_step_end = delta_sigma_step_end
+        self.align_only = align_only
+
+        self.learning_rate = learning_rate
+        self.optimiser_cls = optimiser_cls
+        self.optimiser_config = optimiser_config
+        self.scheduler_cls = scheduler_cls
+        self.scheduler_config = scheduler_config
+        self.scheduler_interval = scheduler_interval
+        self.scheduler_frequency = scheduler_frequency
+
+        self.front_end = hydra.utils.instantiate(front_end)
+        self.feature_encoder = hydra.utils.instantiate(feature_encoder)
+        self.content_encoder = hydra.utils.instantiate(content_encoder)
+        self.feature_decoder = hydra.utils.instantiate(feature_decoder)
+        self.content_decoder = hydra.utils.instantiate(content_decoder)
+        self.alignment_encoder = hydra.utils.instantiate(alignment_encoder)
+
+        assert translation_idx <= len(self.feature_decoder.blocks), f"'translation_idx' is too large, set <= {len(self.feature_decoder.blocks)}"
+        if translation_idx == -1 or translation_idx >= len(self.feature_decoder.blocks) and x_i_frame_prob < 1.0:
+            raise AssertionError(
+                f"Cannot apply independent frame-level translations after unframing, "
+                f"set 'translation_idx' < {len(self.feature_decoder.blocks)} to reconstruct without frame continuity"
+            )
+
+        if self.align_only:
+            log.info("Freezing feature and content networks")
+            params = list(self.feature_encoder.parameters()) + list(self.feature_decoder.parameters()) + \
+                list(self.content_encoder.parameters()) + list(self.content_decoder.parameters())
+            for param in params:
+                param.requires_grad = False
+        else:
+            log.info("Freezing alignment encoder")
+            for param in self.alignment_encoder.parameters():
+                param.requires_grad = False
+
+    def pre_process(self, wav: torch.Tensor) -> torch.Tensor:
+        x = self.front_end(wav)
+        x = x.transpose(-1, -2) # transpose time to inner axis
+        return T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
+
+    def forward(self, x: torch.Tensor, *args: Any, t: int | None = None, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        x_i = x
+        # encode posterior for full sequence
+        q_z_i, delta_hat_i = self.encode(x_i) # (bs, seq, ld)
+        delta_i = torch.zeros_like(delta_hat_i, requires_grad=False)
+        mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
+        seq_len = q_z_i.size(1)
+        # encode posterior for translated frames separately
+        x_i_framed = self.frame(x_i, window_length=self.frame_window_length, hop_length=self.frame_window_length).flatten(end_dim=1)
+        delta_j = torch.randn_like(delta_i).flatten(end_dim=1).unsqueeze(1) * self.delta_sigma_current(t)
+        x_j = self.translation(x_i_framed.transpose(-1, -2), delta_j, mode=self.translation_mode).transpose(-1, -2)
+        q_z_j, delta_hat_j = self.encode(x_j) # (bs * seq, 1, ld)
+        mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
+
+        if self.cross_decode_method == "soft":
+            # soft cross-decoding averages the distributions
+            # mu_k = (mu_i + mu_j) / 2, sigma^2_k = (sigma^2_i + sigma^2_j) / 2^2
+            mu_z = (1/2 * mu_z_i + 1/2 * mu_z_j.view(mu_z_i.size()))
+            log_sigma_sq_z = (1/4 * (log_sigma_sq_z_i.exp() + log_sigma_sq_z_j.view(log_sigma_sq_z_i.size()).exp())).log()
+            z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()  # (bs, seq, ld)
+            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1).view(q_z_i.size()).squeeze(1)
+            # only need to decode z once before applying the translation
+            U_hat_i = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1))) # (bs, seq, ch, fr, fq)
+            U_hat_j = U_hat_i.flatten(end_dim=1).unsqueeze(1) # (bs * seq, 1, ch, fr, fq)
+        elif self.cross_decode_method == "hard":
+            # hard cross-decoding swaps representations
+            z_i = torch.distributions.Normal(mu_z_i, (0.5 * log_sigma_sq_z_i).exp()).rsample()  # (bs, seq, ld)
+            z_j = torch.distributions.Normal(mu_z_j, (0.5 * log_sigma_sq_z_j).exp()).rsample()  # (bs * seq, 1, ld)
+            q_z = torch.cat([q_z_i.view(q_z_j.size()), q_z_j], dim=0).squeeze(1)
+            z_i, z_j = z_j, z_i
+            # each z is decoded separately
+            U_hat_i = self.content_decoder(z_i.flatten(end_dim=1)).unflatten(0, (z_i.size(0), z_i.size(1)))
+            U_hat_j = self.content_decoder(z_j.flatten(end_dim=1)).unflatten(0, (z_j.size(0), z_j.size(1)))
+        else:
+            raise Exception("Cross decode method not specified, terminating")
+
+        if self.align_only:
+            x_hat_i = self.cnn_decode(U_hat_i, delta_hat_i) # (bs, 1, fr * seq, fq)
+            x_hat_j = self.cnn_decode(U_hat_j, delta_hat_j) # (bs * seq, 1, fr, fq)
+        else:
+            x_hat_i = self.cnn_decode(U_hat_i, delta_i) # (bs, 1, fr * seq, fq)
+            x_hat_j = self.cnn_decode(U_hat_j, delta_j) # (bs * seq, 1, fr, fq)
+        # frame for frame-wise loss
+        x_hat_i_framed = self.frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_window_length).flatten(end_dim=1)
+        x_framed = torch.cat([x_i_framed, x_j], dim=0)
+        x_hat_framed = torch.cat([x_hat_i_framed, x_hat_j], dim=0)
+        return dict(
+            x_i=x, x_j=x_j,
+            x_hat_i=x_hat_i, x_hat_j=x_hat_j,
+            x_framed=x_framed, x_hat_framed=x_hat_framed,
+            q_z=q_z,
+            q_z_i=q_z_i, q_z_j=q_z_j,
+            delta_i=delta_i, delta_j=delta_j,
+            delta_hat_i=delta_hat_i, delta_hat_j=delta_hat_j,
+            seq_len=seq_len,
+        )
+
+    def encode(self, x: Tensor, hop_length: int | None = None, t: int | None = None) -> Tensor:
+        # feature extraction
+        x, us = self.feature_encoder(x)
+        x_window_length = self.frame_window_length // 2**(self.feature_encoder.num_layers)
+        x_hop_length = (hop_length or self.frame_window_length) // 2**(self.feature_encoder.num_layers)
+        u_window_length = self.frame_window_length // 2**2
+        u_hop_length = (hop_length or self.frame_window_length) // 2**2
+        x = self.frame(x, window_length=x_window_length, hop_length=x_hop_length, padding_mode=self.frame_padding_mode)
+        u = self.frame(us[1], window_length=u_window_length, hop_length=u_hop_length, padding_mode=self.frame_padding_mode)
+        # content bottleneck
+        q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
+        if self.sigma_z_min is not None:
+            mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+            sigma_latent = torch.tensor(self.sigma_z_min, dtype=torch.float32, requires_grad=False, device=mu_z.device)
+            log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*sigma_latent.log())
+            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
+        # alignment bottleneck
+        delta = self.alignment_encoder(x, u)
+        return q_z, delta
+
+    def decode(self, z: Tensor, delta: Tensor | None = None) -> Tensor:
+        U = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1)))
+        x_hat = self.cnn_decode(U, delta)
+        return x_hat
+
+    def cnn_decode(self, U: Tensor, delta: Tensor) -> Tensor:
+        bs, seq, *_ = delta.size()
+        U = U.flatten(end_dim=1)
+        for i, block in enumerate(self.feature_decoder.blocks):
+            if i == len(self.feature_decoder.blocks) - 2 and delta is not None:
+                U = U.transpose(-1, -2).contiguous()
+                U = self.translation(U, delta.view(bs * seq, 1, 1, 1), mode=self.translation_mode)
+                U = U.transpose(-1, -2).contiguous()
+            if i == len(self.feature_decoder.blocks) - 1:
+                num_timesteps = (self.frame_window_length * seq) // 2**(len(self.feature_decoder.blocks) - i)
+                U = unframe(U.view(bs, seq, *U.size()[1:]), hop_length=U.size(-2), num_timesteps=num_timesteps)
+                # U = U.unflatten(0, (bs, seq)).transpose(1, 2).flatten(start_dim=2, end_dim=3)
+            U = block(U)
+        return U
+
+    @staticmethod
+    def circular_boundary(xx: torch.Tensor) -> torch.Tensor:
+        return ((xx + 1) % 2) - 1
+
+    def translation(self, x: torch.Tensor, delta: torch.Tensor, mode: str) -> torch.Tensor:
+        bs, ch, fq, ts = x.shape
+        x_flat = x.view(bs, ch * fq, 1, ts)
+        xs = torch.linspace(-1, 1, ts, device=x.device)
+        grid_x = xs.view(1, 1, ts).expand(bs, 1, ts)
+        grid_y = torch.zeros_like(grid_x)
+        grid = torch.stack((grid_x, grid_y), dim=-1)
+        xx = grid[..., 0] + delta.view(bs, 1, 1)
+        grid[..., 0] = self.circular_boundary(xx)
+        x_tilde = F.grid_sample(x_flat, grid, mode=mode, padding_mode="zeros", align_corners=True)
+        return x_tilde.view(bs, ch, fq, ts)
+
+    @staticmethod
+    def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:
+        if x.size(-2) == window_length:
+            return x.unsqueeze(1)
+        if hop_length != window_length:
+            return frame(x, window_length=window_length, hop_length=hop_length, padding_mode=padding_mode)
+        return x.view(x.size(0), x.size(1), x.size(2) // window_length, window_length, x.size(3)).transpose(1, 2)
+
+    def predict(self, x: Tensor) -> Dict[str, Tensor]:
+        q_z, delta = self.encode(x)
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        z = Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()
+        x_hat = self.decode(z, delta).view(*x.size())
+        return dict(x=x, x_hat=x_hat, q_z=q_z, delta=delta)
+
+    def loss(
+        self,
+        x_framed: torch.Tensor,
+        x_hat_framed: Tensor,
+        q_z: torch.Tensor,
+        delta_i: torch.Tensor,
+        delta_j: torch.Tensor,
+        delta_hat_i: torch.Tensor,
+        delta_hat_j: torch.Tensor,
+        t: int = 0,
+        **kwargs: Any,
+    ) -> Dict[str, Tensor]:
+        outputs = dict()
+        losses = []
+        # maximise likelihood p(x_i|z_j) framewise to ensure invariance to sequence length
+        sigma_recon = torch.tensor(self.sigma_x, dtype=torch.float32, requires_grad=False, device=x_framed.device)
+        nll = negative_log_likelihood(x_framed, x_hat_framed, 2*sigma_recon.log()).flatten(start_dim=-3).sum(dim=-1)
+        losses.append(nll.mean())
+        outputs |= dict(log_likelihood_x=-nll.detach().mean())
+        # MAP estimate of the alignment factor p(x|dt)p(dt)
+        if self.align_only:
+            delta_hat = torch.cat([delta_hat_i.flatten(end_dim=1).unsqueeze(1), delta_hat_j], dim=0)
+            intra_frame_nll = negative_log_likelihood(delta_hat, torch.zeros(1, device=delta_hat), 2*self.delta_sigma_current(t).log())
+            losses.append(intra_frame_nll.mean())
+            outputs |= dict(log_likelihood_delta=-intra_frame_nll.detach().mean())
+        # when applying the smoothness loss
+        dkl = self.beta * gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
+        losses.append(dkl.mean())
+        outputs |= dict(dkl=dkl.detach().mean())
+        # sum the loss components
+        outputs |= dict(loss=sum(losses))
+        return outputs
+
+    @torch.no_grad()
+    def metrics(
+        self,
+        x_framed: Tensor,
+        x_hat_framed: Tensor,
+        q_z: Tensor,
+        q_z_i: Tensor,
+        q_z_j: Tensor,
+        delta_i: Tensor,
+        delta_j: Tensor,
+        delta_hat_i: Tensor,
+        delta_hat_j: Tensor,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
+        # distribution of z mean and varaince
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        sigma_z = (0.5 * log_sigma_sq_z).exp()
+        mu_hist = np.histogram(mu_z.flatten().cpu().numpy(), bins=32, range=[-5.0, 5.0])
+        sigma_hist = np.histogram(sigma_z.flatten().cpu().numpy(), bins=32, range=[0.0, 2.0])
+        mu_z_i, mu_z_j = q_z_i.chunk(2, dim=-1)[0], q_z_j.view(q_z_i.size()).chunk(2, dim=-1)[0]
+        # mean distance between shifted embeddings
+        z_dist_mean = (mu_z_j - mu_z_i).pow(2).sum(dim=-1).sqrt().mean()
+        z_dist_std = (mu_z_j - mu_z_i).pow(2).sum(dim=-1).sqrt().std()
+        # # distribution of delta predictions
+        delta = torch.cat([delta_i, delta_j.view(delta_i.size())])
+        delta_hist = np.histogram(delta.flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
+        delta_hat = torch.cat([delta_hat_i, delta_hat_j.view(delta_hat_i.size())])
+        delta_hat_hist = np.histogram(delta_hat.flatten().cpu().numpy(), bins=128, range=[-1.0, 1.0])
+        # reconstruction error
+        d_x = (x_hat_framed - x_framed).flatten(start_dim=-3)
+        mae = d_x.abs().mean(dim=-1).mean()
+        mse = d_x.pow(2).mean(dim=-1).mean()
+        # normalised KL
+        dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / mu_z.size(-1)).mean()
+        return dict(
+            mae=mae,
+            mse=mse,
+            mu_z_hist=mu_hist,
+            sigma_z=sigma_hist,
+            z_dist_mean=z_dist_mean,
+            z_dist_std=z_dist_std,
+            delta_hist=delta_hist,
+            delta_hat_hist=delta_hat_hist,
+            dkl_norm=dkl_norm,
+        )
+
+    @torch.no_grad()
+    def embed(
+        self,
+        batch: Batch,
+        dataloader_idx: int = 0,
+        frame_hop_length: float | None = None,
+        **kwargs: Any
+    ) -> pd.DataFrame:
+        x, *_ = batch
+        frame_hop_length = frame_hop_length or self.frame_window_length // 2
+        q_z, *_ = self.encode(x, hop_length=frame_hop_length)
+        bs, seq, *_ = q_z.size()
+        sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
+        seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
+        dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
+        ref_column_types = dict(file_i=int, dataloader_idx=int, timestep=int)
+        feat_column_types = dict(
+            **{ f"z_mean_{d}": float  for d in range(q_z.size(-1)//2) },
+            **{ f"z_log_var_{d}": float  for d in range(q_z.size(-1)//2) },
+            # **{ "delta": float },
+        )
+        column_types = (ref_column_types | feat_column_types)
+        return pd.DataFrame(
+            data=dict(zip(column_types.keys(), [
+                sample_idx, dl_idx, seq_idx,
+                *q_z.flatten(end_dim=1).cpu().t(),
+                # *delta.flatten(end_dim=1).cpu().squeeze(-1),
+            ])),
+            columns=column_types.keys(),
+        ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
+
+    @torch.no_grad()
+    def tracking_figures(
+        self,
+        x: torch.Tensor,
+        x_i: torch.Tensor,
+        x_hat_i: torch.Tensor,
+        x_j: torch.Tensor,
+        x_hat_j: torch.Tensor,
+        q_z_i: torch.Tensor,
+        seq_len: int,
+        figsize: Tuple[int, int] = (10, 6),
+        dpi: int = 100,
+        num_samples: int = 6,
+        num_frames: int = 6,
+        **kwargs: Any,
+    ) -> List:
+        figures = []
+        num_samples = min(num_samples, x.size(0))
+        if q_z_i.size(1) == seq_len:
+            specs = x_i.squeeze().cpu().numpy()
+            recons = x_hat_i.squeeze().cpu().numpy()
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize, width_ratios=[0.97, 0.03], constrained_layout=True, dpi=dpi)
+                mesh = self.front_end.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max())
+                mesh = self.front_end.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max())
+                axes[0, 0].set_title("Original")
+                axes[1, 0].set_title("Reconstruction")
+                fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+                figures.append(("spectrogram", fig))
+        else:
+            specs = x_i.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+            recons = x_hat_i.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+            for i in range(num_samples):
+                fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=figsize, width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True, dpi=dpi)
+                for j in range(num_frames):
+                    mesh = self.front_end.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max())
+                    mesh = self.front_end.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max())
+                axes[0, 0].set_title("Original")
+                axes[1, 0].set_title("Reconstruction")
+                fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
+                fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
+                figures.append((f"frames/i", fig))
+        # plot translated frames
+        specs = x_j.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+        recons = x_hat_j.view(-1, seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+        for i in range(num_samples):
+            fig, axes = plt.subplots(nrows=2, ncols=num_frames + 1, figsize=figsize, width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True, dpi=dpi)
+            for j in range(num_frames):
+                mesh = self.front_end.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max())
+                mesh = self.front_end.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max())
+            axes[0, 0].set_title("Original")
+            axes[1, 0].set_title("Reconstruction")
+            fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
+            fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
+            figures.append((f"frames/j", fig))
+        return figures
+
+    def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+        # run training
+        log.info(f"Training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        checkpoint_path, resume = config.get("ckpt_path"), config.get("resume")
+        if checkpoint_path is not None and resume:
+            log.info(f"Resuming from {checkpoint_path}")
+            trainer.fit(self, datamodule=data_module, ckpt_path=checkpoint_path)
+        elif config.get("ckpt_path"):
+            log.info(f"Loading state dict from {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path)
+            self.load_state_dict(checkpoint["state_dict"], strict=False)
+            trainer.fit(self, datamodule=data_module)
+        else:
+            trainer.fit(self, datamodule=data_module)
+        # persist the model configuration
+        checkpoint_dir = pathlib.Path(trainer.checkpoint_callback.dirpath)
+        if checkpoint_dir.exists():
+            config_path = checkpoint_dir / "config.yaml"
+            log.info(f"Saving run configuration to {config_path}")
+            omegaconf.OmegaConf.save(config, config_path)
+        # running test
+        log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        trainer.test(self, dataloaders=data_module.predict_dataloader())
+
+
+    def step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        step_outputs = self.forward(**batch, t=self.trainer.global_step, **kwargs)
+        loss_outputs = self.loss(**step_outputs, t=self.trainer.global_step)
+        step_outputs = detach_values(step_outputs)
+        return loss_outputs, step_outputs
+
+    def training_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx)
+        self.log_dict(prefix_keys(loss_outputs, "train"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
+        metrics = histogram_to_wandb(self.metrics(**step_outputs))
+        if self.logger is not None and hasattr(self.logger, "experiment"):
+            self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "train")))
+        return loss_outputs | step_outputs
+
+    @torch.no_grad()
+    def validation_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx)
+        self.log_dict(prefix_keys(loss_outputs, "val"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
+        metrics = histogram_to_wandb(self.metrics(**step_outputs))
+        if self.logger is not None and hasattr(self.logger, "experiment"):
+            self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "val")))
+        return loss_outputs | step_outputs
+
+    @torch.no_grad()
+    def test_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        return self.predict(**batch, **kwargs)
+
+    @torch.no_grad()
+    def predict_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        return self.predict(**batch, **kwargs)
+
+    def on_after_batch_transfer(self, batch: Batch, dataloader_idx: int) -> Batch:
+        x = self.pre_process(batch.x)
+        return Batch(x=x, **{k: batch[k] for k in batch.keys() if k != "x"})
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        optimiser_config = omegaconf.DictConfig(dict(_target_=self.optimiser_cls, **(self.optimiser_config or {})))
+        optimiser = hydra.utils.instantiate(optimiser_config, params=self.parameters(), lr=self.learning_rate)
+        if self.scheduler_cls is not None:
+            scheduler_config = omegaconf.DictConfig(dict(_target_=self.scheduler_cls, **(self.scheduler_config or {})))
+            scheduler = hydra.utils.instantiate(scheduler_config, optimizer=optimiser)
+            return [optimiser], [dict(
+                scheduler=scheduler,
+                interval=self.scheduler_interval,
+                frequency=self.scheduler_frequency
+            )]
+        return optimiser
+
+    def delta_sigma_current(self, t: int) -> Tensor:
+        if self.delta_sigma_min is None or self.delta_sigma_min == self.delta_sigma_max:
+            return self.delta_sigma_max
+        return torch.tensor(bounded_sigmoid(t, **self.delta_sigma_params))
+
+    @property
+    def delta_sigma_params(self):
+        return dict(
+            x_min=self.delta_sigma_step_start,
+            x_max=self.delta_sigma_step_end,
+            y_min=self.delta_sigma_min,
+            y_max=self.delta_sigma_max,
+            k=self.delta_sigma_step_slope,
+        )
+
+
+class SIVAEFreqOffset(L.LightningModule):
+    def __init__(
+        self,
+        front_end: omegaconf.DictConfig,
+        feature_encoder: omegaconf.DictConfig,
+        content_encoder: omegaconf.DictConfig,
+        feature_decoder: omegaconf.DictConfig,
+        content_decoder: omegaconf.DictConfig,
+        alignment_encoder: omegaconf.DictConfig | None = None,
+        latent_dim: int = 128,
+        freq_offset_latent_dim: int = 4,
+        frequency_dim: int = 64,
+        frame_window_length: int = 192,
+        frame_padding_mode: int = "circular",
+        translation_mode: str = "bicubic",
+        translation_idx: int = 2,
+        cross_decode_method: str = "soft",
+        beta: float = 1.0,
+        gamma: float = 1.0,
+        sigma_x: float = 0.2,
+        sigma_z_min: float = 1e-5,
+        x_i_frame_prob: float = 0.75,
+        delta_prob_step_start: int = 0,
+        delta_prob_step_end: int = 0,
+        delta_prob_min: int = 1.0,
+        delta_prob_max: int = 1.0,
+        delta_sigma_min: float = 1.0,
+        delta_sigma_max: float = 1.0,
+        delta_sigma_step_slope: float = 0.4,
+        delta_sigma_step_start: int = 0,
+        delta_sigma_step_end: int = 0,
+        align_only: bool = False,
+        learning_rate: float = 1e-4,
+        optimiser_cls: str = "torch.optim.AdamW",
+        optimiser_config: omegaconf.DictConfig | None = None,
+        scheduler_cls: str | None = None,
+        scheduler_config: omegaconf.DictConfig | None = None,
+        scheduler_interval: str = "step",
+        scheduler_frequency: int = 1,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__()
+        self.save_hyperparameters()
+        self.latent_dim = latent_dim
+        self.freq_offset_latent_dim = freq_offset_latent_dim
+        self.frequency_dim = frequency_dim
+        self.frame_window_length = frame_window_length
+        self.frame_padding_mode = frame_padding_mode
+        self.translation_mode = translation_mode
+        self.translation_idx = translation_idx
+        self.cross_decode_method = cross_decode_method
+        self.beta = beta
+        self.gamma = gamma
+        self.sigma_x = sigma_x
+        self.sigma_z_min = sigma_z_min
+        self.x_i_frame_prob = x_i_frame_prob
+        # self.delta_prob_step_start = delta_prob_step_start
+        # self.delta_prob_step_end = delta_prob_step_end
+        # self.delta_prob_min = delta_prob_min
+        # self.delta_prob_max = delta_prob_max
+        # self.delta_sigma_min = delta_sigma_min
+        # self.delta_sigma_max = delta_sigma_max
+        # self.delta_sigma_step_slope = delta_sigma_step_slope
+        # self.delta_sigma_step_start = delta_sigma_step_start
+        # self.delta_sigma_step_end = delta_sigma_step_end
+        self.align_only = align_only
+
+        self.learning_rate = learning_rate
+        self.optimiser_cls = optimiser_cls
+        self.optimiser_config = optimiser_config
+        self.scheduler_cls = scheduler_cls
+        self.scheduler_config = scheduler_config
+        self.scheduler_interval = scheduler_interval
+        self.scheduler_frequency = scheduler_frequency
+
+        self.front_end = hydra.utils.instantiate(front_end)
+        self.feature_encoder = hydra.utils.instantiate(feature_encoder)
+        self.content_encoder = hydra.utils.instantiate(content_encoder)
+        self.feature_decoder = hydra.utils.instantiate(feature_decoder)
+        self.content_decoder = hydra.utils.instantiate(content_decoder)
+        self.alignment_encoder = hydra.utils.instantiate(alignment_encoder)
+
+        self.frequency_offset_decoder = MLP(layer_sizes=[self.freq_offset_latent_dim, 128, 128, self.frequency_dim], activation="LEAK", dropout_prob=0.0)
+
+        assert translation_idx <= len(self.feature_decoder.blocks), f"'translation_idx' is too large, set <= {len(self.feature_decoder.blocks)}"
+        if translation_idx == -1 or translation_idx >= len(self.feature_decoder.blocks) and x_i_frame_prob < 1.0:
+            raise AssertionError(
+                f"Cannot apply independent frame-level translations after unframing, "
+                f"set 'translation_idx' < {len(self.feature_decoder.blocks)} to reconstruct without frame continuity"
+            )
+
+        if self.align_only:
+            log.info("Freezing feature and content networks")
+            params = list(self.feature_encoder.parameters()) + list(self.feature_decoder.parameters()) + \
+                list(self.content_encoder.parameters()) + list(self.content_decoder.parameters())
+            for param in params:
+                param.requires_grad = False
+        else:
+            log.info("Freezing alignment encoder")
+            for param in self.alignment_encoder.parameters():
+                param.requires_grad = False
+
+    @torch.no_grad()
+    def pre_process(self, wav: torch.Tensor) -> torch.Tensor:
+        x = self.front_end(wav)
+        x = x.transpose(-1, -2) # transpose time to inner axis
+        return T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
+
+    def forward(self, x: Tensor, *args: Any, t: int | None = None, **kwargs: Any) -> Dict[str, Tensor]:
+        x_i = x
+        # full spectrograms
+        q_z_i, (theta_hat_i, dx_hat_i, dy_hat_i) = self.encode(x_i, t=t) # (bs, seq, ld)
+        theta_i = torch.zeros_like(theta_hat_i)
+        dx_i = torch.ones_like(dx_hat_i)
+        dy_i = torch.zeros_like(dy_hat_i)
+        mu_z_i, log_sigma_sq_z_i = q_z_i.chunk(2, dim=-1)
+        seq_len = q_z_i.size(1)
+        # independent randomly shifted frames
+        x_i_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length).flatten(end_dim=1)
+        theta_j, dx_j, dy_j = self.sample_circle(x_i_framed.size(0), 1, 1, scaling_factor=1.0, device=x.device)
+        x_j = self.translation(x_i_framed.transpose(-1, -2), theta_j / torch.pi, mode=self.translation_mode).transpose(-1, -2)
+        q_z_j, (theta_hat_j, dx_hat_j, dy_hat_j) = self.encode(x_j, t=t) # (bs * seq, 1, ld)
+        delta_hat_j = theta_hat_j / torch.pi
+        mu_z_j, log_sigma_sq_z_j = q_z_j.chunk(2, dim=-1)
+
+        # reparametrise and decode to feature maps
+        if self.cross_decode_method == "soft":
+            # soft cross-decoding averages the distributions
+            # mu_k = (mu_i + mu_j) / 2, sigma^2_k = (sigma^2_i + sigma^2_j) / 2^2
+            mu_z = (1/2 * mu_z_i + 1/2 * mu_z_j.view(mu_z_i.size()))
+            log_sigma_sq_z = (1/4 * (log_sigma_sq_z_i.exp() + log_sigma_sq_z_j.view(log_sigma_sq_z_i.size()).exp())).log()
+            z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()  # (bs, seq, ld)
+            # keep dim 1 as the 'pair' dimension
+            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1).view(q_z_j.size())
+            # learn a frame-level log magnitude offset for each spectrogram frequency bin
+            z, z_glob = z[..., :-4], z[..., -4:]
+            x_freq_offset = self.frequency_offset_decoder(z_glob).view(x_i_framed.size(0), 1, 1, x.size(-1)) # (bs * seq, 1, 1, fq)
+            x_freq_offset_i, x_freq_offset_j = x_freq_offset, x_freq_offset
+            # decode cnn feature maps
+            U_hat = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1))) # (bs, seq, ch, fr, fq)
+            U_hat_i, U_hat_j = U_hat, U_hat
+        elif self.cross_decode_method == "hard":
+            # cross decoding switches representations
+            z_i = torch.distributions.Normal(mu_z_i, (0.5 * log_sigma_sq_z_i).exp()).rsample()  # (bs, seq, ld)
+            z_j = torch.distributions.Normal(mu_z_j, (0.5 * log_sigma_sq_z_j).exp()).rsample()  # (bs * seq, 1, ld)
+            z_i, z_j = z_j, z_i
+            # stack posteriors pairwise
+            q_z = torch.cat([q_z_i.view(q_z_j.size()), q_z_j], dim=1)
+            # learn a frame-level log magnitude offset for each spectrogram frequency bin
+            z_i, z_glob_i, z_j, z_glob_j = z_i[..., :-4], z_i[..., -4:], z_j[..., :-4], z_j[..., -4:]
+            x_freq_offset_i = self.frequency_offset_decoder(z_glob_i).view(x_i_framed.size(0), 1, 1, x.size(-1)) # (bs * seq, 1, 1, fq)
+            x_freq_offset_j = self.frequency_offset_decoder(z_glob_j).view(x_i_framed.size(0), 1, 1, x.size(-1)) # (bs * seq, 1, 1, fq)
+            # decode cnn feature maps
+            U_hat_i = self.content_decoder(z_i.flatten(end_dim=1)).unflatten(0, (z_i.size(0), z_i.size(1)))
+            U_hat_j = self.content_decoder(z_j.flatten(end_dim=1)).unflatten(0, (z_j.size(0), z_j.size(1)))
+        else:
+            raise Exception("Cross decode method not specified, terminating")
+
+        # cross-decode representations
+        if self.align_only:
+            x_hat_i = self.cnn_decode(U_hat_i, theta_hat_i / torch.pi) # (bs, 1, fr * seq, fq)
+            x_hat_j = self.cnn_decode(U_hat_j, theta_hat_j / torch.pi) # (bs * seq, 1, fr, fq)
+        else:
+            x_hat_i = self.cnn_decode(U_hat_i, theta_i / torch.pi) # (bs, 1, fr * seq, fq)
+            x_hat_j = self.cnn_decode(U_hat_j, theta_j / torch.pi) # (bs * seq, 1, fr, fq)
+
+        # apply learned frequency bin offsets
+        x_hat_i_framed = self.frame(x_hat_i, window_length=self.frame_window_length, hop_length=self.frame_window_length).flatten(end_dim=1)
+        x_hat_i_framed = x_hat_i_framed + x_freq_offset_i
+        x_hat_i = self.unframe(x_hat_i_framed)
+        x_hat_j = x_hat_j + x_freq_offset_j
+        # stack for frame-wise loss
+        x_framed = torch.stack([x_i_framed, x_j], dim=1)
+        x_hat_framed = torch.stack([x_hat_i_framed, x_hat_j], dim=1)
+        return dict(
+            x=x,
+            x_framed=x_framed, x_i=x, x_j=x_j,
+            x_hat_framed=x_hat_framed, x_hat_i=x_hat_i, x_hat_j=x_hat_j,
+            x_freq_offset_i=x_freq_offset_i, x_freq_offset_j=x_freq_offset_j,
+            q_z=q_z, q_z_i=q_z_i, q_z_j=q_z_j,
+            theta_i=theta_i, theta_j=theta_j, theta_hat_i=theta_hat_i, theta_hat_j=theta_hat_j,
+            dx_i=dx_i, dx_j=dx_j, dx_hat_i=dx_hat_i, dx_hat_j=dx_hat_j,
+            dy_i=dy_i, dy_j=dy_j, dy_hat_i=dy_hat_i, dy_hat_j=dy_hat_j,
+            seq_len=seq_len,
+        )
+
+    def predict(self, x: Tensor, *args: Any, **kwargs: Any) -> Dict[str, Tensor]:
+        x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
+        q_z, (theta, dx, dy) = self.encode(x)
+        if self.align_only:
+            delta = torch.zeros_like(theta)
+        else:
+            delta = theta / torch.pi
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        z = torch.distributions.Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample()
+        z, z_glob = z[..., :-4], z[..., -4:]
+        x_freq_offset = self.frequency_offset_decoder(z_glob).unsqueeze(-2).unsqueeze(-2)
+        U = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1)))
+        x_hat = self.cnn_decode(U, delta)
+        x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_window_length)
+        x_hat_framed = x_hat_framed + x_freq_offset
+        return dict(
+            x=x,
+            x_hat=x_hat,
+            x_framed=x_framed,
+            x_hat_framed=x_hat_framed,
+            q_z=q_z,
+            delta=delta,
+        )
+
+    def sample_circle(self, *args: Any, scaling_factor: float = 1.0, **kwargs: Any):
+        delta = scaling_factor * ((torch.rand(*args, **kwargs) * 2) - 1)
+        theta = torch.pi * delta
+        dx, dy = torch.cos(theta), torch.sin(theta)
+        return theta, dx, dy
+
+    def encode(self, x: Tensor, hop_length: int | None = None, t: int | None = None) -> Tensor:
+        # feature extraction
+        x, us = self.feature_encoder(x)
+        x_window_length = self.frame_window_length // 2**(self.feature_encoder.num_layers)
+        x_hop_length = (hop_length or self.frame_window_length) // 2**(self.feature_encoder.num_layers)
+        u_window_length = self.frame_window_length // 2**2
+        u_hop_length = (hop_length or self.frame_window_length) // 2**2
+        x = self.frame(x, window_length=x_window_length, hop_length=x_hop_length, padding_mode=self.frame_padding_mode)
+        u = self.frame(us[1], window_length=u_window_length, hop_length=u_hop_length, padding_mode=self.frame_padding_mode)
+        # content bottleneck
+        q_z = self.content_encoder(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
+        if self.sigma_z_min is not None:
+            mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+            sigma_latent = torch.tensor(self.sigma_z_min, dtype=torch.float32, requires_grad=False, device=mu_z.device)
+            log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*sigma_latent.log())
+            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
+        # alignment bottleneck
+        delta = self.alignment_encoder(x, u)
+        return q_z, delta
+
+    def decode(self, z: Tensor, delta: Tensor | None = None) -> Tensor:
+        U = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1)))
+        x_hat = self.cnn_decode(U, delta)
+        return x_hat
+
+    def cnn_decode(self, U: Tensor, delta: Tensor) -> Tensor:
+        bs, seq, _ = delta.size()
+        U = U.flatten(end_dim=1)
+        for i, block in enumerate(self.feature_decoder.blocks):
+            if self.translation_idx == i:
+                U = U.transpose(-1, -2).contiguous()
+                U = self.translation(U, delta.view(bs * seq), mode=self.translation_mode)
+                U = U.transpose(-1, -2).contiguous()
+            if i == len(self.feature_decoder.blocks) - 1 and self.translation_idx != -1:
+                U = U.unflatten(0, (bs, seq))
+                U = self.unframe(U)
+            U = block(U)
+        if self.translation_idx == -1:
+            U = U.transpose(-1, -2).contiguous()
+            U = self.translation(U, delta.view(bs * seq), mode=self.translation_mode)
+            U = U.transpose(-1, -2).contiguous()
+        return U
+
+    @staticmethod
+    def translation(x: torch.Tensor, delta: torch.Tensor, mode: str) -> torch.Tensor:
+        bs, ch, fq, ts = x.shape
+        x_flat = x.view(bs, ch * fq, 1, ts)
+        xs = torch.linspace(-1, 1, ts, device=x.device)
+        grid_x = xs.view(1, 1, ts).expand(bs, 1, ts)
+        grid_y = torch.zeros_like(grid_x)
+        grid = torch.stack((grid_x, grid_y), dim=-1)
+        xx = grid[..., 0] + delta.view(bs, 1, 1)
+        grid[..., 0] = ((xx + 1) % 2) - 1
+        x_tilde = F.grid_sample(x_flat, grid, mode=mode, padding_mode="zeros", align_corners=True)
+        return x_tilde.view(bs, ch, fq, ts)
+
+    @property
+    def frame_params(self):
+        return dict(window_length=self.window_length, hop_length=self.window_length)
+
+    @staticmethod
+    def frame(x: Tensor, window_length: int, hop_length: int | None = None, padding_mode: str = "circular") -> Tensor:
+        if x.size(-2) == window_length:
+            return x.unsqueeze(1)
+        if hop_length != window_length:
+            return frame(x, window_length=window_length, hop_length=hop_length, padding_mode=padding_mode)
+        return x.view(x.size(0), x.size(1), x.size(2) // window_length, window_length, x.size(3)).transpose(1, 2)
+
+    @staticmethod
+    def unframe(x: Tensor) -> Tensor:
+        return x.transpose(1, 2).flatten(start_dim=2, end_dim=3)
+
+    def loss(
+        self,
+        x_framed: Tensor,
+        x_hat_framed: Tensor,
+        q_z: Tensor,
+        dx_i: Tensor,
+        dx_j: Tensor,
+        dx_hat_i: Tensor,
+        dx_hat_j: Tensor,
+        dy_i: Tensor,
+        dy_j: Tensor,
+        dy_hat_i: Tensor,
+        dy_hat_j: Tensor,
+        **kwargs: Any,
+    ) -> Dict[str, Tensor]:
+        outputs = dict()
+        losses = []
+        # maximise likelihood p(x_i|z_j) framewise to ensure invariance to sequence length
+        sigma_recon = torch.tensor(self.sigma_x, dtype=torch.float32, requires_grad=False, device=x_framed.device)
+        nll = negative_log_likelihood(x_framed, x_hat_framed, 2*sigma_recon.log()).flatten(start_dim=-3).sum(dim=-1)
+        # average across pairs, then across batch & frames
+        nll = nll.mean(dim=-1).mean()
+        losses.append(nll)
+        outputs |= dict(log_likelihood_x=-nll.detach())
+        # supervision signal for delta, minimise relative angular difference
+        if self.align_only:
+            angular_error_i = 2 * (1 - (dx_hat_i * dx_i + dy_hat_i * dy_i))
+            angular_error_j = 2 * (1 - (dx_hat_j * dx_j + dy_hat_j * dy_j))
+            # sum along angle (always singular), mean across pairs, mean across batch & frames
+            alignment_loss = self.gamma * torch.cat([angular_error_i.view(angular_error_j.size()), angular_error_j], dim=-2).sum(dim=-1).mean(dim=-1).mean()
+            losses.append(alignment_loss)
+            outputs |= dict(alignment_loss=alignment_loss.detach())
+        # standard normal dkl
+        dkl = self.beta * gaussian_kl_divergence_standard_prior(q_z).sum(dim=-1)
+        # average first across pairs, then across batch & frames
+        dkl = dkl.mean(dim=-1).mean()
+        losses.append(dkl)
+        outputs |= dict(dkl=dkl.detach())
+        # sum the loss components
+        outputs |= dict(loss=sum(losses))
+        return outputs
+
+    @torch.no_grad()
+    def metrics(
+        self,
+        x_framed: Tensor,
+        x_hat_framed: Tensor,
+        q_z: Tensor,
+        q_z_i: Tensor,
+        q_z_j: Tensor,
+        theta_i: Tensor,
+        theta_j: Tensor,
+        theta_hat_i: Tensor,
+        theta_hat_j: Tensor,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
+        # distribution of z mean and varaince
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        sigma_z = (0.5 * log_sigma_sq_z).exp()
+        mu_hist = np.histogram(mu_z.flatten().cpu().numpy(), bins=32, range=[-5.0, 5.0])
+        sigma_hist = np.histogram(sigma_z.flatten().cpu().numpy(), bins=32, range=[0.0, 2.0])
+        # mean distance between shifted embeddings
+        mu_z_i, mu_z_j = q_z_i.chunk(2, dim=-1)[0], q_z_j.view(q_z_i.size()).chunk(2, dim=-1)[0]
+        z_dist_mean = (mu_z_j - mu_z_i).pow(2).sum(dim=-1).sqrt().mean()
+        z_dist_std = (mu_z_j - mu_z_i).pow(2).sum(dim=-1).sqrt().std()
+        # variance of predicted theta both independently and across sequence
+        theta = torch.cat([theta_i, theta_j.view(theta_i.size())])
+        theta_hat = torch.cat([theta_hat_i, theta_hat_j.view(theta_hat_i.size())])
+        theta_hat_var = circular_variance(theta_hat, dim=None).mean()
+        theta_hat_seq_var = circular_variance(theta_hat, dim=1).mean()
+        # anglular error
+        d_theta = theta_hat - theta
+        angular_distance = torch.atan2(torch.sin(d_theta), torch.cos(d_theta))
+        angular_error = 1 - torch.cos(d_theta)
+        d_theta_hist = np.histogram(d_theta.flatten().cpu().numpy(), bins=128, range=[0.0, 2.0])
+        # reconstruction error
+        err = (x_hat_framed - x_framed).flatten(start_dim=-3)
+        mae = err.abs().mean(dim=-1).mean(dim=-1).mean()
+        mse = err.pow(2).mean(dim=-1).mean(dim=-1).mean()
+        # normalised KL
+        dkl_norm = ((-1/2 * (1 + log_sigma_sq_z[...,:-4] - mu_z[...,:-4].pow(2) - log_sigma_sq_z[...,:-4].exp())).sum(dim=-1) / mu_z[...,:-4].size(-1)).mean(dim=-1).mean()
+        dkl_norm_glob = ((-1/2 * (1 + log_sigma_sq_z[...,-4:] - mu_z[...,-4:].pow(2) - log_sigma_sq_z[...,-4:].exp())).sum(dim=-1) / mu_z[...,-4:].size(-1)).mean(dim=-1).mean()
+        return dict(
+            mae=mae,
+            mse=mse,
+            mu_z_hist=mu_hist,
+            sigma_z=sigma_hist,
+            z_dist_mean=z_dist_mean,
+            z_dist_std=z_dist_std,
+            # delta_hist=delta_hist,
+            # delta_hat_hist=delta_hat_hist,
+            theta_hat_var=theta_hat_var,
+            theta_hat_seq_var=theta_hat_seq_var,
+            angular_distance_mean=angular_distance.mean(),
+            angular_distance_std=angular_distance.std(),
+            angular_error_mean=angular_error.mean(),
+            angular_error_std=angular_error.std(),
+            dkl_norm=dkl_norm,
+            dkl_norm_glob=dkl_norm_glob,
+        )
+
+    @torch.no_grad()
+    def predict_delta(self, x: torch.Tensor, num_samples: int = 10):
+        x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
+        delta = (torch.randn(x_framed.size(0), x_framed.size(1), num_samples) * 2) - 1
+        x_framed = x_framed.unsqueeze(2).expand(-1, -1, num_samples, -1, -1, -1)
+        bs, seq, n, *_ = x_framed.size()
+        x_trans = self.translation(
+            x_framed.flatten(end_dim=2).transpose(-1, -2).contiguous(),
+            delta.flatten(end_dim=2),
+            mode=self.translation_mode
+        ).transpose(-1, -2).contiguous().unflatten(0, (bs, seq, n))
+        _, (theta, dx, dy) = self.encode(x_trans.flatten(end_dim=2))
+        delta_hat = theta / torch.pi
+        delta_hat = delta_hat.unflatten(0, (bs, seq, n)).view(delta.size())
+        return dict(x_trans=x_trans, delta=delta, delta_hat=delta_hat)
+
+    @torch.no_grad()
+    def embed(
+        self,
+        batch: Batch,
+        dataloader_idx: int = 0,
+        frame_hop_length: float | None = None,
+        **kwargs: Any
+    ) -> pd.DataFrame:
+        x, *_ = batch
+        frame_hop_length = frame_hop_length or self.frame_window_length // 2
+        q_z, *_ = self.encode(x, hop_length=frame_hop_length)
+        bs, seq, *_ = q_z.size()
+        sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
+        seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
+        dl_idx = torch.tensor(dataloader_idx).expand(bs).unsqueeze(0).repeat(seq, 1).t().flatten().cpu()
+        ref_column_types = dict(file_i=int, dataloader_idx=int, timestep=int)
+        feat_column_types = dict(
+            **{ f"z_mean_{d}": float  for d in range(q_z.size(-1)//2) },
+            **{ f"z_log_var_{d}": float  for d in range(q_z.size(-1)//2) },
+            # **{ "delta": float },
+        )
+        column_types = (ref_column_types | feat_column_types)
+        return pd.DataFrame(
+            data=dict(zip(column_types.keys(), [
+                sample_idx, dl_idx, seq_idx,
+                *q_z.flatten(end_dim=1).cpu().t(),
+                # *delta.flatten(end_dim=1).cpu().squeeze(-1),
+            ])),
+            columns=column_types.keys(),
+        ).astype(dtype=column_types).set_index(list(ref_column_types.keys()))
+
+    @torch.no_grad()
+    def tracking_figures(
+        self,
+        x: torch.Tensor,
+        x_i: torch.Tensor,
+        x_hat_i: torch.Tensor,
+        x_j: torch.Tensor,
+        x_hat_j: torch.Tensor,
+        x_freq_offset_i: torch.Tensor,
+        x_freq_offset_j: torch.Tensor,
+        q_z_i: torch.Tensor,
+        seq_len: int,
+        figsize: Tuple[int, int] = (10, 6),
+        dpi: int = 100,
+        num_samples: int = 6,
+        num_frames: int = 6,
+        **kwargs: Any,
+    ) -> List:
+        figures = []
+        num_samples = min(num_samples, x.size(0))
+
+        specs = x_i.squeeze().cpu()
+        recons = x_hat_i.squeeze().cpu()
+        for i in range(num_samples):
+            fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize, width_ratios=[0.97, 0.03], constrained_layout=True, dpi=dpi)
+            mesh = self.front_end.plot(specs[i].T, ax=axes[0, 0], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+            mesh = self.front_end.plot(recons[i].T, ax=axes[1, 0], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+            axes[0, 0].set_title("Original")
+            axes[1, 0].set_title("Reconstruction")
+            fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+            fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+            figures.append(("spectrogram", fig))
+
+        # plot baseline frames
+        specs = x_i.view(x.size(0), seq_len, self.frame_window_length, self.frequency_dim).cpu()
+        recons = x_hat_i.view(x.size(0), seq_len, self.frame_window_length, self.frequency_dim).cpu()
+        offsets = x_freq_offset_i.view(x.size(0), seq_len, 1, self.frequency_dim).cpu()
+        for i in range(num_samples):
+            fig, axes = plt.subplots(nrows=3, ncols=num_frames + 1, figsize=(10, 9), width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True, dpi=dpi)
+            for j in range(num_frames):
+                mesh = self.front_end.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+                self.front_end.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+                self.front_end.plot(offsets[i, j].expand(self.frame_window_length, -1).t(), ax=axes[2, j], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+            axes[0, 0].set_title("Original")
+            axes[1, 0].set_title("Reconstruction")
+            axes[2, 0].set_title("Offset")
+            fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
+            fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
+            fig.colorbar(mesh, cax=axes[2, -1], orientation="vertical")
+            figures.append((f"frames/i", fig))
+
+        # plot translated frames
+        specs = x_j.view(x.size(0), seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+        recons = x_hat_j.view(x.size(0), seq_len, self.frame_window_length, self.frequency_dim).cpu().numpy()
+        offsets = x_freq_offset_j.view(x.size(0), seq_len, 1, self.frequency_dim).cpu()
+        for i in range(num_samples):
+            fig, axes = plt.subplots(nrows=3, ncols=num_frames + 1, figsize=(10, 9), width_ratios=[*[0.97 / num_frames]*num_frames, 0.03], constrained_layout=True, dpi=dpi)
+            for j in range(num_frames):
+                mesh = self.front_end.plot(specs[i, j].T, ax=axes[0, j], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+                self.front_end.plot(recons[i, j].T, ax=axes[1, j], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+                self.front_end.plot(offsets[i, j].expand(self.frame_window_length, -1).t(), ax=axes[2, j], vmin=specs.min(), vmax=specs.max(), cmap="Greys")
+            axes[0, 0].set_title("Original")
+            axes[1, 0].set_title("Reconstruction")
+            axes[2, 0].set_title("Offset")
+            fig.colorbar(mesh, cax=axes[0, -1], orientation="vertical")
+            fig.colorbar(mesh, cax=axes[1, -1], orientation="vertical")
+            fig.colorbar(mesh, cax=axes[2, -1], orientation="vertical")
+            figures.append((f"frames/j", fig))
+
+        return figures
+
+    def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
+        # run training
+        log.info(f"Training <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        checkpoint_path, resume = config.get("ckpt_path"), config.get("resume")
+        if checkpoint_path is not None and resume:
+            log.info(f"Resuming from {checkpoint_path}")
+            trainer.fit(self, datamodule=data_module, ckpt_path=checkpoint_path)
+        elif config.get("ckpt_path"):
+            log.info(f"Loading state dict from {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path)
+            self.load_state_dict(checkpoint["state_dict"], strict=False)
+            trainer.fit(self, datamodule=data_module)
+        else:
+            trainer.fit(self, datamodule=data_module)
+        # persist the model configuration
+        checkpoint_dir = pathlib.Path(trainer.checkpoint_callback.dirpath)
+        if checkpoint_dir.exists():
+            config_path = checkpoint_dir / "config.yaml"
+            log.info(f"Saving run configuration to {config_path}")
+            omegaconf.OmegaConf.save(config, config_path)
+        # running test
+        log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        trainer.test(self, dataloaders=data_module.predict_dataloader())
+
+    def step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        step_outputs = self.forward(**batch, t=self.trainer.global_step, **kwargs)
+        loss_outputs = self.loss(**step_outputs, t=self.trainer.global_step)
+        step_outputs = detach_values(step_outputs)
+        return loss_outputs, step_outputs
+
+    def training_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx)
+        self.log_dict(prefix_keys(loss_outputs, "train"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
+        metrics = histogram_to_wandb(self.metrics(**step_outputs))
+        if self.logger is not None and hasattr(self.logger, "experiment"):
+            self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "train")))
+        return loss_outputs | step_outputs
+
+    @torch.no_grad()
+    def validation_step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        loss_outputs, step_outputs = self.step(batch, batch_idx)
+        self.log_dict(prefix_keys(loss_outputs, "val"), batch_size=batch.x.size(0), prog_bar=True, logger=False)
+        metrics = histogram_to_wandb(self.metrics(**step_outputs))
+        if self.logger is not None and hasattr(self.logger, "experiment"):
+            self.logger.experiment.log(dict(global_step=self.trainer.global_step, **prefix_keys(loss_outputs | metrics, "val")))
+        return loss_outputs | step_outputs
+
+    @torch.no_grad()
+    def test_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        return self.predict(**batch, **kwargs)
+
+    @torch.no_grad()
+    def predict_step(self, batch: Batch, batch_idx: int, dataloader_idx: int = 0, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        return self.predict(**batch, **kwargs)
+
+    def on_after_batch_transfer(self, batch: Batch, dataloader_idx: int) -> Batch:
+        x = self.pre_process(batch.x)
+        return Batch(x=x, **{k: batch[k] for k in batch.keys() if k != "x"})
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        optimiser_config = omegaconf.DictConfig(dict(_target_=self.optimiser_cls, **(self.optimiser_config or {})))
+        optimiser = hydra.utils.instantiate(optimiser_config, params=self.parameters(), lr=self.learning_rate)
+        if self.scheduler_cls is not None:
+            scheduler_config = omegaconf.DictConfig(dict(_target_=self.scheduler_cls, **(self.scheduler_config or {})))
+            scheduler = hydra.utils.instantiate(scheduler_config, optimizer=optimiser)
+            return [optimiser], [dict(
+                scheduler=scheduler,
+                interval=self.scheduler_interval,
+                frequency=self.scheduler_frequency
+            )]
+        return optimiser

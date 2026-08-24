@@ -1,13 +1,13 @@
 _target_: src.core.data.rainforest_connection.RainforestConnectionDataModule
-root: ${oc.env:HOME}/data/rainforest_connection
+root: ${paths.data_dir}/rainforest_connection
 scope:
 training_mode: step
 train_batch_size: 6
 eval_batch_size: 6
 val_prop: 0.2
 test_prop: 0.2
-num_workers: 8
-seed: 42
+num_workers: 0
+seed: ${seed}
 persist_workers: false
 pin_memory: true
 segment_len: 59.904

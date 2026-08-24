@@ -1,9 +1,8 @@
 # @package _global_
 
-# python src/cli/eval.py +experiment=birdnet
+# python main.py eval +experiment=birdnet_embeddings
 defaults:
   - override /data: sounding_out_chorus
   - override /model: birdnet_embeddings
+  - override /evaluator: birdnet_embedder
   - override /logger: null
-
-project: birdnet
