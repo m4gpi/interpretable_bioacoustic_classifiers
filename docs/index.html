@@ -26,7 +26,7 @@
       <section class="row">
         <h2>Abstract</h2>
         <p>
-          Realising the potential for acoustic monitoring to deliver biodiversity insight at scale requires new approaches to the automated analysis of PAM recordings that are trustworthy as well as cost-effective. Discriminative models trained on annotated species data are gaining popularity but are labour intensive, notoriously opaque and biased. Self-supervised generative models such as Variational Autoencoders (VAE) offer great potential for learning compact yet expressive representations of data and can provide a strong prior for use in downstream discriminative tasks such as species detection while being intrinsically interpretable.
+          Realising the potential for acoustic monitoring to deliver biodiversity insight at scale requires new approaches to the automated analysis of PAM recordings that are trustworthy and cost-effective. Discriminative models trained on annotated species data are gaining popularity but often lack interpretability, are labour intensive, notoriously opaque, often over-confident and potentially biased. We propose an interpretable framework for species detection in weakly labelled PAM audio. Self-supervised generative models such as Variational Autoencoders (VAE) offer great potential for learning expressive intrinsically interpretable representations that can be deployed in subsequent discriminative tasks.
         </p>
         <p>
           We propose and evaluate a novel modification to the VAE learning algorithm that models <em>intra-frame shift-invariance</em>. We demonstrate that this modification (SIVAE) provides representations that are more interpretable, consistent and yield good performance on few-shot learning task with very weakly labels. Species-specific <em>Linear classifiers</em> were trained to predict the presence or absence of over 150 avian and anuran species using SIVAE representations of 60s long audio samples. A simple attention mechanism guides the selection of relevant frames to identify the most relevant timestep(s), while L1 regularisation sparsifies the linear model weights to perform species-specific feature selection.
@@ -35,6 +35,7 @@
          Whilst demonstrated in terrestrial recordings, the approach is transferable to marine, freshwater, and soil habitats. These innovations set the path for trustworthy, data and time-efficient tools to support solid ecological inference from large-scale passive acoustic monitoring surveys.
         </p>
       </section>
+
 
       <section>
         <div class="row">
@@ -52,9 +53,9 @@
         <div class="row">
           <div class="twelve columns">
             <figure>
-              <img src="assets/images/disentangling_intra_frame_shift.png" alt="intra_frame_shift" style="width: 100%">
+              <img src="assets/images/figure_1.png" alt="intra_frame_shift" style="width: 100%">
               <figcaption>
-                <b>Figure 1:</b> <b>(B)</b> A bird call interpolated into a generic soundscape background and shifted in time \(\delta\) by linear interpolation in time <b>(A)</b>. Taking the 1st derivative of the frame representation \(\mathbf{z}\) with respect to the shift across the latent space highlights its inconsistency for a classic VAE <b>(C)</b>. The shift-invariant soundscape VAE is robust to such a perturbation <b>(D)</b>.
+                <b>Figure 1:</b> <b>(B)</b> A bird call interpolated into a generic soundscape background and shifted in time \(\varphi\) by linear interpolation in time <b>(A)</b>. Taking the 1st derivative of the frame representation \(\mathbf{z}\) with respect to the shift across the latent space highlights its inconsistency for a classic VAE <b>(C)</b>. The shift-invariant soundscape VAE is robust to such a perturbation <b>(D)</b>.
               </figcaption>
             </figure>
           </div>
@@ -62,13 +63,8 @@
         <div class="row">
           <div class="twelve columns">
             <p>
-              We explicitly disentangle absolute position within a frame by training a <em>shift prediction network</em> which predicts the intra-frame shift \(\delta \in [-1, 1]\) of the frame contents, with respect to a learned canonical timeline. Consistency is enforced by a 2-way cross-decoding across paired instances, where each instance is a translation of an input frame. A periodic boundary condition is applied and we regularise by learning to specify a zero-centered prior distribution.
+              We explicitly disentangle absolute position within a frame by enforcing representational consistency by a 2-way cross-decoding across paired instances, where each instance is a temporal translation of an input frame under a circular boundary condition. A <em>shift prediction network</em> is trained post-hoc to recover the intra-frame shift \(\varphi \in [-\pi, \pi]\) of the frame contents, with respect to the learned canonical timeline.
             </p>
-          </div>
-        </div>
-        <div class="row">
-          <div class="twelve columns" style="text-align: center">
-            <p>$$\mathcal{L}_{\text{align}} = -\mathcal{N}(\hat{\boldsymbol{\delta}}; \mathbf{0}, \sigma_{\mathcal{T}}) = \sum_{t=0}^T \frac{1}{2}\bigg(\log(\sigma^2_{\mathcal{T}}) + \frac{\hat{\delta}_t^2}{\sigma^2_{\mathcal{T}}} \bigg)$$</p>
           </div>
         </div>
       </section>
@@ -76,16 +72,65 @@
       <section>
         <div class="row">
           <div class="twelve columns">
-            <h2>Model Architecture</h2>
+            <h2>Analysis Pipeline</h2>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <p>
+            </p>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <figure>
+              <img src="assets/images/figure_2.png" alt="analysis_pipeline" style="width: 100%">
+              <figcaption>
+                <b>Figure 2:</b> Overview of the training and evaluation pipeline for interpreting species representations from acoustic recordings. <b>(A)</b> Two independent datasets, Sounding Out (SO) and Rainforest Connection (RFCX) were treated separately in our PAM analysis pipeline. <b>(B)</b> For each dataset, independent VAE variants were pre-trained on the training split of 60s spectrograms. <b>(C)</b> Sequences of learned features are then deployed in avian and anuran species detection tasks using a multiple instance learning framework to predict weak clip-level presence/absence labels. <b>(D)</b> Test set evaluations examine the VAE's reconstruction error and KL divergence from a standard normal prior, latent feature consistency, and standard threshold-invariant performance metrics on the species detection task. Classifiers are interrogated by reconstructing sample-agnostic generative species representations to identify prototypical signal used for inference.
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <p>
+              VAE variants were pre-trained to embed and reconstruct log Mel spectrograms. Each dataset is treated independently (SO / RFCX) and models of each variant are trained under 3 different random initialisations. Following self-supervised pre-training, encoder features are extracted and labels are split into sub-groups by country and taxon. Species detectors are then trained to predict the presence of species by attending to each frame independently. Details of the CNN architecture of VAEs can be found in <a href="https://www.sciencedirect.com/science/article/pii/S1574954123004788">our previous work</a> with minor adjustments described in the preprocessing and VAE training sections in the methods.
+            </p>
+          </div>
+        </div>
+      </section>
+
+
+      <section>
+        <div class="row">
+          <div class="twelve columns">
+            <h2>Pretraining Architecture</h2>
           </div>
           <p>
-            SIVAE is pre-trained to embed and reconstruct log mel spectrograms. Downstream linear classifiers are fit to samples from the learned posterior to predict weak presence / absence labels with a learned per-species gated attention mechanism to identify the most relevant frames \(t \in T\) in each sample.
+            SIVAE is pre-trained to embed and reconstruct log mel spectrograms.
           </p>
           <div class="twelve columns">
             <figure>
-              <img src="./assets/images/siv-architecture.png" alt="", style="width: 100%">
+              <img src="./assets/images/figure_10.png" alt="", style="width: 100%">
+              <img src="./assets/images/figure_11.png" alt="", style="width: 100%">
               <figcaption>
-                <b>Figure 2</b>: <b>(Top)</b> Encoding architecture overview. Spectrograms \(\mathbf{x}_{0, \ldots, T}\) are encoded into intra-frame shift-invariant latent representations, \(\mathbf{z}_{0, \ldots, T}\), with a corresponding shift \(\hat{\boldsymbol{\delta}}_{0, \ldots, T}\) for each frame. These representations are learned in a fully self-supervised manner; subsequently, classifiers can be trained using \(\mathbf{z}\) as a feature. <b>(Bottom)</b> Decoding architecture overview. Samples \(\bar{\mathbf{z}}\) are drawn from the average Gaussian distribution using the parametrisation trick. The decoder maps the sample \(\bar{\mathbf{z}}_t\) to approximate each input spectrogram, both a full contiguous clip and independently translated frames. During decoding each frame representation is duplicated for each target and is shifted in time by applying a translation \(\mathcal{T}(..., \hat{\boldsymbol{\delta}})\).
+                <b>Figure 3</b>: VAE architecture overview. <b>(Top)</b> Spectrograms \(\mathbf{x}_{0, \ldots, T}\) are encoded into intra-frame shift-invariant latent representations, \(\mathbf{z}_{0, \ldots, T}\), with a corresponding shift \(\hat{\boldsymbol{\varphi}}_{0, \ldots, T}\) for each frame. These representations are learned in a fully self-supervised manner; subsequently, classifiers can be trained using \(\mathbf{z}\) as a feature. <b>(Bottom)</b> Decoding architecture overview. Samples \(\bar{\mathbf{z}}\) are drawn from the average Gaussian distribution using the parametrisation trick. The decoder maps the sample \(\bar{\mathbf{z}}_t\) to approximate each input spectrogram, both a full contiguous clip and independently translated frames. During decoding each frame representation is duplicated for each target and is shifted in time by applying a translation \(\mathcal{T}(..., \hat{\boldsymbol{\varphi}})\).
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <h2>Classification Architecture</h2>
+          </div>
+          <p>
+            Bayesian logistic classifiers are fit to samples from the learned posterior to predict weak presence / absence labels with a learned per-species gated attention mechanism to identify the most relevant frames \(t \in T\) in each sample.
+          </p>
+          <div class="twelve columns">
+            <figure>
+              <img src="./assets/images/figure_X.png" alt="", style="width: 100%">
+              <figcaption>
+                <b>Figure 4</b>: L1 regularised Bayesian logistic classifier are fit to samples drawn from the variational posterior to predict a Gaussian distribution over weight activations, integrating the species occurrence probability for each frame using MacKay's Laplace approximation of the expectation of a sigmoid under a Gaussian. A final clip-level probability is derived by an attention weighted sum of frame-wise probabilities conditioned on each frame.
               </figcaption>
             </figure>
           </div>
@@ -159,18 +204,24 @@
                 <option value="Elfin Woods Warbler">Elfin Woods Warbler</option>
                 <option value="Black-whiskered Vireo">Black-whiskered Vireo</option>
                 <option value="Puerto Rican Woodpecker">Puerto Rican Woodpecker</option>
+                <option value="Puerto Rican Spindalis">Puerto Rican Spindalis</option>
+                <option value="Puerto Rican Tanager">Puerto Rican Tanager</option>
+                <option value="Red-eyed coquí">Red-eyed coquí</option>
+                <option value="Grass coquí">Grass coquí</option>
+                <option value="Common coquí">Common coquí</option>
+                <option value="Cricket coquí">Cricket coquí</option>
               </optgroup>
             </select>
             <br/>
             <p><b>(2)</b> Move across the hyperplane:</p>
-            <input id="delta-slider" type="range" min="1" max="30" step="1" value="1"  style="width: 100%"/>
+            <input id="delta-slider" type="range" min="0" max="19" step="1" value="1"  style="width: 100%"/>
           </div>
           <div class="eight columns">
             <p><b>(3)</b> Compare generated spectrogram with a typical example:</p>
             <figure>
-              <img id="reconstruction" src="assets/images/frames/Eurasian Blackbird_0.png" alt="" style="width: 100%">
+              <img id="reconstruction" src="assets/images/frames_rerun/Eurasian Blackbird_0.png" alt="" style="width: 100%">
               <figcaption>
-                <b>Figure 3:</b> <b>(Left)</b> a real example call typical of each species. <b>(Right)</b> a decoded generative species representation highlights what sounds were used for detecting a species.
+                <b>Figure 4:</b> <b>(Left)</b> a real example call typical of each species. <b>(Right)</b> a decoded generative species representation highlights what sounds were used for detecting a species.
 <b></b>
               </figcaption>
             </figure>
@@ -184,7 +235,7 @@
           function render () {
             let species = select.options[select.selectedIndex].value
             let delta = slider.value
-            img.src = "assets/images/frames/" + species + "_" + delta + ".png"
+            img.src = "assets/images/frames_rerun/" + species + "_" + delta + ".png"
           }
 
           select.addEventListener("change", render, false)
@@ -207,16 +258,15 @@
         </div>
         <div class="row">
           <div class="twelve columns">
-            Quantitative experiments show our approach was both effective in terms of discriminative performance, achieving the highest area under the ROC (0.92) and Top-1 accuracy (0.67), outperforming BirdNET V2.4 (0.89, 0.52) while achieving good average precision (AP) despite using very weak presence annotations for each minute of audio.
+            Quantitative experiments show our approach was both effective in terms of discriminative performance while achieving good average precision (AP) despite using very weak presence annotations for each minute of audio.
           </div>
         </div>
         <div class="row">
           <div class="twelve columns">
             <figure>
-              <img src="assets/images/so_violin.png" alt="" style="width: 100%">
-              <img src="assets/images/rfcx_violin.png" alt="" style="width: 100%">
+              <img src="assets/images/figure_7.png" alt="" style="width: 100%">
               <figcaption>
-                <b>Figure 4:</b> Area under the ROC curve (auROC) and average precision (AP) score distributions across out-of-the-box BirdNet V2.4 and both VAE variants. Full distributions show across species the auROC is approximately equivalent with BirdNET and across the VAE and SIVAE for the full dataset, while our models typically perform slightly better on examples with high occlusions. Both VAE variant representations provide less precision than BirdNET in the SO dataset. Introducing shift-invariance results in a small improvement in the UK and a drastic improvement in RFCX bird dataset, while we see a slight drop in precision in Ecuadorian soundscapes.
+                <b>Figure 4:</b>  Comparison of species detection performance between BirdNET (OOB), BirdNET (FT), SIVAE and VAE representations. Area under the ROC curve (auROC) and average precision (AP) score distributions across BirdNET OOB, BirdNET (FT) and both VAE variants. Score distributions across species show the auROC is approximately equivalent across the VAE and SIVAE and typically improves over BirdNET (OOB). Both VAE variant representations are slightly more discriminative on examples with high occlusions though are less precise than BirdNET on all datasets. Introducing shift-invariance results in improvement in precision for tropical avian species, while improvement for certain tropical frogs and UK birds are only slight. BirdNET (FT) significantly out-performs across all datasets.
               </figcaption>
             </figure>
           </div>
@@ -226,10 +276,33 @@
             <figure>
               <img src="assets/score_table.png" alt="" style="width: 100%">
               <figcaption>
-                <b>Table 1:</b> Area under the ROC (auROC), mean average precision (mAP) and top-1 accuracy scores for species detection models trained on latent space representations for each model variant alongside BirdNET and Perch. Scores are averaged across the entire species community over 3 different training runs for each dataset. Comparisons are made with both out-of-the-box BirdNET V2.4 and the best results from <a href="https://www.nature.com/articles/s41598-023-49989-z">Ghani et al. (2023)</a> where BirdNet and Perch were fine-tuned on a few-shot learning task. * indicates ``strong labels" where bounding boxes were used to delineate the call in the training data. Size denotes the dimensionality of the embedding for the corresponding temporal resolution in seconds."
+                <b>Table 1:</b> Area under the ROC (auROC), mean average precision (mAP) and Top-1 accuracy scores for species detection models trained on latent space representations. Comparisons are made with out-of-the-box BirdNET V2.4 (OOB) and fine-tuned BirdNET V2.4 embeddings (FT). Per-model scores are macro-averaged across the species community with standard deviations are taken across 3 different training runs for each dataset. "Size" and "Duration" denote the dimensionality of the embedding and the corresponding temporal resolution in seconds respectively. \(\dagger\) indicates that the frog species in RFCX are not available in out-of-box BirdNET's label set.
               </figcaption>
             </figure>
             <p></p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="row">
+          <div class="twelve columns">
+            <h2>Relationship between classifier weight uncertainty, label frequency and average precision</h2>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            Our results suggest that investing in resources in very weak labels is complemented by self-supervised generative pre-training, supporting good species detection performance and interpretable models.
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <figure>
+              <img src="assets/images/figure_9.png" alt="" style="width: 100%">
+              <figcaption>
+                <b>Figure 5:</b> Relationship between classifier uncertainty, species label availability, and detection precision across representation models. Average uncertainty in species-classifier logistic regression weights is plotted against model average precision (AP) for VAE, SIVAE, and BirdNET (FT) representations on the SO dataset. Species are separated according to whether their number of training labels falls below or above 50, corresponding to the point at which a clear trend emerges. For SIVAE, species with fewer than 50 labels show a weak positive relationship between posterior variance and label count. Above 50 labels, a clear positive relationship emerges for both countries, with higher precision associated with lower model uncertainty, suggesting greater consistency in the classifier solutions across model seeds. BirdNET (FT) achieves higher precision overall but exhibits a broader posterior distribution over logistic regression weights, indicating greater uncertainty in individual parameter values. For rare UK species with fewer than 50 labels, BirdNET performance is more variable, potentially reflecting limited representation of these species, reduced generalisation, sensitivity to occlusion, or label noise.
+              </figcaption>
+            </figure>
           </div>
         </div>
       </section>
