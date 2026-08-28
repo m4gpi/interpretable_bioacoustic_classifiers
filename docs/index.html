@@ -72,73 +72,6 @@
       <section>
         <div class="row">
           <div class="twelve columns">
-            <h2>Analysis Pipeline</h2>
-          </div>
-        </div>
-        <div class="row">
-          <div class="twelve columns">
-            <p>
-            </p>
-          </div>
-        </div>
-        <div class="row">
-          <div class="twelve columns">
-            <figure>
-              <img src="assets/images/figure_2.png" alt="analysis_pipeline" style="width: 100%">
-              <figcaption>
-                <b>Figure 2:</b> Overview of the training and evaluation pipeline for interpreting species representations from acoustic recordings. <b>(A)</b> Two independent datasets, Sounding Out (SO) and Rainforest Connection (RFCX) were treated separately in our PAM analysis pipeline. <b>(B)</b> For each dataset, independent VAE variants were pre-trained on the training split of 60s spectrograms. <b>(C)</b> Sequences of learned features are then deployed in avian and anuran species detection tasks using a multiple instance learning framework to predict weak clip-level presence/absence labels. <b>(D)</b> Test set evaluations examine the VAE's reconstruction error and KL divergence from a standard normal prior, latent feature consistency, and standard threshold-invariant performance metrics on the species detection task. Classifiers are interrogated by reconstructing sample-agnostic generative species representations to identify prototypical signal used for inference.
-              </figcaption>
-            </figure>
-          </div>
-        </div>
-        <div class="row">
-          <div class="twelve columns">
-            <p>
-              VAE variants were pre-trained to embed and reconstruct log Mel spectrograms. Each dataset is treated independently (SO / RFCX) and models of each variant are trained under 3 different random initialisations. Following self-supervised pre-training, encoder features are extracted and labels are split into sub-groups by country and taxon. Species detectors are then trained to predict the presence of species by attending to each frame independently. Details of the CNN architecture of VAEs can be found in <a href="https://www.sciencedirect.com/science/article/pii/S1574954123004788">our previous work</a> with minor adjustments described in the preprocessing and VAE training sections in the methods.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div class="row">
-          <div class="twelve columns">
-            <h2>Pretraining Architecture</h2>
-          </div>
-          <p>
-            SIVAE is pre-trained to embed and reconstruct log mel spectrograms.
-          </p>
-          <div class="twelve columns">
-            <figure>
-              <img src="./assets/images/figure_10.png" alt="", style="width: 100%">
-              <img src="./assets/images/figure_11.png" alt="", style="width: 100%">
-              <figcaption>
-                <b>Figure 3</b>: VAE architecture overview. <b>(Top)</b> Spectrograms \(\mathbf{x}_{0, \ldots, T}\) are encoded into intra-frame shift-invariant latent representations, \(\mathbf{z}_{0, \ldots, T}\), with a corresponding shift \(\hat{\boldsymbol{\varphi}}_{0, \ldots, T}\) for each frame. These representations are learned in a fully self-supervised manner; subsequently, classifiers can be trained using \(\mathbf{z}\) as a feature. <b>(Bottom)</b> Decoding architecture overview. Samples \(\bar{\mathbf{z}}\) are drawn from the average Gaussian distribution using the parametrisation trick. The decoder maps the sample \(\bar{\mathbf{z}}_t\) to approximate each input spectrogram, both a full contiguous clip and independently translated frames. During decoding each frame representation is duplicated for each target and is shifted in time by applying a translation \(\mathcal{T}(..., \hat{\boldsymbol{\varphi}})\).
-              </figcaption>
-            </figure>
-          </div>
-        </div>
-        <div class="row">
-          <div class="twelve columns">
-            <h2>Classification Architecture</h2>
-          </div>
-          <p>
-            Bayesian logistic classifiers are fit to samples from the learned posterior to predict weak presence / absence labels with a learned per-species gated attention mechanism to identify the most relevant frames \(t \in T\) in each sample.
-          </p>
-          <div class="twelve columns">
-            <figure>
-              <img src="./assets/images/figure_X.png" alt="", style="width: 100%">
-              <figcaption>
-                <b>Figure 4</b>: L1 regularised Bayesian logistic classifier are fit to samples drawn from the variational posterior to predict a Gaussian distribution over weight activations, integrating the species occurrence probability for each frame using MacKay's Laplace approximation of the expectation of a sigmoid under a Gaussian. A final clip-level probability is derived by an attention weighted sum of frame-wise probabilities conditioned on each frame.
-              </figcaption>
-            </figure>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div class="row">
-          <div class="twelve columns">
             <h2>Generative Species Representations</h2>
           </div>
         </div>
@@ -258,6 +191,74 @@
         <div class="row">
           <div class="twelve columns">
             <p>Observe that for many species, the spectro-temporal morphology of the call, its fundamental frequency and harmonics are used for delinating presence. However in nearly all cases, correlated soundscape components such as other species calls are used to aid or even dominate the prediction.</p>
+          </div>
+        </div>
+      </section>
+
+
+      <section>
+        <div class="row">
+          <div class="twelve columns">
+            <h2>Analysis Pipeline</h2>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <p>
+            </p>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <figure>
+              <img src="assets/images/figure_2.png" alt="analysis_pipeline" style="width: 100%">
+              <figcaption>
+                <b>Figure 2:</b> Overview of the training and evaluation pipeline for interpreting species representations from acoustic recordings. <b>(A)</b> Two independent datasets, Sounding Out (SO) and Rainforest Connection (RFCX) were treated separately in our PAM analysis pipeline. <b>(B)</b> For each dataset, independent VAE variants were pre-trained on the training split of 60s spectrograms. <b>(C)</b> Sequences of learned features are then deployed in avian and anuran species detection tasks using a multiple instance learning framework to predict weak clip-level presence/absence labels. <b>(D)</b> Test set evaluations examine the VAE's reconstruction error and KL divergence from a standard normal prior, latent feature consistency, and standard threshold-invariant performance metrics on the species detection task. Classifiers are interrogated by reconstructing sample-agnostic generative species representations to identify prototypical signal used for inference.
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <p>
+              VAE variants were pre-trained to embed and reconstruct log Mel spectrograms. Each dataset is treated independently (SO / RFCX) and models of each variant are trained under 3 different random initialisations. Following self-supervised pre-training, encoder features are extracted and labels are split into sub-groups by country and taxon. Species detectors are then trained to predict the presence of species by attending to each frame independently. Details of the CNN architecture of VAEs can be found in <a href="https://www.sciencedirect.com/science/article/pii/S1574954123004788">our previous work</a> with minor adjustments described in the preprocessing and VAE training sections in the methods.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="row">
+          <div class="twelve columns">
+            <h2>Pretraining Architecture</h2>
+          </div>
+          <p>
+            SIVAE is pre-trained to embed and reconstruct log mel spectrograms.
+          </p>
+          <div class="twelve columns">
+            <figure>
+              <img src="./assets/images/figure_10.png" alt="", style="width: 100%">
+              <img src="./assets/images/figure_11.png" alt="", style="width: 100%">
+              <figcaption>
+                <b>Figure 3</b>: VAE architecture overview. <b>(Top)</b> Spectrograms \(\mathbf{x}_{0, \ldots, T}\) are encoded into intra-frame shift-invariant latent representations, \(\mathbf{z}_{0, \ldots, T}\), with a corresponding shift \(\hat{\boldsymbol{\varphi}}_{0, \ldots, T}\) for each frame. These representations are learned in a fully self-supervised manner; subsequently, classifiers can be trained using \(\mathbf{z}\) as a feature. <b>(Bottom)</b> Decoding architecture overview. Samples \(\bar{\mathbf{z}}\) are drawn from the average Gaussian distribution using the parametrisation trick. The decoder maps the sample \(\bar{\mathbf{z}}_t\) to approximate each input spectrogram, both a full contiguous clip and independently translated frames. During decoding each frame representation is duplicated for each target and is shifted in time by applying a translation \(\mathcal{T}(..., \hat{\boldsymbol{\varphi}})\).
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <h2>Classification Architecture</h2>
+          </div>
+          <p>
+            Bayesian logistic classifiers are fit to samples from the learned posterior to predict weak presence / absence labels with a learned per-species gated attention mechanism to identify the most relevant frames \(t \in T\) in each sample.
+          </p>
+          <div class="twelve columns">
+            <figure>
+              <img src="./assets/images/figure_X.png" alt="", style="width: 100%">
+              <figcaption>
+                <b>Figure 4</b>: L1 regularised Bayesian logistic classifier are fit to samples drawn from the variational posterior to predict a Gaussian distribution over weight activations, integrating the species occurrence probability for each frame using MacKay's Laplace approximation of the expectation of a sigmoid under a Gaussian. A final clip-level probability is derived by an attention weighted sum of frame-wise probabilities conditioned on each frame.
+              </figcaption>
+            </figure>
           </div>
         </div>
       </section>
