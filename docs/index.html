@@ -72,7 +72,7 @@
       <section>
         <div class="row">
           <div class="twelve columns">
-            <h2>Generative Species Representations</h2>
+            <h2>Explaining positive species detections using generative representations</h2>
           </div>
         </div>
         <div class="row">
@@ -166,7 +166,7 @@
             <figure>
               <img id="reconstruction" src="assets/images/frames_rerun/Eurasian Blackbird_0.png" alt="" style="width: 100%">
               <figcaption>
-                <b>Figure 4:</b> <b>(Left)</b> a real example call typical of each species. <b>(Right)</b> a decoded generative species representation highlights what sounds were used for detecting a species.
+                <b>Figure 2:</b> <b>(Left)</b> a real example call typical of each species. <b>(Right)</b> a decoded generative species representation highlights what sounds were used for detecting a species.
 <b></b>
               </figcaption>
             </figure>
@@ -195,74 +195,6 @@
         </div>
       </section>
 
-
-      <section>
-        <div class="row">
-          <div class="twelve columns">
-            <h2>Analysis Pipeline</h2>
-          </div>
-        </div>
-        <div class="row">
-          <div class="twelve columns">
-            <p>
-            </p>
-          </div>
-        </div>
-        <div class="row">
-          <div class="twelve columns">
-            <figure>
-              <img src="assets/images/figure_2.png" alt="analysis_pipeline" style="width: 100%">
-              <figcaption>
-                <b>Figure 2:</b> Overview of the training and evaluation pipeline for interpreting species representations from acoustic recordings. <b>(A)</b> Two independent datasets, Sounding Out (SO) and Rainforest Connection (RFCX) were treated separately in our PAM analysis pipeline. <b>(B)</b> For each dataset, independent VAE variants were pre-trained on the training split of 60s spectrograms. <b>(C)</b> Sequences of learned features are then deployed in avian and anuran species detection tasks using a multiple instance learning framework to predict weak clip-level presence/absence labels. <b>(D)</b> Test set evaluations examine the VAE's reconstruction error and KL divergence from a standard normal prior, latent feature consistency, and standard threshold-invariant performance metrics on the species detection task. Classifiers are interrogated by reconstructing sample-agnostic generative species representations to identify prototypical signal used for inference.
-              </figcaption>
-            </figure>
-          </div>
-        </div>
-        <div class="row">
-          <div class="twelve columns">
-            <p>
-              VAE variants were pre-trained to embed and reconstruct log Mel spectrograms. Each dataset is treated independently (SO / RFCX) and models of each variant are trained under 3 different random initialisations. Following self-supervised pre-training, encoder features are extracted and labels are split into sub-groups by country and taxon. Species detectors are then trained to predict the presence of species by attending to each frame independently. Details of the CNN architecture of VAEs can be found in <a href="https://www.sciencedirect.com/science/article/pii/S1574954123004788">our previous work</a> with minor adjustments described in the preprocessing and VAE training sections in the methods.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div class="row">
-          <div class="twelve columns">
-            <h2>Pretraining Architecture</h2>
-          </div>
-          <p>
-            SIVAE is pre-trained to embed and reconstruct log mel spectrograms.
-          </p>
-          <div class="twelve columns">
-            <figure>
-              <img src="./assets/images/figure_10.png" alt="", style="width: 100%">
-              <img src="./assets/images/figure_11.png" alt="", style="width: 100%">
-              <figcaption>
-                <b>Figure 3</b>: VAE architecture overview. <b>(Top)</b> Spectrograms \(\mathbf{x}_{0, \ldots, T}\) are encoded into intra-frame shift-invariant latent representations, \(\mathbf{z}_{0, \ldots, T}\), with a corresponding shift \(\hat{\boldsymbol{\varphi}}_{0, \ldots, T}\) for each frame. These representations are learned in a fully self-supervised manner; subsequently, classifiers can be trained using \(\mathbf{z}\) as a feature. <b>(Bottom)</b> Decoding architecture overview. Samples \(\bar{\mathbf{z}}\) are drawn from the average Gaussian distribution using the parametrisation trick. The decoder maps the sample \(\bar{\mathbf{z}}_t\) to approximate each input spectrogram, both a full contiguous clip and independently translated frames. During decoding each frame representation is duplicated for each target and is shifted in time by applying a translation \(\mathcal{T}(..., \hat{\boldsymbol{\varphi}})\).
-              </figcaption>
-            </figure>
-          </div>
-        </div>
-        <div class="row">
-          <div class="twelve columns">
-            <h2>Classification Architecture</h2>
-          </div>
-          <p>
-            Bayesian logistic classifiers are fit to samples from the learned posterior to predict weak presence / absence labels with a learned per-species gated attention mechanism to identify the most relevant frames \(t \in T\) in each sample.
-          </p>
-          <div class="twelve columns">
-            <figure>
-              <img src="./assets/images/figure_X.png" alt="", style="width: 100%">
-              <figcaption>
-                <b>Figure 4</b>: L1 regularised Bayesian logistic classifier are fit to samples drawn from the variational posterior to predict a Gaussian distribution over weight activations, integrating the species occurrence probability for each frame using MacKay's Laplace approximation of the expectation of a sigmoid under a Gaussian. A final clip-level probability is derived by an attention weighted sum of frame-wise probabilities conditioned on each frame.
-              </figcaption>
-            </figure>
-          </div>
-        </div>
-      </section>
-
       <section>
         <div class="row">
           <div class="twelve columns">
@@ -273,17 +205,17 @@
           </p>
           <div class="twelve columns">
             <figure>
-              <img src="./assets/images/figure_5_.png" alt="", style="width: 100%">
+              <img src="./assets/images/figure_5.png" alt="", style="width: 100%">
               <figcaption>
-                <b>Figure 5</b>: SIVAE produces highly shift-invariant representations with modest changes in reconstruction quality and latent regularisation. <b>Left</b>: Reconstruction mean squared error (MSE) across spectrogram magnitudes; <b>Middle</b>: Kullback–Leibler (KL) divergence per latent dimension; <b>Right</b>: Total shift variation of the latent representation. Results are calculated on the test set across all 1.536s frames, showing the distribution across model seeds. SIVAE slightly decays in terms of reconstruction accuracy while yielding a higher KL divergence with a heavier tail compared to the classic VAE. SIVAE nearly entirely mitigates variation in the representation under all possible shifts.
+                <b>Figure 3</b>: SIVAE produces highly shift-invariant representations with modest changes in reconstruction quality and latent regularisation. <b>Left</b>: Reconstruction mean squared error (MSE) across spectrogram magnitudes; <b>Middle</b>: Kullback–Leibler (KL) divergence per latent dimension; <b>Right</b>: Total shift variation of the latent representation. Results are calculated on the test set across all 1.536s frames, showing the distribution across model seeds. SIVAE slightly decays in terms of reconstruction accuracy while yielding a higher KL divergence with a heavier tail compared to the classic VAE. SIVAE nearly entirely mitigates variation in the representation under all possible shifts.
               </figcaption>
             </figure>
           </div>
           <div class="twelve columns">
             <figure>
-              <img src="./assets/images/figure_6_.png" alt="", style="width: 100%">
+              <img src="./assets/images/figure_6.png" alt="", style="width: 100%">
               <figcaption>
-                <b>Figure 6</b>: SIVAE produces more consistent and tightly clustered latent representations of species-predictive frames. Pairwise Euclidean (L2) distances between the most predictive frame representations for 10 species from each country in the SO dataset are shown as distributions. Only frames from clips containing the corresponding species are included. Distances are normalised by the dataset mean for comparability. Predictive frame representations from SIVAE are, on average, closer in embedding space and exhibit less variation than those from the classic VAE, indicating greater consistency in the latent representations associated with species detection.
+                <b>Figure 4</b>: SIVAE produces more consistent and tightly clustered latent representations of species-predictive frames. Pairwise Euclidean (L2) distances between the most predictive frame representations for 10 species from each country in the SO dataset are shown as distributions. Only frames from clips containing the corresponding species are included. Distances are normalised by the dataset mean for comparability. Predictive frame representations from SIVAE are, on average, closer in embedding space and exhibit less variation than those from the classic VAE, indicating greater consistency in the latent representations associated with species detection.
               </figcaption>
             </figure>
           </div>
@@ -293,7 +225,7 @@
       <section>
         <div class="row">
           <div class="twelve columns">
-            <h2>Species Detection</h2>
+            <h2>Species detection competitive with BirdNET</h2>
           </div>
         </div>
         <div class="row">
@@ -306,7 +238,7 @@
             <figure>
               <img src="assets/images/figure_7.png" alt="" style="width: 100%">
               <figcaption>
-                <b>Figure 7:</b>  Comparison of species detection performance between BirdNET (OOB), BirdNET (FT), SIVAE and VAE representations. Area under the ROC curve (auROC) and average precision (AP) score distributions across BirdNET OOB, BirdNET (FT) and both VAE variants. Score distributions across species show the auROC is approximately equivalent across the VAE and SIVAE and typically improves over BirdNET (OOB). Both VAE variant representations are slightly more discriminative on examples with high occlusions though are less precise than BirdNET on all datasets. Introducing shift-invariance results in improvement in precision for tropical avian species, while improvement for certain tropical frogs and UK birds are only slight. BirdNET (FT) significantly out-performs across all datasets.
+                <b>Figure 5:</b>  Comparison of species detection performance between BirdNET (OOB), BirdNET (FT), SIVAE and VAE representations. Area under the ROC curve (auROC) and average precision (AP) score distributions across BirdNET OOB, BirdNET (FT) and both VAE variants. Score distributions across species show the auROC is approximately equivalent across the VAE and SIVAE and typically improves over BirdNET (OOB). Both VAE variant representations are slightly more discriminative on examples with high occlusions though are less precise than BirdNET on all datasets. Introducing shift-invariance results in improvement in precision for tropical avian species, while improvement for certain tropical frogs and UK birds are only slight. BirdNET (FT) significantly out-performs across all datasets.
               </figcaption>
             </figure>
           </div>
@@ -316,7 +248,7 @@
             <figure>
               <img src="assets/images/figure_8.png" alt="" style="width: 100%">
               <figcaption>
-                <b>Figure 8:</b> Species-level detection performance across VAE variants and fine-tuned BirdNET for the most frequently labelled species. Score distributions show the top 24 species across datasets for VAE and SIVAE and BirdNET (FT), sorted by training label frequency in descending order. BirdNET (FT) representations typically achieve better overall precision and auROC across most species, though both VAE model classes are comparable for many. Further breakdowns for each dataset are available in the supplementary material.
+                <b>Figure 6:</b> Species-level detection performance across VAE variants and fine-tuned BirdNET for the most frequently labelled species. Score distributions show the top 24 species across datasets for VAE and SIVAE and BirdNET (FT), sorted by training label frequency in descending order. BirdNET (FT) representations typically achieve better overall precision and auROC across most species, though both VAE model classes are comparable for many. Further breakdowns for each dataset are available in the supplementary material.
               </figcaption>
             </figure>
           </div>
@@ -350,12 +282,80 @@
             <figure>
               <img src="assets/images/figure_9.png" alt="" style="width: 100%">
               <figcaption>
-                <b>Figure 9:</b> Relationship between classifier uncertainty, species label availability, and detection precision across representation models. Average uncertainty in species-classifier logistic regression weights is plotted against model average precision (AP) for VAE, SIVAE, and BirdNET (FT) representations on the SO dataset. Species are separated according to whether their number of training labels falls below or above 50, corresponding to the point at which a clear trend emerges. For SIVAE, species with fewer than 50 labels show a weak positive relationship between posterior variance and label count. Above 50 labels, a clear positive relationship emerges for both countries, with higher precision associated with lower model uncertainty, suggesting greater consistency in the classifier solutions across model seeds. BirdNET (FT) achieves higher precision overall but exhibits a broader posterior distribution over logistic regression weights, indicating greater uncertainty in individual parameter values. For rare UK species with fewer than 50 labels, BirdNET performance is more variable, potentially reflecting limited representation of these species, reduced generalisation, sensitivity to occlusion, or label noise.
+                <b>Figure 7:</b> Relationship between classifier uncertainty, species label availability, and detection precision across representation models. Average uncertainty in species-classifier logistic regression weights is plotted against model average precision (AP) for VAE, SIVAE, and BirdNET (FT) representations on the SO dataset. Species are separated according to whether their number of training labels falls below or above 50, corresponding to the point at which a clear trend emerges. For SIVAE, species with fewer than 50 labels show a weak positive relationship between posterior variance and label count. Above 50 labels, a clear positive relationship emerges for both countries, with higher precision associated with lower model uncertainty, suggesting greater consistency in the classifier solutions across model seeds. BirdNET (FT) achieves higher precision overall but exhibits a broader posterior distribution over logistic regression weights, indicating greater uncertainty in individual parameter values. For rare UK species with fewer than 50 labels, BirdNET performance is more variable, potentially reflecting limited representation of these species, reduced generalisation, sensitivity to occlusion, or label noise.
               </figcaption>
             </figure>
           </div>
         </div>
       </section>
+
+      <section>
+        <div class="row">
+          <div class="twelve columns">
+            <h2>Analysis Pipeline</h2>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <p>
+            </p>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <figure>
+              <img src="assets/images/figure_2.png" alt="analysis_pipeline" style="width: 100%">
+              <figcaption>
+                <b>Figure 8:</b> Overview of the training and evaluation pipeline for interpreting species representations from acoustic recordings. <b>(A)</b> Two independent datasets, Sounding Out (SO) and Rainforest Connection (RFCX) were treated separately in our PAM analysis pipeline. <b>(B)</b> For each dataset, independent VAE variants were pre-trained on the training split of 60s spectrograms. <b>(C)</b> Sequences of learned features are then deployed in avian and anuran species detection tasks using a multiple instance learning framework to predict weak clip-level presence/absence labels. <b>(D)</b> Test set evaluations examine the VAE's reconstruction error and KL divergence from a standard normal prior, latent feature consistency, and standard threshold-invariant performance metrics on the species detection task. Classifiers are interrogated by reconstructing sample-agnostic generative species representations to identify prototypical signal used for inference.
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <p>
+              VAE variants were pre-trained to embed and reconstruct log Mel spectrograms. Each dataset is treated independently (SO / RFCX) and models of each variant are trained under 3 different random initialisations. Following self-supervised pre-training, encoder features are extracted and labels are split into sub-groups by country and taxon. Species detectors are then trained to predict the presence of species by attending to each frame independently. Details of the CNN architecture of VAEs can be found in <a href="https://www.sciencedirect.com/science/article/pii/S1574954123004788">our previous work</a> with minor adjustments described in the preprocessing and VAE training sections in the methods.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="row">
+          <div class="twelve columns">
+            <h2>Pretraining Architecture</h2>
+          </div>
+          <p>
+            SIVAE is pre-trained to embed and reconstruct log mel spectrograms.
+          </p>
+          <div class="twelve columns">
+            <figure>
+              <img src="./assets/images/figure_10.png" alt="", style="width: 100%">
+              <img src="./assets/images/figure_11.png" alt="", style="width: 100%">
+              <figcaption>
+                <b>Figure 9</b>: VAE architecture overview. <b>(Top)</b> Spectrograms \(\mathbf{x}_{0, \ldots, T}\) are encoded into intra-frame shift-invariant latent representations, \(\mathbf{z}_{0, \ldots, T}\), with a corresponding shift \(\hat{\boldsymbol{\varphi}}_{0, \ldots, T}\) for each frame. These representations are learned in a fully self-supervised manner; subsequently, classifiers can be trained using \(\mathbf{z}\) as a feature. <b>(Bottom)</b> Decoding architecture overview. Samples \(\bar{\mathbf{z}}\) are drawn from the average Gaussian distribution using the parametrisation trick. The decoder maps the sample \(\bar{\mathbf{z}}_t\) to approximate each input spectrogram, both a full contiguous clip and independently translated frames. During decoding each frame representation is duplicated for each target and is shifted in time by applying a translation \(\mathcal{T}(..., \hat{\boldsymbol{\varphi}})\).
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+        <div class="row">
+          <div class="twelve columns">
+            <h2>Classification Architecture</h2>
+          </div>
+          <p>
+            Bayesian logistic classifiers are fit to samples from the learned posterior to predict weak presence / absence labels with a learned per-species gated attention mechanism to identify the most relevant frames \(t \in T\) in each sample.
+          </p>
+          <div class="twelve columns">
+            <figure>
+              <img src="./assets/images/figure_X.png" alt="", style="width: 100%">
+              <figcaption>
+                <b>Figure 10</b>: L1 regularised Bayesian logistic classifier are fit to samples drawn from the variational posterior to predict a Gaussian distribution over weight activations, integrating the species occurrence probability for each frame using MacKay's Laplace approximation of the expectation of a sigmoid under a Gaussian. A final clip-level probability is derived by an attention weighted sum of frame-wise probabilities conditioned on each frame.
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
     </main>
 
     <br/>
