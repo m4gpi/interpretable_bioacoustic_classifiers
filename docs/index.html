@@ -100,7 +100,6 @@
         </div>
       </section>
 
-
       <section>
         <div class="row">
           <div class="twelve columns">
@@ -266,6 +265,33 @@
       <section>
         <div class="row">
           <div class="twelve columns">
+            <h2>Shift-Invariance makes species descriptors more consistent</h2>
+          </div>
+          <p>
+            Arbitrary temporal co-ordinates assigned during training has a negative effect on representation consistency. The introduction of shift-invariance using a canonical co-ordinate system improves consistency for each species, converging on more common solutions while supporting improvement of discriminative ability. This sacrifices some reconstruction fidelity achieved in the classic VAE, though SIVAE is able to describe fine-grained sounds with rapid spectrotemporal modulations.
+          </p>
+          <div class="twelve columns">
+            <figure>
+              <img src="./assets/images/figure_5_.png" alt="", style="width: 100%">
+              <figcaption>
+                <b>Figure 5</b>: SIVAE produces highly shift-invariant representations with modest changes in reconstruction quality and latent regularisation. \textbf{Left}: Reconstruction mean squared error (MSE) across spectrogram magnitudes; \textbf{Middle}: Kullback–Leibler (KL) divergence per latent dimension; \textbf{Right}: Total shift variation of the latent representation, calculated according to \eqref{eq:shift-variation}. Results are calculated on the test set across all 1.536s frames, showing the distribution across model seeds. SIVAE slightly decays in terms of reconstruction accuracy while yielding a higher KL divergence with a heavier tail compared to the classic VAE. SIVAE nearly entirely mitigates variation in the representation under all possible shifts.
+              </figcaption>
+            </figure>
+          </div>
+          <div class="twelve columns">
+            <figure>
+              <img src="./assets/images/figure_6_.png" alt="", style="width: 100%">
+              <figcaption>
+                <b>Figure 6</b>: SIVAE produces more consistent and tightly clustered latent representations of species-predictive frames. Pairwise Euclidean (L2) distances between the most predictive frame representations for 10 species from each country in the SO dataset are shown as distributions. Only frames from clips containing the corresponding species are included. Distances are normalised by the dataset mean for comparability. Predictive frame representations from SIVAE are, on average, closer in embedding space and exhibit less variation than those from the classic VAE, indicating greater consistency in the latent representations associated with species detection.
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="row">
+          <div class="twelve columns">
             <h2>Species Detection</h2>
           </div>
         </div>
@@ -279,7 +305,7 @@
             <figure>
               <img src="assets/images/figure_7.png" alt="" style="width: 100%">
               <figcaption>
-                <b>Figure 4:</b>  Comparison of species detection performance between BirdNET (OOB), BirdNET (FT), SIVAE and VAE representations. Area under the ROC curve (auROC) and average precision (AP) score distributions across BirdNET OOB, BirdNET (FT) and both VAE variants. Score distributions across species show the auROC is approximately equivalent across the VAE and SIVAE and typically improves over BirdNET (OOB). Both VAE variant representations are slightly more discriminative on examples with high occlusions though are less precise than BirdNET on all datasets. Introducing shift-invariance results in improvement in precision for tropical avian species, while improvement for certain tropical frogs and UK birds are only slight. BirdNET (FT) significantly out-performs across all datasets.
+                <b>Figure 7:</b>  Comparison of species detection performance between BirdNET (OOB), BirdNET (FT), SIVAE and VAE representations. Area under the ROC curve (auROC) and average precision (AP) score distributions across BirdNET OOB, BirdNET (FT) and both VAE variants. Score distributions across species show the auROC is approximately equivalent across the VAE and SIVAE and typically improves over BirdNET (OOB). Both VAE variant representations are slightly more discriminative on examples with high occlusions though are less precise than BirdNET on all datasets. Introducing shift-invariance results in improvement in precision for tropical avian species, while improvement for certain tropical frogs and UK birds are only slight. BirdNET (FT) significantly out-performs across all datasets.
               </figcaption>
             </figure>
           </div>
@@ -289,7 +315,7 @@
             <figure>
               <img src="assets/images/figure_8.png" alt="" style="width: 100%">
               <figcaption>
-                <b>Figure 5:</b> Species-level detection performance across VAE variants and fine-tuned BirdNET for the most frequently labelled species. Score distributions show the top 24 species across datasets for VAE and SIVAE and BirdNET (FT), sorted by training label frequency in descending order. BirdNET (FT) representations typically achieve better overall precision and auROC across most species, though both VAE model classes are comparable for many. Further breakdowns for each dataset are available in the supplementary material.
+                <b>Figure 8:</b> Species-level detection performance across VAE variants and fine-tuned BirdNET for the most frequently labelled species. Score distributions show the top 24 species across datasets for VAE and SIVAE and BirdNET (FT), sorted by training label frequency in descending order. BirdNET (FT) representations typically achieve better overall precision and auROC across most species, though both VAE model classes are comparable for many. Further breakdowns for each dataset are available in the supplementary material.
               </figcaption>
             </figure>
           </div>
@@ -323,7 +349,7 @@
             <figure>
               <img src="assets/images/figure_9.png" alt="" style="width: 100%">
               <figcaption>
-                <b>Figure 6:</b> Relationship between classifier uncertainty, species label availability, and detection precision across representation models. Average uncertainty in species-classifier logistic regression weights is plotted against model average precision (AP) for VAE, SIVAE, and BirdNET (FT) representations on the SO dataset. Species are separated according to whether their number of training labels falls below or above 50, corresponding to the point at which a clear trend emerges. For SIVAE, species with fewer than 50 labels show a weak positive relationship between posterior variance and label count. Above 50 labels, a clear positive relationship emerges for both countries, with higher precision associated with lower model uncertainty, suggesting greater consistency in the classifier solutions across model seeds. BirdNET (FT) achieves higher precision overall but exhibits a broader posterior distribution over logistic regression weights, indicating greater uncertainty in individual parameter values. For rare UK species with fewer than 50 labels, BirdNET performance is more variable, potentially reflecting limited representation of these species, reduced generalisation, sensitivity to occlusion, or label noise.
+                <b>Figure 9:</b> Relationship between classifier uncertainty, species label availability, and detection precision across representation models. Average uncertainty in species-classifier logistic regression weights is plotted against model average precision (AP) for VAE, SIVAE, and BirdNET (FT) representations on the SO dataset. Species are separated according to whether their number of training labels falls below or above 50, corresponding to the point at which a clear trend emerges. For SIVAE, species with fewer than 50 labels show a weak positive relationship between posterior variance and label count. Above 50 labels, a clear positive relationship emerges for both countries, with higher precision associated with lower model uncertainty, suggesting greater consistency in the classifier solutions across model seeds. BirdNET (FT) achieves higher precision overall but exhibits a broader posterior distribution over logistic regression weights, indicating greater uncertainty in individual parameter values. For rare UK species with fewer than 50 labels, BirdNET performance is more variable, potentially reflecting limited representation of these species, reduced generalisation, sensitivity to occlusion, or label noise.
               </figcaption>
             </figure>
           </div>
