@@ -11,3 +11,4 @@ pin_memory: False
 num_folds:
 fold_id:
 chunked: true
+norm: false

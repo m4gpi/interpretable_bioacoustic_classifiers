@@ -40,7 +40,7 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
         if self.download:
             self._download_files()
         self.labels = self.labels[self.labels.index.get_level_values("file_i").isin(self.features.index.get_level_values("file_i"))]
-        self.x = torch.tensor(self.features.values.reshape(self.labels.values.shape[0], -1, self.features.values.shape[-1]), dtype=torch.float32)
+        self.x = torch.tensor(self.features.values.reshape(self.labels.values.shape[0], -1, self.features.values.shape[-1]).astype(np.float32), dtype=torch.float32)
         self.y = torch.tensor(self.labels.values, dtype=torch.int64)
 
     @property
@@ -79,6 +79,7 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
     val_prop: float = attrs.field(default=0.2, validator=attrs.validators.instance_of(float))
     min_train_label_count: int = attrs.field(default=10, validator=attrs.validators.instance_of(int))
     chunked: bool = attrs.field(default=True)
+    norm: bool = attrs.field(default=False)
 
     seed: int = attrs.field(default=None)
     num_workers: int = attrs.field(default=0, validator=attrs.validators.instance_of(int))
@@ -111,13 +112,24 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
 
         # load features and labels
         train_features = pd.read_parquet(self.train_features_path)
+        train_features = train_features.astype({col: np.float32 for col in train_features.columns})
         if self.val_features_path.exists():
             val_features = pd.read_parquet(self.val_features_path)
+            val_features = val_features.astype({col: np.float32 for col in val_features.columns})
         test_features = pd.read_parquet(self.test_features_path)
+        test_features = test_features.astype({col: np.float32 for col in test_features.columns})
         train_labels = pd.read_parquet(self.train_labels_path)
         if self.val_labels_path.exists():
             val_labels = pd.read_parquet(self.val_labels_path)
         test_labels = pd.read_parquet(self.test_labels_path)
+
+        # standardise when specified
+        if self.norm:
+            mu, sigma = train_features.mean(axis=0), train_features.std(axis=0)
+            train_features = (train_features - mu) / sigma
+            if self.val_features_path.exists():
+                val_features = (val_features - mu) / sigma
+            test_features = (test_features - mu) / sigma
 
         # align train, val and test label columns so we don't train on labels we can't make predictions about
         train_labels = train_labels.loc[:, train_labels.columns[train_labels.sum(axis=0) > self.min_train_label_count]]
