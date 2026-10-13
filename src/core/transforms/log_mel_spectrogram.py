@@ -77,6 +77,7 @@ class LogMelSpectrogram(torch.nn.Module):
         mel_max_hertz: float = 15000,
         mel_scaling_factor: float = 4581.0,
         mel_break_frequency: float = 1750.0,
+        norm: str | None = None,
     ) -> None:
         super().__init__()
         self.sample_rate = sample_rate
@@ -88,6 +89,7 @@ class LogMelSpectrogram(torch.nn.Module):
         self.mel_max_hertz = mel_max_hertz
         self.mel_scaling_factor = mel_scaling_factor
         self.mel_break_frequency = mel_break_frequency
+        self.norm = norm
         mel_basis = mel_filterbanks(**self.mel_params, linear_frequencies=self.fft_frequencies)
         self.register_buffer("mel_basis", torch.tensor(mel_basis, requires_grad=False), persistent=False)
 
@@ -181,6 +183,7 @@ class LogMelSpectrogram(torch.nn.Module):
             mel_max_hertz=self.mel_max_hertz,
             scaling_factor=self.mel_scaling_factor,
             break_frequency=self.mel_break_frequency,
+            norm=self.norm,
         )
 
 # class LogMelSpectrogram(object):
