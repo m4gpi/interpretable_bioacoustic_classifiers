@@ -16,9 +16,10 @@ hydra:
   mode: MULTIRUN
   sweeper:
     params:
+      scope: SO_UK,SO_EC,RFCX_bird,RFCX_frog
       data.fold_id: 0,1,2,3,4
       model.attn_learning_rate: 0.1,0.05,0.01
-      model.clf_learning_rate:  0.01,0.005,0.001
+      model.clf_learning_rate:  0.1,0.05,0.01
       model.gamma_clf: 0.01,0.005,0.001
       model.gamma_attn: 0.01,0.005,0.001
 
@@ -37,7 +38,6 @@ model:
 
 trainer:
   max_epochs: 2000
-  log_every_n_steps: 1
   limit_val_batches: 0.0
 
 callbacks:

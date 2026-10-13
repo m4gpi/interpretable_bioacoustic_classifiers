@@ -223,10 +223,10 @@ class MILSpeciesDetector(L.LightningModule):
         # batch mean over log probabilities weighted by positive class frequency
         cel = metrics.class_balanced_binary_cross_entropy(y, y_probs, samples_per_class=samples_per_class, **self.cel_params).mean(dim=0)
         outputs |= dict(cel=cel.detach().sum())
-        # sparse penalty for clf weights
+        # penalty for clf weights
         clf_reg = self.gamma_clf * self.clf_regulariser(self.classifiers.get_weights(), dim=-1)
         outputs |= {f"clf_{self.clf_regulariser.__class__.__name__.lower()}": clf_reg.detach().sum()}
-        # l2 regularisation on attn model weights
+        # regularisation on attn weights
         attn_reg = self.gamma_attn * sum([self.attn_regulariser(weights, dim=[-1, -2]) for weights in self.attention.get_weights()])
         outputs |= {f"attn_l2": attn_reg.detach().sum()}
         # sum the cel, clf_reg and attn_reg for logistic regression
@@ -285,13 +285,14 @@ class MILSpeciesDetector(L.LightningModule):
         else:
             trainer.fit(self, datamodule=data_module)
         # persist the model configuration
-        checkpoint_dir = pathlib.Path(trainer.checkpoint_callback.dirpath)
-        checkpoint_name = trainer.checkpoint_callback.filename
-        config_path = checkpoint_dir / "config.yaml"
         # wierd bug the checkpoint isnt saving, so do manually now
-        trainer.save_checkpoint(checkpoint_dir / f"{checkpoint_name}.ckpt")
-        log.info(f"Saving model configuration to {config_path}")
-        omegaconf.OmegaConf.save(config, config_path)
+        if trainer.checkpoint_callback is not None:
+            checkpoint_dir = pathlib.Path(trainer.checkpoint_callback.dirpath)
+            checkpoint_name = trainer.checkpoint_callback.filename
+            config_path = checkpoint_dir / "config.yaml"
+            trainer.save_checkpoint(checkpoint_dir / f"{checkpoint_name}.ckpt")
+            log.info(f"Saving model configuration to {config_path}")
+            omegaconf.OmegaConf.save(config, config_path)
         # run validation
         if data_module.val_prop > 0.0:
             log.info(f"Final validation run <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")

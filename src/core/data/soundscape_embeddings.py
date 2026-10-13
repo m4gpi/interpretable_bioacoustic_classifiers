@@ -24,7 +24,6 @@ class SoundscapeEmbeddings(torch.utils.data.Dataset):
     features: pd.DataFrame = attrs.field()
     labels: pd.DataFrame = attrs.field()
     index: List[int] = attrs.field()
-    seed: int = attrs.field(default=None)
     download: bool = attrs.field(default=False)
 
     x: torch.Tensor = attrs.field(init=False)
@@ -117,19 +116,11 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
             val_features = pd.read_parquet(self.val_features_path)
             val_features = val_features.astype({col: np.float32 for col in val_features.columns})
         test_features = pd.read_parquet(self.test_features_path)
-        test_features = test_features.astype({col: np.float32 for col in test_features.columns})
         train_labels = pd.read_parquet(self.train_labels_path)
         if self.val_labels_path.exists():
             val_labels = pd.read_parquet(self.val_labels_path)
         test_labels = pd.read_parquet(self.test_labels_path)
-
-        # standardise when specified
-        if self.norm:
-            mu, sigma = train_features.mean(axis=0), train_features.std(axis=0)
-            train_features = (train_features - mu) / sigma
-            if self.val_features_path.exists():
-                val_features = (val_features - mu) / sigma
-            test_features = (test_features - mu) / sigma
+        test_features = test_features.astype({col: np.float32 for col in test_features.columns})
 
         # align train, val and test label columns so we don't train on labels we can't make predictions about
         train_labels = train_labels.loc[:, train_labels.columns[train_labels.sum(axis=0) > self.min_train_label_count]]
@@ -138,53 +129,79 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
             target_names = target_names.intersection(set(val_labels.columns))
         target_names = list(target_names)
 
-        # test set is fixed across all training regimens
-        self.test_data = SoundscapeEmbeddings(
-            features=test_features,
-            labels=test_labels[target_names],
-            index=test_labels.index.get_level_values(0),
-        )
-
-        # train on everything when no validation is specified
+        # 1) no validation, train on everything
         if self.val_prop == 0.0:
             features = pd.concat([train_features, val_features]) if self.val_features_path.exists() else train_features
             labels = pd.concat([train_labels, val_labels]) if self.val_labels_path.exists() else train_labels
+            # standardise
+            if self.norm:
+                mu, sigma = features.mean(axis=0), features.std(axis=0)
+                features = (features - mu) / sigma
+                test_features = (test_features - mu) / sigma
+            # build torch datasets
             self.train_data = SoundscapeEmbeddings(
                 features=features,
                 labels=labels[target_names],
                 index=labels.index.get_level_values(0),
             )
+            self.test_data = SoundscapeEmbeddings(
+                features=test_features,
+                labels=test_labels[target_names],
+                index=test_labels.index.get_level_values(0),
+            )
             return self
 
-        # during cross-validation, recombine the original train/val splits before folding
+        # 2) cross-validation, train on fold index
         if self.num_folds is not None and self.fold_id is not None:
+            # if any original train/val splits exist, recombine before folding
             features = pd.concat([train_features, val_features]) if self.val_features_path.exists() else train_features
             labels = pd.concat([train_labels, val_labels]) if self.val_labels_path.exists() else train_labels
-            # same seed across runs ensures we get consistent splits
-            # allows for indexing splits by their fold_id
-            folder = sklearn.model_selection.KFold(
-                n_splits=self.num_folds,
-                random_state=self.seed,
-                shuffle=True,
-            )
-            folds = list(folder.split(range(len(self.train_data))))
-            train_idx, val_idx = folds[self.fold_id]
+            # init k folds by random seed
+            folder = sklearn.model_selection.KFold(n_splits=self.num_folds, random_state=self.seed, shuffle=True)
+            # fetch the file index
             index = features.index.get_level_values("file_i").unique()
+            # create folds
+            folds = list(folder.split(range(len(index))))
+            # index the specified fold
+            train_idx, val_idx = folds[self.fold_id]
+            # extract by fold
+            train_features = features.loc[index[train_idx]]
+            train_labels = labels.loc[index[train_idx], target_names]
+            val_features = features.loc[index[val_idx]]
+            val_labels = labels.loc[index[val_idx], target_names]
+            # standardise
+            if self.norm:
+                mu, sigma = train_features.mean(axis=0), train_features.std(axis=0)
+                train_features = (train_features - mu) / sigma
+                val_features = (val_features - mu) / sigma
+                test_features = (test_features - mu) / sigma
+            # build torch datasets
             self.train_data = SoundscapeEmbeddings(
-                features=features.loc[index[train_idx]],
-                labels=labels.loc[index[train_idx], target_names],
+                features=train_features,
+                labels=train_labels,
                 index=index[train_idx],
-                seed=self.seed,
             )
             self.val_data = SoundscapeEmbeddings(
-                features=features.loc[index[val_idx]],
-                labels=labels.loc[index[val_idx], target_names],
+                features=val_features,
+                labels=val_labels,
                 index=index[val_idx],
-                seed=self.seed,
+            )
+            self.test_data = SoundscapeEmbeddings(
+                features=test_features,
+                labels=test_labels[target_names],
+                index=test_labels.index.get_level_values(0),
             )
             return self
 
+        # 3) validation pre-determined
         if self.val_features_path.exists():
+            # standardise
+            if self.norm:
+                mu, sigma = train_features.mean(axis=0), train_features.std(axis=0)
+                train_features = (train_features - mu) / sigma
+                val_features = (val_features - mu) / sigma
+                test_features = (test_features - mu) / sigma
+            # build torch datasets
             self.data = self.train_data = SoundscapeEmbeddings(
                 features=train_features,
                 labels=train_labels[target_names],
@@ -195,26 +212,47 @@ class SoundscapeEmbeddingsDataModule(L.LightningDataModule):
                 labels=val_labels[target_names],
                 index=val_labels.index.get_level_values(0),
             )
-        else:
-            index = train_features.index.get_level_values("file_i").unique()
-            train_idx, val_idx = sklearn.model_selection.train_test_split(
-                list(range(len(index))),
-                test_size=self.val_prop,
-                shuffle=True,
-                random_state=self.seed
+            self.test_data = SoundscapeEmbeddings(
+                features=test_features,
+                labels=test_labels[target_names],
+                index=test_labels.index.get_level_values(0),
             )
-            self.train_data = SoundscapeEmbeddings(
-                features=train_features.loc[index[train_idx]],
-                labels=train_labels.loc[index[train_idx], target_names],
-                index=index[train_idx],
-                seed=self.seed,
-            )
-            self.val_data = SoundscapeEmbeddings(
-                features=train_features.loc[index[val_idx]],
-                labels=train_labels.loc[index[val_idx], target_names],
-                index=index[val_idx],
-                seed=self.seed,
-            )
+            return self
+
+        # 4) no validation set exists, generate a new split
+        index = train_features.index.get_level_values("file_i").unique()
+        train_idx, val_idx = sklearn.model_selection.train_test_split(
+            list(range(len(index))),
+            test_size=self.val_prop,
+            shuffle=True,
+            random_state=self.seed
+        )
+        train_features = features.loc[index[train_idx]]
+        train_labels = labels.loc[index[train_idx], target_names]
+        val_features = features.loc[index[val_idx]]
+        val_labels = labels.loc[index[val_idx], target_names]
+        # standardise
+        if self.norm:
+            mu, sigma = train_features.mean(axis=0), train_features.std(axis=0)
+            train_features = (train_features - mu) / sigma
+            val_features = (val_features - mu) / sigma
+            test_features = (test_features - mu) / sigma
+        # build torch datasets
+        self.data = self.train_data = SoundscapeEmbeddings(
+            features=train_features,
+            labels=train_labels,
+            index=index[train_idx],
+        )
+        self.val_data = SoundscapeEmbeddings(
+            features=val_features,
+            labels=val_labels,
+            index=index[val_idx],
+        )
+        self.test_data = SoundscapeEmbeddings(
+            features=test_features,
+            labels=test_labels[target_names],
+            index=test_labels.index.get_level_values(0),
+        )
         return self
 
     def train_dataloader(self, batch_size: int | None = None, **kwargs: Any) -> torch.utils.data.DataLoader:

@@ -18,10 +18,10 @@ hydra:
   sweeper:
     params:
       data.fold_id: 0,1,2,3,4
-      model.clf_learning_rate: 1e-1,5e-2,3e-2,1e-2
-      model.lamdba: 1e-1,5e-2,1e-2
       model.attn_learning_rate: 1e-3,5e-4
-      model.attn_weight_decay: 1e-2,1e-3
+      model.clf_learning_rate: 1e-1,5e-2,3e-2,1e-2
+      model.gamma_clf: 1e-2,1e-3
+      model.gamma_attn: 1e-1,5e-2,1e-2
 
 trainer:
   max_epochs: 2000
