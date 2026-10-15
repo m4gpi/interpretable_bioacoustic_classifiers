@@ -294,10 +294,10 @@ class MILSpeciesDetector(L.LightningModule):
             log.info(f"Saving model configuration to {config_path}")
             omegaconf.OmegaConf.save(config, config_path)
         # run validation
-        if data_module.val_prop > 0.0:
-            log.info(f"Final validation run <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
-            trainer.limit_val_batches = 1.0
-            trainer.validate(self, datamodule=data_module)
+        # if data_module.val_prop > 0.0:
+        #     log.info(f"Final validation run <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
+        #     trainer.limit_val_batches = 1.0
+        #     trainer.validate(self, datamodule=data_module)
         # running test
         if config.get("test"):
             log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")

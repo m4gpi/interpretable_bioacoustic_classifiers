@@ -5,11 +5,11 @@ root_dir: ${oc.env:PROJECT_ROOT}
 # path to data directory
 data_dir: /mnt/data0/${oc.env:USER}/data
 # path to data directory
-results_dir: /mnt/data0/${oc.env:USER}/experiments
+results_dir: /mnt/data0/${oc.env:USER}/experiments/v4
 # path to model checkpoints
 checkpoint_dir: /mnt/data0/${oc.env:USER}/checkpoints
 # path to saved models
-model_dir: /mnt/data0/${oc.env:USER}/models
+model_dir: /mnt/data0/${oc.env:USER}/models/v4
 # path to logging directory
 log_dir: /srv/thetis2/${oc.env:USER}/logs/
 # path to output directory, created dynamically by hydra

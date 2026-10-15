@@ -5,6 +5,7 @@ import logging
 import os
 import pathlib
 import rootutils
+import time
 import torch
 import wandb
 import yaml
@@ -31,6 +32,8 @@ OmegaConf.register_new_resolver("pow", lambda x, y: int(x) ** int(y))
 OmegaConf.register_new_resolver("yaml_load", load_yaml)
 
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    start_time = time.time()
+
     if cfg.get("run_id") is None:
         OmegaConf.update(cfg, "run_id", mnemonic(os.urandom(16).hex()), force_add=True)
     raw_config = OmegaConf.to_container(cfg, resolve=True)
@@ -79,6 +82,11 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     except Exception as e:
         log.error(e)
     finally:
+        end_time = time.time()
+        elapsed = int(end_time - start_time)
+        hours, remainder = divmod(elapsed, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        log.info(f"Time taken: {hours:02d}:{minutes:02d}:{seconds:02d}")
         if wandb.run is not None:
             wandb.finish()
 
