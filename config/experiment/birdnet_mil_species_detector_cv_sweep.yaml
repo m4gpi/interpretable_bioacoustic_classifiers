@@ -1,6 +1,6 @@
 # @package _global_
 
-# python src/cli/train.py +experiment=species_detector
+# python src/cli/train.py +experiment=birdnet_mil_species_detector_cv_sweep
 
 defaults:
   - override /data: soundscape_embeddings
@@ -18,10 +18,10 @@ hydra:
     params:
       scope: SO_UK,SO_EC,RFCX_bird,RFCX_frog
       data.fold_id: 0,1,2,3,4
-      model.attn_learning_rate: 0.1,0.05,0.01
-      model.clf_learning_rate:  0.1,0.05,0.01
-      model.gamma_clf: 0.01,0.005,0.001
-      model.gamma_attn: 0.01,0.005,0.001
+      model.clf_learning_rate: 0.1,0.05,0.03,0.01
+      model.attn_learning_rate: 0.001,0.0005
+      model.gamma_clf: 0.001,0.0005,0.0001
+      model.gamma_attn: 0.01,0.001
 
 data:
   num_folds: 5
@@ -37,8 +37,8 @@ model:
     num_features: 1024
 
 trainer:
-  max_epochs: 2000
-  limit_val_batches: 0.0
+  max_epochs: 1000
+  val_check_interval: 50
 
 callbacks:
   model_checkpoint:
@@ -47,7 +47,7 @@ callbacks:
     filename: ${model_name}_${scope}
   species_scores:
     _target_: src.core.callbacks.species_scores.SpeciesScores
-    save_dir: ${paths.results_dir}
+    save_dir: ${paths.results_dir}/birdnet_cross_validation
     model_name: ${model_name}
     scope: ${scope}
     run_id: ${run_id}
