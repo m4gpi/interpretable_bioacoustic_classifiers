@@ -17,7 +17,6 @@ from matplotlib import ticker
 from pathlib import Path
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import RocCurveDisplay
 from sklearn import metrics
 
 from torch import Tensor
@@ -231,7 +230,7 @@ def main(root, save_path, seed: int = 42):
     plot_pr_curve(y_test, y_prob_rf[:, 1], label_prefix="RF (before) ", ax=ax2_c, color="#3F334D")
     # add the baseline probability
     p_sm2 = y_train.sum() / y_train.shape[0]
-    ax2_c.text(x=0.5, y=p_sm2 - 0.01, s=f"{np.format_float_positional(p_sm2, precision=3)}", fontsize=9, color="black", weight="bold")
+    ax2_c.text(x=0.5, y=p_sm2 + 0.01, s=f"{np.format_float_positional(p_sm2, precision=3)}", fontsize=9, color="black", weight="bold")
     ax2_c.plot(np.linspace(0, 1, len(thresholds)), np.linspace(p_sm2, p_sm2, len(thresholds)), linestyle="dashed", color="black")
 
     X_train = train_data.loc[:, z_norm_idx].values
@@ -241,13 +240,13 @@ def main(root, save_path, seed: int = 42):
     log.info("Fitting logistic regression (after norm)")
     clf = LogisticRegression(penalty="l1", solver="saga", max_iter=10000, random_state=seed)
     clf.fit(X_train, y_train)
-    y_pred = clf.predict(X_test)
+    y_pred_clf = clf.predict(X_test)
     y_prob_clf = clf.predict_proba(X_test)
 
     log.info("Fitting random forest classifier (after norm)")
     rf = RandomForestClassifier(n_estimators=100, random_state=seed)
     rf.fit(X_train, y_train)
-    y_pred = rf.predict(X_test)
+    y_pred_rf = rf.predict(X_test)
     y_prob_rf = rf.predict_proba(X_test)
 
     log.info("Plotting confusion")
@@ -281,7 +280,7 @@ def main(root, save_path, seed: int = 42):
     data.loc[ec_idx, "x_ec_j"], data.loc[ec_idx, "y_ec_j"] = np.hsplit(mapper.transform(data.loc[ec_idx, z_norm_idx]), 2)
 
     z_score = 2.5
-    fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(11, 8), constrained_layout=True)
+    fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(11, 8), constrained_layout=True)
 
     log.info("Plotting EC umap")
     ax = axes[0, 0]
@@ -294,6 +293,8 @@ def main(root, save_path, seed: int = 42):
     sns.scatterplot(data=data[ec_idx], x="x_ec_i", y="y_ec_i", hue="recorder_model", s=25, alpha=0.5, palette=sns.color_palette("viridis", n_colors=2), legend=False, ax=ax)
     ax.set_xlim([x_min.min(), x_max.max()])
     ax.set_ylim([y_min.min(), y_max.max()])
+    ax.set_xlabel("")
+    ax.set_ylabel("Before norm")
     ax.set_title("EC")
 
     log.info("Plotting UK umap")
@@ -307,9 +308,11 @@ def main(root, save_path, seed: int = 42):
     sns.scatterplot(data=data[uk_idx], x="x_uk_i", y="y_uk_i", hue="recorder_model", s=25, alpha=0.5, palette=sns.color_palette("viridis", n_colors=2), ax=ax)
     ax.set_xlim([x_min.min(), x_max.max()])
     ax.set_ylim([y_min.min(), y_max.max()])
+    ax.set_xlabel("")
+    ax.set_ylabel("")
     ax.set_title("UK")
 
-    sns.move_legend(ax, bbox_to_anchor=(1.04, 1), ncols=1, title="Recorder Type")
+    sns.move_legend(ax, loc="upper left", bbox_to_anchor=(1.04, 1), ncols=1, title="Recorder Type")
 
     log.info("Plotting EC umap")
     ax = axes[1, 0]
@@ -322,6 +325,8 @@ def main(root, save_path, seed: int = 42):
     sns.scatterplot(data=data[ec_idx], x="x_ec_j", y="y_ec_j", hue="recorder_model", s=25, alpha=0.5, palette=sns.color_palette("viridis", n_colors=2), legend=False, ax=ax)
     ax.set_xlim([x_min.min(), x_max.max()])
     ax.set_ylim([y_min.min(), y_max.max()])
+    ax.set_xlabel("")
+    ax.set_ylabel("After norm")
 
     log.info("Plotting UK umap")
     ax = axes[1, 1]
@@ -334,9 +339,16 @@ def main(root, save_path, seed: int = 42):
     sns.scatterplot(data=data[uk_idx], x="x_uk_j", y="y_uk_j", hue="recorder_model", s=25, alpha=0.5, palette=sns.color_palette("viridis", n_colors=2), ax=ax, legend=False)
     ax.set_xlim([x_min.min(), x_max.max()])
     ax.set_ylim([y_min.min(), y_max.max()])
+    ax.set_xlabel("")
+    ax.set_ylabel("")
 
     log.info(save_path / "recorder_umap.pdf")
     fig.savefig(save_path / "recorder_umap.pdf", format="pdf")
+
+    # TODO: ????
+    # quantify loss of reconstruction quality after applying adjustment
+    # how does the recorder attribute adjstment affect the likelihood?
+    # - calculate the reconstruction gaussian log probability / error for every shifted sample (all SM2 to SM3, all SM3 to SM2)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
