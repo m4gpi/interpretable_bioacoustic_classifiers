@@ -444,7 +444,6 @@ class TCVAE(L.LightningModule):
             axes[1, 0].set_title("Reconstruction")
             fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
             fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
-            figures.append(("spectrogram", fig))
             mu_norm = ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0))
             im = plot_latent_power_spectral_density_heatmap(mu_norm, fft_length=mu[i].shape[0], **self.time_series_params, ax=axes[2, 0])
             axes[2, 0].set_title("Latent Power Spectral Density")
