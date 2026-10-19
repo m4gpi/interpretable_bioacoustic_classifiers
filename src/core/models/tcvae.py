@@ -109,6 +109,8 @@ class TCVAE(L.LightningModule):
         smooth_sigma_z_max: float = 0.5,
         smooth_sigma_z_min: float = 0.2,
         smooth_sigma_z_step_slope: float = 1.0,
+        kernel_smoothing: bool = False,
+        prior_smoothing: bool = True,
         distilled: bool = False,
         **kwargs: Any,
     ) -> None:
@@ -133,6 +135,8 @@ class TCVAE(L.LightningModule):
         self.smooth_sigma_z_min = smooth_sigma_z_min
         self.smooth_sigma_z_step_slope = smooth_sigma_z_step_slope
         self.distilled = distilled
+        self.prior_smoothing = prior_smoothing
+        self.kernel_smoothing = kernel_smoothing
         self.num_temp_groups = num_temp_groups
         self.temp_log_sigma_min = temp_log_sigma_min
         self.temp_log_sigma_max = temp_log_sigma_max
@@ -152,6 +156,11 @@ class TCVAE(L.LightningModule):
         self.content_decoder = hydra.utils.instantiate(content_decoder)
 
         assert len(self.smooth_feature_idx) // self.num_temp_groups == len(self.smooth_feature_idx) / self.num_temp_groups
+
+        self.temporal_kernel_scales = torch.nn.Parameter(torch.stack([
+            torch.linspace(self.temp_log_sigma_min, self.temp_log_sigma_max, self.num_temp_groups, device=self.device, dtype=torch.float32).exp()
+            for i in range(len(self.smooth_feature_idx) // self.num_temp_groups)
+        ], dim=1).flatten().flip(dims=[0]), requires_grad=False)
 
         if self.distilled:
             self.feature_encoder_ema = copy.deepcopy(self.feature_encoder)
@@ -208,14 +217,30 @@ class TCVAE(L.LightningModule):
         return T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
 
     def forward(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
+        outputs = {}
+        x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
+        outputs |= dict(x=x, x_framed=x_framed)
         q_z, *_ = self.encode(x)
+        # apply hard smoothing (if specified)
+        if self.kernel_smoothing:
+            q_z = self.temporal_smoothing(q_z, self.temporal_kernel_scales)
+        outputs |= dict(q_z=q_z)
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
         z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()
         x_hat = self.decode(z).view(*x.size())
-        x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
         x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_window_length)
-        q_z_bar = self.temporal_moment_matching(self.encode_ema(x).detach() if self.distilled else q_z.detach(), self.smooth_feature_idx, self.temporal_kernel_scales)
-        return dict(x=x, x_framed=x_framed, x_hat=x_hat, x_hat_framed=x_hat_framed, q_z=q_z, q_z_bar=q_z_bar)
+        outputs |= dict(x_hat=x_hat, x_hat_framed=x_hat_framed)
+        # derive a soft target by fitting kernels (using either posterior EMA or current posterior)
+        if self.prior_smoothing:
+            q_z_bar = self.temporal_moment_matching(
+                self.encode_ema(x).detach()
+                if self.distilled
+                else q_z.detach(),
+                self.smooth_feature_idx,
+                self.temporal_kernel_scales,
+            )
+            outputs |= dict(q_z_bar=q_z_bar)
+        return outputs
 
     def predict(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
         return self.forward(x, *args, **kwargs)
@@ -242,13 +267,26 @@ class TCVAE(L.LightningModule):
             U = block(U)
         return U
 
-    @property
-    def temporal_kernel_scales(self):
-        # temporal scale of gaussians in groups
-        return torch.stack([
-            torch.linspace(self.temp_log_sigma_min, self.temp_log_sigma_max, self.num_temp_groups, device=self.device, dtype=torch.float32).exp()
-            for i in range(len(self.smooth_feature_idx) // self.num_temp_groups)
-        ], dim=1).flatten().flip(dims=[0])
+    def temporal_smoothing(
+        self,
+        q_z: torch.Tensor,
+        kernel_scales: torch.Tensor,
+        mask_center: bool = False,
+        padding_mode: str = "circular",
+    ) -> torch.Tensor:
+        kernels = gaussian_kernel(kernel_scales, mask_center=mask_center)
+        K = (kernels.size(-1) - 1) // 2
+        mu, log_sigma_sq = q_z.chunk(2, dim=-1)
+        mu_bar = torch.zeros_like(mu)
+        # smooth over selected features by convolution
+        mu_bar[:, :, self.smooth_feature_idx] = F.conv1d(
+            F.pad(mu[:, :, self.smooth_feature_idx].permute(0, 2, 1), (K, K), mode=padding_mode),
+            kernels,
+            groups=kernel_scales.size(0)
+        ).permute(0, 2, 1)
+        # copy over remaining
+        mu_bar[:, :, self.sharp_feature_idx] = mu[:, :, self.sharp_feature_idx]
+        return torch.cat([mu_bar, log_sigma_sq], dim=-1)
 
     @torch.no_grad()
     def temporal_moment_matching(
@@ -304,7 +342,7 @@ class TCVAE(L.LightningModule):
         x_framed: torch.Tensor,
         x_hat_framed: torch.Tensor,
         q_z: torch.Tensor,
-        q_z_bar: torch.Tensor,
+        q_z_bar: torch.Tensor | None = None,
         **kwargs: Any
     ) -> Dict[str, torch.Tensor]:
         outputs = dict()
@@ -320,28 +358,48 @@ class TCVAE(L.LightningModule):
         sharp_dkl = (self.sharp_features * dkl).sum(dim=-1).mean()
         losses.append(sharp_dkl)
         outputs |= dict(sharp_dkl=sharp_dkl.detach())
-        # alpha weighted standard normal kl for 'smooth' features
-        alpha = self.alpha_current
-        smooth_dkl = (self.smooth_features * dkl).sum(dim=-1).mean()
-        outputs |= dict(smooth_dkl_unweighted=smooth_dkl.detach())
-        smooth_dkl = alpha * smooth_dkl
-        losses.append(smooth_dkl)
-        outputs |= dict(smooth_dkl=smooth_dkl.detach())
-        # temporal coherence kl
-        mu_smooth, log_sigma_sq_smooth = mu[:, :, self.smooth_feature_idx], log_sigma_sq[:, :, self.smooth_feature_idx]
-        mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
-        var_ratio = (log_sigma_sq_smooth - log_sigma_sq_bar).exp()
-        sq_err = (mu_smooth - mu_bar).pow(2) * (-log_sigma_sq_bar).exp()
-        temp_coh_dkl = -1/2 * (1 + log_sigma_sq_smooth - log_sigma_sq_bar - var_ratio - sq_err)
-        temp_coh_dkl = temp_coh_dkl.sum(dim=-1).mean()
-        outputs |= dict(temp_coh_dkl_unweighted=temp_coh_dkl.detach())
-        # (1 - alpha) weighted temporal coherence kl
-        temp_coh_dkl = (1 - alpha) * temp_coh_dkl
-        losses.append(temp_coh_dkl)
-        outputs |= dict(temp_coh_dkl=temp_coh_dkl.detach())
-        # log the sum of kls
-        outputs |= dict(dkl=(sharp_dkl + smooth_dkl + temp_coh_dkl).detach())
-        outputs |= dict(alpha=alpha)
+
+        if self.kernel_smoothing:
+            # weight the KL inversely proportional to the kernel scale
+            # offsetting such that group with smallest scale doesn't have weight of 1
+            scales = torch.stack([
+                torch.linspace(
+                    self.temp_log_sigma_min,
+                    self.temp_log_sigma_max + ((self.temp_log_sigma_max - self.temp_log_sigma_min) / (self.num_temp_groups - 1)),
+                    self.num_temp_groups + 1,
+                    device=dkl.device,
+                ).exp()
+                for i in range(len(self.smooth_feature_idx) // self.num_temp_groups)
+            ], dim=1).flatten().flip(dims=[0])
+            inv_scales = 1 / scales
+            weight = (inv_scales / inv_scales.max())[:-3]
+            smooth_dkl = (weight * dkl[:, :, self.smooth_feature_idx]).sum(dim=-1).mean()
+            losses.append(smooth_dkl)
+            outputs |= dict(smooth_dkl=smooth_dkl.detach())
+
+        if self.prior_smoothing:
+            # alpha weighted standard normal kl for 'smooth' features
+            alpha = self.alpha_current
+            smooth_dkl = (self.smooth_features * dkl).sum(dim=-1).mean()
+            outputs |= dict(smooth_dkl_unweighted=smooth_dkl.detach())
+            smooth_dkl = alpha * smooth_dkl
+            losses.append(smooth_dkl)
+            outputs |= dict(smooth_dkl=smooth_dkl.detach())
+            # temporal coherence kl
+            mu_smooth, log_sigma_sq_smooth = mu[:, :, self.smooth_feature_idx], log_sigma_sq[:, :, self.smooth_feature_idx]
+            mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
+            var_ratio = (log_sigma_sq_smooth - log_sigma_sq_bar).exp()
+            sq_err = (mu_smooth - mu_bar).pow(2) * (-log_sigma_sq_bar).exp()
+            temp_coh_dkl = -1/2 * (1 + log_sigma_sq_smooth - log_sigma_sq_bar - var_ratio - sq_err)
+            temp_coh_dkl = temp_coh_dkl.sum(dim=-1).mean()
+            outputs |= dict(temp_coh_dkl_unweighted=temp_coh_dkl.detach())
+            # (1 - alpha) weighted temporal coherence kl
+            temp_coh_dkl = (1 - alpha) * temp_coh_dkl
+            losses.append(temp_coh_dkl)
+            outputs |= dict(temp_coh_dkl=temp_coh_dkl.detach())
+            # log the sum of kls
+            outputs |= dict(dkl=(sharp_dkl + smooth_dkl + temp_coh_dkl).detach())
+            outputs |= dict(alpha=alpha)
         # sum all loss components
         outputs |= dict(loss=sum(losses))
         return outputs
@@ -352,39 +410,42 @@ class TCVAE(L.LightningModule):
         x_framed: torch.Tensor,
         x_hat_framed: torch.Tensor,
         q_z: torch.Tensor,
-        q_z_bar: torch.Tensor,
+        q_z_bar: torch.Tensor | None = None,
         **kwargs: Any
     ) -> Dict[str, Any]:
+        outputs = {}
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
         sigma_z = (0.5 * log_sigma_sq_z).exp()
         mu_hist = np.histogram(mu_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
         sigma_hist = np.histogram(sigma_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
+        outputs |= dict(mu_z_hist=mu_hist, sigma_z_hist=sigma_hist)
         mae = (x_hat_framed - x_framed).abs().flatten(start_dim=-3).mean(dim=-1).mean()
         mse = (x_hat_framed - x_framed).pow(2).flatten(start_dim=-3).mean(dim=-1).mean()
+        outputs |= dict(mse=mse, mae=mae)
         dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1) / self.latent_dim).mean()
+        outputs |= dict(dkl_norm=dkl_norm)
         delta_sharp = mu_z[:, 1:, self.sharp_feature_idx] - mu_z[:, :-1, self.sharp_feature_idx]
         delta_smooth = mu_z[:, 1:, self.smooth_feature_idx] - mu_z[:, :-1, self.smooth_feature_idx]
-        mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
-        mu_bar_hist = np.histogram(mu_bar.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
-        sigma_bar_hist = np.histogram((0.5 * log_sigma_sq_bar).exp().flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
-        mean_shift_abs_err = (mu_z[:, :, self.smooth_feature_idx] - mu_bar).abs().mean(),
-        return dict(
-            mae=mae,
-            mse=mse,
-            mu_z_hist=mu_hist,
-            sigma_z_hist=sigma_hist,
-            dkl_norm=dkl_norm,
+        outputs |= dict(
             sharp_neighbour_abs_err=delta_sharp.abs().mean(),
             sharp_neighbour_sq_err=delta_sharp.pow(2).mean(),
             sharp_neighbour_std=delta_sharp.std(),
             smooth_neighbour_abs_err=delta_smooth.abs().mean(),
             smooth_neighbour_sq_err=delta_smooth.pow(2).mean(),
             smooth_neighbour_std=delta_smooth.std(),
-            mu_bar_std=mu_bar.std(),
-            mu_bar_hist=mu_bar_hist,
-            sigma_bar_hist=sigma_bar_hist,
-            mean_shift_abs_err=mean_shift_abs_err,
         )
+        if q_z_bar is not None:
+            mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
+            mu_bar_hist = np.histogram(mu_bar.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
+            sigma_bar_hist = np.histogram((0.5 * log_sigma_sq_bar).exp().flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
+            mean_shift_abs_err = (mu_z[:, :, self.smooth_feature_idx] - mu_bar).abs().mean(),
+            outputs |= dict(
+                mu_bar_std=mu_bar.std(),
+                mu_bar_hist=mu_bar_hist,
+                sigma_bar_hist=sigma_bar_hist,
+                mean_shift_abs_err=mean_shift_abs_err,
+            )
+        return outputs
 
     @torch.no_grad()
     def embed(

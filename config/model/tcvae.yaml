@@ -7,6 +7,8 @@ beta: 1.0
 sigma_x: 0.2
 sigma_z_min: 1.e-5
 distilled: false
+kernel_smoothing: false
+prior_smoothing: true
 alpha: null
 alpha_step_start: 15_000
 alpha_step_end: 100_000
