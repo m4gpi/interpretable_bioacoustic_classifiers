@@ -1,3 +1,4 @@
+import copy
 import lightning as L
 import hydra
 import numpy as np
@@ -165,9 +166,9 @@ class TCVAE(L.LightningModule):
         if self.distilled:
             self.feature_encoder_ema = copy.deepcopy(self.feature_encoder)
             self.feature_encoder_ema.eval()
+            self.feature_encoder_ema.requires_grad_(False)
             self.content_encoder_ema = copy.deepcopy(self.content_encoder)
             self.content_encoder_ema.eval()
-            self.feature_encoder_ema.requires_grad_(False)
             self.content_encoder_ema.requires_grad_(False)
             self.ema = EMA(decay=0.999)
 
@@ -257,6 +258,19 @@ class TCVAE(L.LightningModule):
             log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*sigma_latent.pow(2).log())
             q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         return q_z,
+
+    def encode_ema(self, x: torch.Tensor, hop_length: int | None = None) -> Tuple[torch.Tensor]:
+        x, *_ = self.feature_encoder_ema(x)
+        window_length = self.frame_window_length // 2**(self.feature_encoder.num_layers)
+        hop_length = (hop_length or self.frame_window_length) // 2**(self.feature_encoder.num_layers)
+        x = self.frame(x, window_length=window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
+        q_z = self.content_encoder_ema(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
+        if self.sigma_z_min is not None:
+            mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+            sigma_latent = torch.tensor(self.sigma_z_min, dtype=torch.float32, requires_grad=False, device=mu_z.device)
+            log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*sigma_latent.pow(2).log())
+            q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
+        return q_z
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         bs, seq, *other_dims = z.size()
@@ -398,6 +412,7 @@ class TCVAE(L.LightningModule):
             losses.append(temp_coh_dkl)
             outputs |= dict(temp_coh_dkl=temp_coh_dkl.detach())
             # log the sum of kls
+            outputs |= dict(smooth_temp_dkl=(smooth_dkl + temp_coh_dkl).detach())
             outputs |= dict(dkl=(sharp_dkl + smooth_dkl + temp_coh_dkl).detach())
             outputs |= dict(alpha=alpha)
         # sum all loss components
