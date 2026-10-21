@@ -161,8 +161,9 @@ class TCVAE(L.LightningModule):
         assert len(self.smooth_feature_idx) // self.num_temp_groups == len(self.smooth_feature_idx) / self.num_temp_groups
 
         # log sigma range, with warping factor gamma to tune spacing between kernel scales
+        u = torch.linspace(0, 1, self.num_temp_groups)
         self.temporal_kernel_scales = torch.nn.Parameter(torch.stack([
-            (self.temp_log_sigma_min * (self.temp_log_sigma_max - self.temp_log_sigma_min) * torch.linspace(0, 1, self.num_temp_groups)**self.gamma).exp()
+            (self.temp_log_sigma_min + (self.temp_log_sigma_max - self.temp_log_sigma_min) * u**self.gamma).exp()
             for i in range(len(self.smooth_feature_idx) // self.num_temp_groups)
         ], dim=1).flatten().flip(dims=[0]), requires_grad=False)
 
