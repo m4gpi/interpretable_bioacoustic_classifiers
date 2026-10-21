@@ -105,6 +105,7 @@ class TCVAE(L.LightningModule):
         alpha_max: float = 1.0,
         alpha_min: float = 0.25,
         alpha_step_slope: float = 1.0,
+        gamma: float = 1.0,
         smooth_sigma_z_step_start: int | None = 15_000,
         smooth_sigma_z_step_end: int | None = 100_000,
         smooth_sigma_z_max: float = 0.5,
@@ -135,6 +136,7 @@ class TCVAE(L.LightningModule):
         self.smooth_sigma_z_max = smooth_sigma_z_max
         self.smooth_sigma_z_min = smooth_sigma_z_min
         self.smooth_sigma_z_step_slope = smooth_sigma_z_step_slope
+        self.gamma = gamma
         self.distilled = distilled
         self.prior_smoothing = prior_smoothing
         self.kernel_smoothing = kernel_smoothing
@@ -158,8 +160,9 @@ class TCVAE(L.LightningModule):
 
         assert len(self.smooth_feature_idx) // self.num_temp_groups == len(self.smooth_feature_idx) / self.num_temp_groups
 
+        # log sigma range, with warping factor gamma to tune spacing between kernel scales
         self.temporal_kernel_scales = torch.nn.Parameter(torch.stack([
-            torch.linspace(self.temp_log_sigma_min, self.temp_log_sigma_max, self.num_temp_groups, device=self.device, dtype=torch.float32).exp()
+            (self.temp_log_sigma_min * (self.temp_log_sigma_max - self.temp_log_sigma_min) * torch.linspace(0, 1, self.num_temp_groups)**self.gamma).exp()
             for i in range(len(self.smooth_feature_idx) // self.num_temp_groups)
         ], dim=1).flatten().flip(dims=[0]), requires_grad=False)
 
@@ -374,6 +377,7 @@ class TCVAE(L.LightningModule):
         outputs |= dict(sharp_dkl=sharp_dkl.detach())
 
         if self.kernel_smoothing:
+            # Q: just use alpha?
             # weight the KL inversely proportional to the kernel scale
             # offsetting such that group with smallest scale doesn't have weight of 1
             scales = torch.stack([
