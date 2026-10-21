@@ -15,7 +15,7 @@ from torchvision.transforms import functional as T
 from typing import Any, Dict, List, Tuple
 
 from src.core.transforms.frame import frame_fold as frame
-from src.core.utils import Batch, bounded_sigmoid, detach_values, prefix_keys, histogram_to_wandb
+from src.core.utils import Batch, linear_schedule, detach_values, prefix_keys, histogram_to_wandb
 from src.core.utils.sketch import plot_latent_power_spectral_density_heatmap
 from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior
 
@@ -45,7 +45,7 @@ def gaussian_kernel(sigmas: torch.Tensor, mask_center: bool = False) -> torch.Te
     if mask_center:
         filt[:, c] = 0.0
     filt = filt / filt.sum(dim=1, keepdim=True)
-    return filt.unsqueeze(1)
+    return filt
 
 def truncated_gaussian_kernel(sigmas: torch.Tensor, mask_center: bool = False) -> torch.Tensor:
     sigmas = sigmas.float()
@@ -58,7 +58,7 @@ def truncated_gaussian_kernel(sigmas: torch.Tensor, mask_center: bool = False) -
         filt[:, 0] = 0.0
     filt = filt / filt.sum(dim=1, keepdim=True)
     # conv1d performs cross-correlation, so reverse the lag order:
-    return filt.flip(dims=[1]).unsqueeze(1)
+    return filt.flip(dims=[1])
 
 def laplace_kernel(sigmas: torch.Tensor, mask_center: bool = False) -> torch.Tensor:
     sigmas = sigmas.float()
@@ -100,17 +100,11 @@ class TCVAE(L.LightningModule):
         temp_log_sigma_min: float = -0.3,
         temp_log_sigma_max: float = 1.0,
         alpha: float | None = None,
-        alpha_step_start: int | None = 15_000,
-        alpha_step_end: int | None = 100_000,
-        alpha_max: float = 1.0,
-        alpha_min: float = 0.25,
-        alpha_step_slope: float = 1.0,
         gamma: float = 1.0,
-        smooth_sigma_z_step_start: int | None = 15_000,
-        smooth_sigma_z_step_end: int | None = 100_000,
-        smooth_sigma_z_max: float = 0.5,
-        smooth_sigma_z_min: float = 0.2,
-        smooth_sigma_z_step_slope: float = 1.0,
+        sigma_bar_max: float = 0.5,
+        sigma_bar_min: float = 0.2,
+        sigma_bar_hold_steps: int | None = 15_000,
+        sigma_bar_warmup_steps: int | None = 100_000,
         kernel_smoothing: bool = False,
         prior_smoothing: bool = True,
         distilled: bool = False,
@@ -126,17 +120,11 @@ class TCVAE(L.LightningModule):
         self.sigma_z_min = sigma_z_min
         self.smooth_prop = smooth_prop
         self.alpha = alpha
-        self.alpha_step_start = alpha_step_start
-        self.alpha_step_end = alpha_step_end
-        self.alpha_max = alpha_max
-        self.alpha_min = alpha_min
-        self.alpha_step_slope = alpha_step_slope
-        self.smooth_sigma_z_step_start = smooth_sigma_z_step_start
-        self.smooth_sigma_z_step_end = smooth_sigma_z_step_end
-        self.smooth_sigma_z_max = smooth_sigma_z_max
-        self.smooth_sigma_z_min = smooth_sigma_z_min
-        self.smooth_sigma_z_step_slope = smooth_sigma_z_step_slope
         self.gamma = gamma
+        self.sigma_bar_max = sigma_bar_max
+        self.sigma_bar_min = sigma_bar_min
+        self.sigma_bar_hold_steps = sigma_bar_hold_steps
+        self.sigma_bar_warmup_steps = sigma_bar_warmup_steps
         self.distilled = distilled
         self.prior_smoothing = prior_smoothing
         self.kernel_smoothing = kernel_smoothing
@@ -195,16 +183,6 @@ class TCVAE(L.LightningModule):
         mask = torch.zeros(self.latent_dim, device=self.device, dtype=int)
         mask[self.smooth_feature_idx] = 1
         return mask
-
-    @property
-    def alpha_params(self):
-        return dict(
-            x_min=self.alpha_step_start,
-            x_max=self.alpha_step_end,
-            y_min=self.alpha_min,
-            y_max=self.alpha_max,
-            k=self.alpha_step_slope,
-        )
 
     @property
     def smooth_sigma_z_params(self):
@@ -312,34 +290,45 @@ class TCVAE(L.LightningModule):
         q_z: torch.Tensor,
         feature_idx: torch.Tensor,
         kernel_scales: torch.Tensor,
-        mask_center: bool = False,
-        padding_mode: str = "circular",
     ) -> torch.Tensor:
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         # extract relevant features for smoothing
         mu = mu[:, :, feature_idx]
         log_sigma_sq = log_sigma_sq[:, :, feature_idx]
-        # clip the variance to stop the penalty from being overly reduced during early training
-        sigma_min = bounded_sigmoid(self.trainer.global_step, **self.smooth_sigma_z_params)
-        log_sigma_sq = log_sigma_sq.clamp(min=2*np.log(sigma_min))
+        # clip the variance to prevent over-punishment during early training
+        sigma_current = linear_schedule(self.trainer.global_step, x_min=self.sigma_bar_min, x_max=self.sigma_bar_max, warmup_steps=self.sigma_bar_warmup_steps, hold_steps=self.sigma_bar_hold_steps)
+        log_sigma_sq = log_sigma_sq.clamp(min=2*np.log(sigma_current))
         sigma_sq = log_sigma_sq.exp()
         latent_dim = mu.size(-1)
         # define kernels
-        kernels = gaussian_kernel(kernel_scales, mask_center=mask_center)
-        K = (kernels.size(-1) - 1) // 2
-        # permute time to last dim and pad frames temporally
-        # TODO: alternative truncates kernels rather than padding
-        mu = F.pad(mu.permute(0, 2, 1), (K, K), mode=padding_mode)
-        sigma_sq = F.pad(sigma_sq.permute(0, 2, 1), (K, K), mode=padding_mode)
-        # weighted sum of gaussians by convolution, rearranged for stability
-        # μ* = Σ wₜμₜ, σ²* = Σ wₜ(σ²ₜ+ μ²ₜ) - μ²* = Σ wₜσ²ₜ + Σ wₜ(μₜ - μ*)²
-        mu_bar = F.conv1d(mu, kernels, groups=kernel_scales.size(0))
-        windows = mu.unfold(dimension=-1, size=2 * K + 1, step=1)
-        sigma_sq_within = F.conv1d(sigma_sq, kernels, groups=kernel_scales.size(0))
-        sigma_sq_between = (kernels * (windows - mu_bar.unsqueeze(-1)).pow(2)).sum(dim=-1)
-        log_sigma_sq_bar = (sigma_sq_within + sigma_sq_between).log()
-        mu_bar, log_sigma_sq_bar = mu_bar.permute(0, 2, 1), log_sigma_sq_bar.permute(0, 2, 1)
-        q_z_bar = torch.cat([mu_bar, log_sigma_sq_bar], dim=-1)
+        kernels = truncated_gaussian_kernel(kernel_scales, mask_center=True)
+        L = kernels.size(-1)
+        # permute time on the outer dim
+        mu = mu.permute(0, 2, 1)
+        sigma_sq = sigma_sq.permute(0, 2, 1)
+        # pad with zeros on the left boundary and build causal temporal windows
+        mu_windows = F.pad(mu, (L - 1, 0), value=0).unfold(-1, L, 1)
+        sigma_sq_windows = F.pad(sigma_sq, (L - 1, 0), value=0).unfold(-1, L, 1)
+        # construct a binary mask indicating which features are within boundary
+        valid = F.pad(torch.ones_like(mu), (L - 1, 0), value=0).unfold(-1, L, 1)
+        # mask kernel weights that are invalid
+        weights = kernels[None, :, None, :] * valid
+        weight_sum = weights.sum(dim=-1, keepdim=True)
+        has_valid = weight_sum > 0
+        weights = weights / weight_sum.clamp_min(torch.finfo(weights.dtype).tiny)
+        # weighted sum of gaussians (by convolution)
+        # μ‾ = Σ wₜμₜ
+        # σ‾² = Σ wₜ(σ²ₜ+ μ²ₜ) - μ²‾ = Σ wₜσ²ₜ + Σ wₜ(μₜ - μ‾)²
+        mu_bar = (weights * mu_windows).sum(dim=-1)
+        sigma_sq_within = (weights * sigma_sq_windows).sum(dim=-1)
+        sigma_sq_between = (weights * (mu_windows - mu_bar.unsqueeze(-1)).pow(2)).sum(dim=-1)
+        sigma_sq_bar = sigma_sq_within + sigma_sq_between
+        # revert to standard normal prior at boundaries
+        mu_bar = torch.where(has_valid.squeeze(-1), mu_bar, torch.zeros_like(mu_bar))
+        sigma_sq_bar = torch.where(has_valid.squeeze(-1), sigma_sq_bar, torch.ones_like(sigma_sq_bar))
+        # permute time to inner dim and concatenate
+        mu_bar, sigma_sq_bar = mu_bar.permute(0, 2, 1), sigma_sq_bar.permute(0, 2, 1)
+        q_z_bar = torch.cat([mu_bar, sigma_sq_bar.log()], dim=-1)
         return q_z_bar
 
     @staticmethod
@@ -347,12 +336,6 @@ class TCVAE(L.LightningModule):
         if hop_length != window_length:
             return frame(x, window_length=window_length, hop_length=hop_length) if x.size(-2) > window_length else x.unsqueeze(1)
         return x.view(x.size(0), x.size(1), x.size(2) // window_length, window_length, x.size(3)).transpose(1, 2)
-
-    @property
-    def alpha_current(self) -> float:
-        if self.alpha is not None:
-            return self.alpha
-        return bounded_sigmoid(self.trainer.global_step, **self.alpha_params)
 
     def loss(
         self,
@@ -398,28 +381,26 @@ class TCVAE(L.LightningModule):
 
         if self.prior_smoothing:
             # alpha weighted standard normal kl for 'smooth' features
-            alpha = self.alpha_current
-            smooth_dkl = (self.smooth_features * dkl).sum(dim=-1).mean()
-            outputs |= dict(smooth_dkl_unweighted=smooth_dkl.detach())
-            smooth_dkl = alpha * smooth_dkl
-            losses.append(smooth_dkl)
+            smooth_dkl_uw = (self.smooth_features * dkl).sum(dim=-1).mean()
+            smooth_dkl = self.alpha * smooth_dkl_uw
             outputs |= dict(smooth_dkl=smooth_dkl.detach())
+            outputs |= dict(smooth_dkl_uw=smooth_dkl_uw.detach())
+            losses.append(smooth_dkl)
             # temporal coherence kl
             mu_smooth, log_sigma_sq_smooth = mu[:, :, self.smooth_feature_idx], log_sigma_sq[:, :, self.smooth_feature_idx]
             mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
             var_ratio = (log_sigma_sq_smooth - log_sigma_sq_bar).exp()
             sq_err = (mu_smooth - mu_bar).pow(2) * (-log_sigma_sq_bar).exp()
             temp_coh_dkl = -1/2 * (1 + log_sigma_sq_smooth - log_sigma_sq_bar - var_ratio - sq_err)
-            temp_coh_dkl = temp_coh_dkl.sum(dim=-1).mean()
-            outputs |= dict(temp_coh_dkl_unweighted=temp_coh_dkl.detach())
+            temp_coh_dkl_uw = temp_coh_dkl.sum(dim=-1).mean()
             # (1 - alpha) weighted temporal coherence kl
-            temp_coh_dkl = (1 - alpha) * temp_coh_dkl
+            temp_coh_dkl = (1 - self.alpha) * temp_coh_dkl_uw
             losses.append(temp_coh_dkl)
             outputs |= dict(temp_coh_dkl=temp_coh_dkl.detach())
+            outputs |= dict(temp_coh_dkl_uw=temp_coh_dkl_uw.detach())
             # log the sum of kls
-            outputs |= dict(smooth_temp_dkl=(smooth_dkl + temp_coh_dkl).detach())
             outputs |= dict(dkl=(sharp_dkl + smooth_dkl + temp_coh_dkl).detach())
-            outputs |= dict(alpha=alpha)
+            outputs |= dict(smooth_temp_dkl=(smooth_dkl + temp_coh_dkl).detach())
         # sum all loss components
         outputs |= dict(loss=sum(losses))
         return outputs

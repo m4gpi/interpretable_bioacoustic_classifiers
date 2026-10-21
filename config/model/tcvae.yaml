@@ -10,16 +10,11 @@ distilled: false
 kernel_smoothing: false
 prior_smoothing: true
 alpha: null
-alpha_step_start: 15_000
-alpha_step_end: 100_000
-alpha_max: 1.0
-alpha_min: 0.25
-alpha_step_slope: 1.0
-smooth_sigma_z_step_start: 15_000
-smooth_sigma_z_step_end: 100_000
-smooth_sigma_z_max: 0.5
-smooth_sigma_z_min: 0.2
-smooth_sigma_z_step_slope: 1.0
+gamma: 1.0
+sigma_bar_max: 0.5
+sigma_bar_min: 0.1
+sigma_bar_hold_steps: 10_000
+sigma_bar_warmup_steps: 20_000
 learning_rate: 4.e-5
 optimiser_cls: torch.optim.AdamW
 scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
@@ -46,7 +41,7 @@ feature_encoder:
   block_width: 4
   block_depth: 3
   block_resample: [CONV_DOWN, CONV_DOWN, CONV_DOWN, CONV_DOWN]
-  padding_mode: circular
+  padding_mode: replicate
   activation: LEAK
   norm_type: LN
   dropout_prob: 0.2
@@ -73,7 +68,7 @@ feature_decoder:
   block_width: 4
   block_depth: 3
   block_resample: [CONV_UP, CONV_UP, CONV_UP, CONV_UP]
-  padding_mode: circular
+  padding_mode: replicate
   activation: LEAK
   norm_type: LN
   dropout_prob: 0.0
