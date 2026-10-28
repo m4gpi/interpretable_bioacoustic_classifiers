@@ -1,4 +1,5 @@
 import copy
+import enum
 import lightning as L
 import hydra
 import numpy as np
@@ -12,10 +13,10 @@ import wandb
 from matplotlib import pyplot as plt
 from torch.nn import functional as F
 from torchvision.transforms import functional as T
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Callable
 
 from src.core.transforms.frame import frame_fold as frame
-from src.core.utils import Batch, linear_schedule, detach_values, prefix_keys, histogram_to_wandb
+from src.core.utils import Batch, linear_decay, detach_values, prefix_keys, histogram_to_wandb
 from src.core.utils.sketch import plot_latent_power_spectral_density_heatmap
 from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior
 
@@ -67,12 +68,49 @@ def laplace_kernel(sigmas: torch.Tensor, mask_center: bool = False) -> torch.Ten
     k_size = 2 * c + 1
     x = torch.arange(k_size, device=sigmas.device) - c
     x = x.unsqueeze(0)
-    sigmas_exp = sigmas.unsqueeze(1)
-    filt = torch.exp(-torch.abs(x) / sigmas_exp)
+    filt = torch.exp(-torch.abs(x) / sigmas.unsqueeze(1))
     if mask_center:
         filt[:, c] = 0.0
     filt = filt / filt.sum(dim=1, keepdim=True)
     return filt.unsqueeze(1)
+
+def truncated_laplace_kernel(sigmas: torch.Tensor, mask_center: bool = False) -> torch.Tensor:
+    sigmas = sigmas.float()
+    c = int(sigmas.max() / 0.3 + 1)
+    k_size = c + 1
+    # lag 0 is the current timestep; larger lags are further in the past
+    lag = torch.arange(k_size, device=sigmas.device, dtype=sigmas.dtype)
+    filt = torch.exp(-torch.abs(lag.unsqueeze(0)) / sigmas.unsqueeze(1))
+    if mask_center:
+        filt[:, 0] = 0.0
+    filt = filt / filt.sum(dim=1, keepdim=True)
+    # conv1d performs cross-correlation, so reverse the lag order
+    return filt.flip(dims=[1])
+
+def causal_windows(x, kernels):
+    L = kernels.size(-1)
+    return F.pad(x, (L - 1, 0), value=0).unfold(-1, L, 1)
+
+def bidirectional_windows(x, kernels):
+    W = kernels.size(-1)
+    c = W // 2
+    return F.pad(x, (c, c), value=0).unfold(-1, W, 1)
+
+class Kernel(enum.Enum):
+    GAUSS = (gaussian_kernel, bidirectional_windows)
+    GAUSS_TRUNC = (truncated_gaussian_kernel, causal_windows)
+    LAPLACE = (laplace_kernel, bidirectional_windows)
+    LAPLACE_TRUNC = (truncated_laplace_kernel, causal_windows)
+
+    def __init__(self, init: Callable, window: Callable):
+        self.init = init
+        self.windows = window
+
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            return cls.__members__.get(value)
+        return None
 
 class TCVAE(L.LightningModule):
     def __init__(
@@ -106,7 +144,9 @@ class TCVAE(L.LightningModule):
         sigma_bar_hold_steps: int | None = 15_000,
         sigma_bar_warmup_steps: int | None = 100_000,
         kernel_smoothing: bool = False,
+        kernel_mode: str = "GAUSS_TRUNC",
         prior_smoothing: bool = True,
+        ema_decay: float = 0.999,
         distilled: bool = False,
         **kwargs: Any,
     ) -> None:
@@ -128,9 +168,12 @@ class TCVAE(L.LightningModule):
         self.distilled = distilled
         self.prior_smoothing = prior_smoothing
         self.kernel_smoothing = kernel_smoothing
+        self.kernel_mode = kernel_mode
         self.num_temp_groups = num_temp_groups
         self.temp_log_sigma_min = temp_log_sigma_min
         self.temp_log_sigma_max = temp_log_sigma_max
+        self.ema_decay = ema_decay
+        self.kernel = Kernel(self.kernel_mode)
 
         self.learning_rate = learning_rate
         self.optimiser_cls = optimiser_cls
@@ -162,7 +205,7 @@ class TCVAE(L.LightningModule):
             self.content_encoder_ema = copy.deepcopy(self.content_encoder)
             self.content_encoder_ema.eval()
             self.content_encoder_ema.requires_grad_(False)
-            self.ema = EMA(decay=0.999)
+            self.ema = EMA(decay=self.ema_decay)
 
     @property
     def smooth_feature_idx(self):
@@ -197,6 +240,7 @@ class TCVAE(L.LightningModule):
         x = self.front_end(wav)
         x = x.transpose(-1, -2) # transpose time to inner axis
         x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
+        # apply a random temporal offset from the left and shorten the sequence by 1 frame during training
         if self.training:
             x = self.random_intra_frame_shift(x)
         return x
@@ -223,7 +267,6 @@ class TCVAE(L.LightningModule):
                 else q_z.detach(),
                 self.smooth_feature_idx,
                 self.temporal_kernel_scales,
-                t=t,
             )
             outputs |= dict(q_z_bar=q_z_bar)
         return outputs
@@ -250,10 +293,11 @@ class TCVAE(L.LightningModule):
         hop_length = (hop_length or self.frame_window_length) // 2**(self.feature_encoder.num_layers)
         x = self.frame(x, window_length=window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
         q_z = self.content_encoder_ema(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
-        if self.sigma_z_min is not None:
+        # clip the variance to prevent over-punishment during early training
+        if self.training:
             mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
-            sigma_latent = torch.tensor(self.sigma_z_min, dtype=torch.float32, requires_grad=False, device=mu_z.device)
-            log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*sigma_latent.pow(2).log())
+            sigma_current = linear_decay(self.trainer.global_step, **self.sigma_anneal_params)
+            log_sigma_sq_z = log_sigma_sq_z.clamp(min=2*np.log(sigma_current))
             q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         return q_z
 
@@ -271,7 +315,7 @@ class TCVAE(L.LightningModule):
         q_z: torch.Tensor,
         kernel_scales: torch.Tensor,
         mask_center: bool = False,
-        padding_mode: str = "circular",
+        padding_mode: str = "zeros",
     ) -> torch.Tensor:
         kernels = gaussian_kernel(kernel_scales, mask_center=mask_center)
         K = (kernels.size(-1) - 1) // 2
@@ -287,36 +331,37 @@ class TCVAE(L.LightningModule):
         mu_bar[:, :, self.sharp_feature_idx] = mu[:, :, self.sharp_feature_idx]
         return torch.cat([mu_bar, log_sigma_sq], dim=-1)
 
+    @property
+    def sigma_anneal_params(self):
+        return dict(
+            minimum=self.sigma_bar_min,
+            maximum=self.sigma_bar_max,
+            t_start=self.sigma_bar_hold_steps,
+            t_end=self.sigma_bar_warmup_steps + self.sigma_bar_hold_steps
+        )
+
     @torch.no_grad()
     def temporal_moment_matching(
         self,
         q_z: torch.Tensor,
         feature_idx: torch.Tensor,
         kernel_scales: torch.Tensor,
+        mask_center: bool = True,
         t: int | None = None,
     ) -> torch.Tensor:
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         # extract relevant features for smoothing
         mu = mu[:, :, feature_idx]
         log_sigma_sq = log_sigma_sq[:, :, feature_idx]
-        # clip the variance to prevent over-punishment during early training
-        if self.training:
-            sigma_anneal_params = dict(x_min=self.sigma_bar_min, x_max=self.sigma_bar_max, warmup_steps=self.sigma_bar_warmup_steps, hold_steps=self.sigma_bar_hold_steps)
-            sigma_current = linear_schedule(self.trainer.global_step, **sigma_anneal_params)
-            log_sigma_sq = log_sigma_sq.clamp(min=2*np.log(sigma_current))
         sigma_sq = log_sigma_sq.exp()
-        latent_dim = mu.size(-1)
-        # define kernels
-        kernels = truncated_gaussian_kernel(kernel_scales, mask_center=True)
-        L = kernels.size(-1)
         # permute time on the outer dim
         mu = mu.permute(0, 2, 1)
         sigma_sq = sigma_sq.permute(0, 2, 1)
-        # pad with zeros on the left boundary and build causal temporal windows
-        mu_windows = F.pad(mu, (L - 1, 0), value=0).unfold(-1, L, 1)
-        sigma_sq_windows = F.pad(sigma_sq, (L - 1, 0), value=0).unfold(-1, L, 1)
-        # construct a binary mask indicating which features are within boundary
-        valid = F.pad(torch.ones_like(mu), (L - 1, 0), value=0).unfold(-1, L, 1)
+        # init kernels and build windows
+        kernels = self.kernel.init(kernel_scales, mask_center=mask_center)
+        mu_windows = self.kernel.windows(mu, kernels)
+        sigma_sq_windows = self.kernel.windows(sigma_sq, kernels)
+        valid = self.kernel.windows(torch.ones_like(mu), kernels)
         # mask kernel weights that are invalid
         weights = kernels[None, :, None, :] * valid
         weight_sum = weights.sum(dim=-1, keepdim=True)
@@ -324,8 +369,8 @@ class TCVAE(L.LightningModule):
         weights = weights / weight_sum.clamp_min(torch.finfo(weights.dtype).tiny)
         # weighted sum of gaussians (by convolution)
         # μ‾ = Σ wₜμₜ
-        # σ‾² = Σ wₜ(σ²ₜ+ μ²ₜ) - μ²‾ = Σ wₜσ²ₜ + Σ wₜ(μₜ - μ‾)²
         mu_bar = (weights * mu_windows).sum(dim=-1)
+        # σ‾² = Σ wₜ(σ²ₜ+ μ²ₜ) - μ²‾ = Σ wₜσ²ₜ + Σ wₜ(μₜ - μ‾)²
         sigma_sq_within = (weights * sigma_sq_windows).sum(dim=-1)
         sigma_sq_between = (weights * (mu_windows - mu_bar.unsqueeze(-1)).pow(2)).sum(dim=-1)
         sigma_sq_bar = sigma_sq_within + sigma_sq_between
@@ -364,7 +409,10 @@ class TCVAE(L.LightningModule):
         dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp()))
         sharp_dkl = (self.sharp_features * dkl).sum(dim=-1).mean()
         losses.append(sharp_dkl)
-        outputs |= dict(sharp_dkl=sharp_dkl.detach())
+        outputs |= dict(
+            sharp_dkl=sharp_dkl.detach(),
+            sharp_dkl_norm=sharp_dkl.detach() / len(self.sharp_feature_idx)
+        )
 
         if self.kernel_smoothing:
             # Q: just use alpha?
@@ -389,8 +437,11 @@ class TCVAE(L.LightningModule):
             # alpha weighted standard normal kl for 'smooth' features
             smooth_dkl_uw = (self.smooth_features * dkl).sum(dim=-1).mean()
             smooth_dkl = self.alpha * smooth_dkl_uw
-            outputs |= dict(smooth_dkl=smooth_dkl.detach())
-            outputs |= dict(smooth_dkl_uw=smooth_dkl_uw.detach())
+            outputs |= dict(
+                smooth_dkl=smooth_dkl.detach(),
+                smooth_dkl_uw=smooth_dkl_uw.detach(),
+                smooth_dkl_norm_uw=smooth_dkl_uw.detach() / len(self.smooth_feature_idx)
+            )
             losses.append(smooth_dkl)
             # temporal coherence kl
             mu_smooth, log_sigma_sq_smooth = mu[:, :, self.smooth_feature_idx], log_sigma_sq[:, :, self.smooth_feature_idx]
@@ -402,8 +453,11 @@ class TCVAE(L.LightningModule):
             # (1 - alpha) weighted temporal coherence kl
             temp_coh_dkl = (1 - self.alpha) * temp_coh_dkl_uw
             losses.append(temp_coh_dkl)
-            outputs |= dict(temp_coh_dkl=temp_coh_dkl.detach())
-            outputs |= dict(temp_coh_dkl_uw=temp_coh_dkl_uw.detach())
+            outputs |= dict(
+                temp_coh_dkl=temp_coh_dkl.detach(),
+                temp_coh_dkl_uw=temp_coh_dkl_uw.detach(),
+                temp_coh_dkl_norm_uw=temp_coh_dkl_uw.detach() / len(self.smooth_feature_idx),
+            )
             # log the sum of kls
             outputs |= dict(dkl=(sharp_dkl + smooth_dkl + temp_coh_dkl).detach())
             outputs |= dict(smooth_temp_dkl=(smooth_dkl + temp_coh_dkl).detach())
@@ -445,10 +499,9 @@ class TCVAE(L.LightningModule):
         )
         if q_z_bar is not None:
             mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
-            mean_shift_abs_err = (mu_z[:, :, self.smooth_feature_idx] - mu_bar).abs().mean()
             outputs |= dict(
                 mu_bar_std=mu_bar.std(),
-                mean_shift_abs_err=mean_shift_abs_err,
+                mean_shift_abs_err=(mu_z[:, :, self.smooth_feature_idx] - mu_bar).abs().mean(),
             )
             if include_hists:
                 mu_bar_hist = np.histogram(mu_bar.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])

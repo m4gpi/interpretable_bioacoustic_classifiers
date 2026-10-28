@@ -8,6 +8,7 @@ sigma_x: 0.2
 sigma_z_min: 1.e-5
 distilled: false
 kernel_smoothing: false
+kernel_mode: GAUSS_TRUNC
 prior_smoothing: true
 alpha: null
 gamma: 1.0
