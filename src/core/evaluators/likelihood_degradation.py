@@ -34,12 +34,12 @@ class LikelihoodDegradation(Evaluator):
         log.info(f"Calculating likelhood degradation for <{data_module.__class__.__name__}> with <{model.__class__.__name__}> on validation dataset")
 
         records = []
-
-        model = model.to("cuda").eval()
+        device = f"cuda:{config.trainer.devices[0]}"
+        model = model.to(device).eval()
         dl = data_module.val_dataloader()
         pbar = tqdm(dl, total=len(dl))
         for batch in pbar:
-            x = model.pre_process(batch.x.to("cuda", non_blocking=True))
+            x = model.pre_process(batch.x.to(device, non_blocking=True))
             q_z, *_ = model.encode(x)
             mu_z, logvar_z = q_z.chunk(2, dim=-1)
             std_z = (0.5 * logvar_z).exp()
@@ -75,7 +75,7 @@ class LikelihoodDegradation(Evaluator):
                 frame_mse = (diff ** 2).reshape(B, J, self.num_samples, T, -1).mean(dim=-1)
                 # mean and standard deviation over samples
                 degradation_mean = frame_mse.mean(dim=2)
-                degradation_std = frame_mse.std(dim=2, unbiased=False)
+                degradation_std = frame_mse.std(dim=2)
                 # move CPU only (once per chunk)
                 means = degradation_mean.cpu().numpy()
                 stds = degradation_std.cpu().numpy()
@@ -90,4 +90,5 @@ class LikelihoodDegradation(Evaluator):
                 }))
             pbar.set_postfix(batch_size=B, latent_dim=D)
         df2 = pd.concat(records, ignore_index=True)
-        df2.to_parquet(save_dir / "results.parquet")
+        self.save_path.mkdir(exist_ok=True, parents=True)
+        df2.to_parquet(self.save_path / "results.parquet")

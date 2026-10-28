@@ -1,5 +1,5 @@
 _target_: src.core.evaluators.likelihood_degradation.LikelihoodDegradation
 save_path: ${paths.results_dir}
-num_samples: 6
+num_samples: 5
 latent_chunk_size: 16
 

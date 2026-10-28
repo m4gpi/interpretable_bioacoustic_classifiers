@@ -9,7 +9,8 @@ import torch
 import warnings
 import wandb
 
-from omegaconf import OmegaConf, DictConfig
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig, OmegaConf
 from typing import Any, List, Dict, Tuple
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
@@ -59,6 +60,15 @@ def evaluate(cfg):
         trainer: L.Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=loggers)
     else:
         trainer = None
+
+    hydra_config = HydraConfig.get()
+    if cfg.trainer.accelerator == "gpu" and (job_num := hydra_config.job.get("num")) is not None:
+        default_devices = list(range(torch.cuda.device_count()))
+        available_devices = list(map(int, filter(None, os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")))) or default_devices
+        log.info(f"GPU devices made available at runtime: {available_devices}")
+        gpu_num = job_num % len(available_devices)
+        cfg.trainer.devices = [gpu_num]
+        log.info(f"Job {job_num} assigned GPU: {gpu_num}, GPU ID: {available_devices[gpu_num]}")
 
     if loggers:
         for logger in loggers:
