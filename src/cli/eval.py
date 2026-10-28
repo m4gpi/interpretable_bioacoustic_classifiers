@@ -42,7 +42,8 @@ def evaluate(cfg):
     log.info(f"Instantiating model <{cfg.model._target_}>")
     model_cls = hydra.utils.get_class(cfg.model._target_)
     if (ckpt_path := cfg.get("ckpt_path")):
-        model = model_cls.load_from_checkpoint(ckpt_path, map_location=torch.device("cuda"))
+        log.info(f"Loading from checkpoint {ckpt_path}")
+        model = model_cls.load_from_checkpoint(ckpt_path, map_location=torch.device("cuda"), strict=False)
     else:
         filtered_params = filter_kwargs_for_callable(model_cls.__init__, data_module.model_params)
         model = hydra.utils.instantiate(cfg.model, _recursive_=False, **filtered_params)

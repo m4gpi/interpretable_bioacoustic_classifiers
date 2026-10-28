@@ -184,22 +184,24 @@ class TCVAE(L.LightningModule):
         mask[self.smooth_feature_idx] = 1
         return mask
 
-    @property
-    def smooth_sigma_z_params(self):
-        return dict(
-            x_min=self.smooth_sigma_z_step_start,
-            x_max=self.smooth_sigma_z_step_end,
-            y_min=self.smooth_sigma_z_min,
-            y_max=self.smooth_sigma_z_max,
-            k=self.smooth_sigma_z_step_slope,
-        )
+    def random_intra_frame_shift(self, x: torch.Tensor) -> torch.Tensor:
+        bs, _, ts, fq = x.shape
+        l = ts - self.frame_window_length
+        offset = torch.randint(low=0, high=self.frame_window_length, size=(bs,), device=x.device)
+        idx = offset.unsqueeze(1) + torch.arange(l, device=x.device)
+        batch_idx = torch.arange(bs, device=x.device).unsqueeze(1)
+        x = x[batch_idx, 0, idx, :].unsqueeze(1)
+        return x
 
     def pre_process(self, wav: torch.Tensor) -> torch.Tensor:
         x = self.front_end(wav)
         x = x.transpose(-1, -2) # transpose time to inner axis
-        return T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
+        x = T.center_crop(x, [(x.size(-2) - (x.size(-2) % self.frame_window_length)), x.size(-1)])
+        if self.training:
+            x = self.random_intra_frame_shift(x)
+        return x
 
-    def forward(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
+    def forward(self, x: torch.Tensor, *args: Any, t: int | None = None, **kwargs: Any) -> Dict[str, torch.Tensor]:
         outputs = {}
         x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
         outputs |= dict(x=x, x_framed=x_framed)
@@ -221,6 +223,7 @@ class TCVAE(L.LightningModule):
                 else q_z.detach(),
                 self.smooth_feature_idx,
                 self.temporal_kernel_scales,
+                t=t,
             )
             outputs |= dict(q_z_bar=q_z_bar)
         return outputs
@@ -290,14 +293,17 @@ class TCVAE(L.LightningModule):
         q_z: torch.Tensor,
         feature_idx: torch.Tensor,
         kernel_scales: torch.Tensor,
+        t: int | None = None,
     ) -> torch.Tensor:
         mu, log_sigma_sq = q_z.chunk(2, dim=-1)
         # extract relevant features for smoothing
         mu = mu[:, :, feature_idx]
         log_sigma_sq = log_sigma_sq[:, :, feature_idx]
         # clip the variance to prevent over-punishment during early training
-        sigma_current = linear_schedule(self.trainer.global_step, x_min=self.sigma_bar_min, x_max=self.sigma_bar_max, warmup_steps=self.sigma_bar_warmup_steps, hold_steps=self.sigma_bar_hold_steps)
-        log_sigma_sq = log_sigma_sq.clamp(min=2*np.log(sigma_current))
+        if self.training:
+            sigma_anneal_params = dict(x_min=self.sigma_bar_min, x_max=self.sigma_bar_max, warmup_steps=self.sigma_bar_warmup_steps, hold_steps=self.sigma_bar_hold_steps)
+            sigma_current = linear_schedule(self.trainer.global_step, **sigma_anneal_params)
+            log_sigma_sq = log_sigma_sq.clamp(min=2*np.log(sigma_current))
         sigma_sq = log_sigma_sq.exp()
         latent_dim = mu.size(-1)
         # define kernels
@@ -412,14 +418,16 @@ class TCVAE(L.LightningModule):
         x_hat_framed: torch.Tensor,
         q_z: torch.Tensor,
         q_z_bar: torch.Tensor | None = None,
+        include_hists: bool = True,
         **kwargs: Any
     ) -> Dict[str, Any]:
         outputs = {}
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
         sigma_z = (0.5 * log_sigma_sq_z).exp()
-        mu_hist = np.histogram(mu_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
-        sigma_hist = np.histogram(sigma_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
-        outputs |= dict(mu_z_hist=mu_hist, sigma_z_hist=sigma_hist)
+        if include_hists:
+            mu_hist = np.histogram(mu_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
+            sigma_hist = np.histogram(sigma_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
+            outputs |= dict(mu_z_hist=mu_hist, sigma_z_hist=sigma_hist)
         mae = (x_hat_framed - x_framed).abs().flatten(start_dim=-3).mean(dim=-1).mean()
         mse = (x_hat_framed - x_framed).pow(2).flatten(start_dim=-3).mean(dim=-1).mean()
         outputs |= dict(mse=mse, mae=mae)
@@ -437,15 +445,15 @@ class TCVAE(L.LightningModule):
         )
         if q_z_bar is not None:
             mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
-            mu_bar_hist = np.histogram(mu_bar.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
-            sigma_bar_hist = np.histogram((0.5 * log_sigma_sq_bar).exp().flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
-            mean_shift_abs_err = (mu_z[:, :, self.smooth_feature_idx] - mu_bar).abs().mean(),
+            mean_shift_abs_err = (mu_z[:, :, self.smooth_feature_idx] - mu_bar).abs().mean()
             outputs |= dict(
                 mu_bar_std=mu_bar.std(),
-                mu_bar_hist=mu_bar_hist,
-                sigma_bar_hist=sigma_bar_hist,
                 mean_shift_abs_err=mean_shift_abs_err,
             )
+            if include_hists:
+                mu_bar_hist = np.histogram(mu_bar.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
+                sigma_bar_hist = np.histogram((0.5 * log_sigma_sq_bar).exp().flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
+                outputs |= dict(mu_bar_hist=mu_bar_hist, sigma_bar_hist=sigma_bar_hist)
         return outputs
 
     @torch.no_grad()
@@ -506,8 +514,7 @@ class TCVAE(L.LightningModule):
             axes[1, 0].set_title("Reconstruction")
             fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
             fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
-            mu_norm = ((mu[i] - mu[i].mean(axis=0)) / mu[i].std(axis=0))
-            im = plot_latent_power_spectral_density_heatmap(mu_norm, fft_length=mu[i].shape[0], **self.time_series_params, ax=axes[2, 0])
+            im = plot_latent_power_spectral_density_heatmap(mu[i], fft_length=mu[i].shape[0], **self.time_series_params, ax=axes[2, 0])
             axes[2, 0].set_title("Latent Power Spectral Density")
             fig.colorbar(im, cax=axes[2, 1], orientation="vertical")
             figures.append(("latent_spectra", fig))

@@ -239,14 +239,14 @@ class SoundingOutChorusDataModule(L.LightningDataModule):
         return self._build_dataloader(self.train_data, **self.train_dataloader_params(self.train_batch_size))
 
     def val_dataloader(self) -> torch.utils.data.DataLoader:
-        return self._build_dataloader(self.val_data, batch_size=self.eval_batch_size)
+        return self._build_dataloader(self.val_data, batch_size=self.eval_batch_size or self.train_batch_size)
 
     def test_dataloader(self) -> torch.utils.data.DataLoader:
-        return self._build_dataloader(self.test_data, batch_size=self.eval_batch_size)
+        return self._build_dataloader(self.test_data, batch_size=self.eval_batch_size or self.train_batch_size)
 
     def predict_dataloader(self) -> List[torch.utils.data.DataLoader]:
         return [
-            self._build_dataloader(self.train_data, batch_size=self.eval_batch_size),
+            self._build_dataloader(self.train_data, batch_size=self.eval_batch_size or self.train_batch_size),
             self.val_dataloader(),
             self.test_dataloader(),
         ]
