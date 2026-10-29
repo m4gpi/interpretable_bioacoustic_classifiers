@@ -3,14 +3,10 @@ latent_dim: 128
 frequency_dim: 64
 frame_window_length: 192
 frame_padding_mode: circular
-beta: 1.0
-sigma_x: 0.2
+sigma_x: 0.5
 sigma_z_min: 1.e-5
-distilled: false
-kernel_smoothing: false
 kernel_mode: GAUSS_TRUNC
-prior_smoothing: true
-alpha: null
+alpha: 0.5
 gamma: 1.0
 sigma_bar_max: 0.5
 sigma_bar_min: 0.1

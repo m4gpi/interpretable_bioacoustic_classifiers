@@ -20,7 +20,7 @@ from src.core.utils import Batch, linear_decay, detach_values, prefix_keys, hist
 from src.core.utils.sketch import plot_latent_power_spectral_density_heatmap
 from src.core.utils.metrics import negative_log_likelihood, gaussian_kl_divergence, gaussian_kl_divergence_standard_prior
 
-__all__ = ["VAE"]
+__all__ = ["TCVAE"]
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -151,11 +151,8 @@ class TCVAE(L.LightningModule):
         sigma_bar_min: float = 0.2,
         sigma_bar_hold_steps: int | None = 15_000,
         sigma_bar_warmup_steps: int | None = 100_000,
-        kernel_smoothing: bool = False,
         kernel_mode: str = "GAUSS_TRUNC",
-        prior_smoothing: bool = True,
         ema_decay: float = 0.999,
-        distilled: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__()
