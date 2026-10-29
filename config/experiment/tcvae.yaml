@@ -8,9 +8,6 @@ defaults:
 
 version: v4
 
-model:
-  distilled: false
-
 trainer:
   max_steps: 180_000
   max_epochs: -1
@@ -20,7 +17,7 @@ trainer:
 callbacks:
   primary_model_checkpoint:
     _target_: lightning.pytorch.callbacks.ModelCheckpoint
-    dirpath: ${paths.checkpoint_dir}/${version}/tcvae_ema_alpha_sweep/${run_id}
+    dirpath: ${paths.checkpoint_dir}/${version}/tcvae_ema/${run_id}
     filename: '{step}'
     every_n_train_steps: 10_000
     save_top_k: -1
@@ -45,4 +42,4 @@ logger:
   wandb:
     id: ${run_id}
     project: temporal_coherence_vae
-    group: tcvae_alpha_sweep
+    group: tcvae_ema

@@ -112,6 +112,14 @@ class Kernel(enum.Enum):
             return cls.__members__.get(value)
         return None
 
+def grad_stats(module):
+    grads = [p.grad.detach().float() for p in module.parameters() if p.grad is not None]
+    if not grads:
+        return 0.0, 0.0
+    norm = torch.linalg.vector_norm(torch.stack([torch.linalg.vector_norm(g, 2) for g in grads]), 2)
+    max_grad = max(g.abs().max() for g in grads)
+    return norm, max_grad
+
 class TCVAE(L.LightningModule):
     def __init__(
         self,
@@ -165,9 +173,6 @@ class TCVAE(L.LightningModule):
         self.sigma_bar_min = sigma_bar_min
         self.sigma_bar_hold_steps = sigma_bar_hold_steps
         self.sigma_bar_warmup_steps = sigma_bar_warmup_steps
-        self.distilled = distilled
-        self.prior_smoothing = prior_smoothing
-        self.kernel_smoothing = kernel_smoothing
         self.kernel_mode = kernel_mode
         self.num_temp_groups = num_temp_groups
         self.temp_log_sigma_min = temp_log_sigma_min
@@ -198,14 +203,13 @@ class TCVAE(L.LightningModule):
             for i in range(len(self.smooth_feature_idx) // self.num_temp_groups)
         ], dim=1).flatten().flip(dims=[0]), requires_grad=False)
 
-        if self.distilled:
-            self.feature_encoder_ema = copy.deepcopy(self.feature_encoder)
-            self.feature_encoder_ema.eval()
-            self.feature_encoder_ema.requires_grad_(False)
-            self.content_encoder_ema = copy.deepcopy(self.content_encoder)
-            self.content_encoder_ema.eval()
-            self.content_encoder_ema.requires_grad_(False)
-            self.ema = EMA(decay=self.ema_decay)
+        self.feature_encoder_ema = copy.deepcopy(self.feature_encoder)
+        self.feature_encoder_ema.eval()
+        self.feature_encoder_ema.requires_grad_(False)
+        self.content_encoder_ema = copy.deepcopy(self.content_encoder)
+        self.content_encoder_ema.eval()
+        self.content_encoder_ema.requires_grad_(False)
+        self.ema = EMA(decay=self.ema_decay)
 
     @property
     def smooth_feature_idx(self):
@@ -250,25 +254,16 @@ class TCVAE(L.LightningModule):
         x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
         outputs |= dict(x=x, x_framed=x_framed)
         q_z, *_ = self.encode(x)
-        # apply hard smoothing (if specified)
-        if self.kernel_smoothing:
-            q_z = self.temporal_smoothing(q_z, self.temporal_kernel_scales)
         outputs |= dict(q_z=q_z)
         mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
         z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()
         x_hat = self.decode(z).view(*x.size())
         x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_window_length)
         outputs |= dict(x_hat=x_hat, x_hat_framed=x_hat_framed)
-        # derive a soft target by fitting kernels (using either posterior EMA or current posterior)
-        if self.prior_smoothing:
-            q_z_bar = self.temporal_moment_matching(
-                self.encode_ema(x).detach()
-                if self.distilled
-                else q_z.detach(),
-                self.smooth_feature_idx,
-                self.temporal_kernel_scales,
-            )
-            outputs |= dict(q_z_bar=q_z_bar)
+        with torch.no_grad():
+            q_z_ema = self.encode_ema(x)
+            q_z_bar = self.temporal_moment_matching(q_z_ema, self.smooth_feature_idx, self.temporal_kernel_scales)
+        outputs |= dict(q_z_bar=q_z_bar, q_z_ema=q_z_ema)
         return outputs
 
     def predict(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
@@ -293,7 +288,6 @@ class TCVAE(L.LightningModule):
         hop_length = (hop_length or self.frame_window_length) // 2**(self.feature_encoder.num_layers)
         x = self.frame(x, window_length=window_length, hop_length=hop_length, padding_mode=self.frame_padding_mode)
         q_z = self.content_encoder_ema(x.flatten(end_dim=1)).unflatten(dim=0, sizes=(x.size(0), x.size(1)))
-        # clip the variance to prevent over-punishment during early training
         if self.training:
             mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
             sigma_current = linear_decay(self.trainer.global_step, **self.sigma_anneal_params)
@@ -310,27 +304,6 @@ class TCVAE(L.LightningModule):
             U = block(U)
         return U
 
-    def temporal_smoothing(
-        self,
-        q_z: torch.Tensor,
-        kernel_scales: torch.Tensor,
-        mask_center: bool = False,
-        padding_mode: str = "zeros",
-    ) -> torch.Tensor:
-        kernels = gaussian_kernel(kernel_scales, mask_center=mask_center)
-        K = (kernels.size(-1) - 1) // 2
-        mu, log_sigma_sq = q_z.chunk(2, dim=-1)
-        mu_bar = torch.zeros_like(mu)
-        # smooth over selected features by convolution
-        mu_bar[:, :, self.smooth_feature_idx] = F.conv1d(
-            F.pad(mu[:, :, self.smooth_feature_idx].permute(0, 2, 1), (K, K), mode=padding_mode),
-            kernels,
-            groups=kernel_scales.size(0)
-        ).permute(0, 2, 1)
-        # copy over remaining
-        mu_bar[:, :, self.sharp_feature_idx] = mu[:, :, self.sharp_feature_idx]
-        return torch.cat([mu_bar, log_sigma_sq], dim=-1)
-
     @property
     def sigma_anneal_params(self):
         return dict(
@@ -340,7 +313,6 @@ class TCVAE(L.LightningModule):
             t_end=self.sigma_bar_warmup_steps + self.sigma_bar_hold_steps
         )
 
-    @torch.no_grad()
     def temporal_moment_matching(
         self,
         q_z: torch.Tensor,
@@ -413,54 +385,33 @@ class TCVAE(L.LightningModule):
             sharp_dkl=sharp_dkl.detach(),
             sharp_dkl_norm=sharp_dkl.detach() / len(self.sharp_feature_idx)
         )
-
-        if self.kernel_smoothing:
-            # Q: just use alpha?
-            # weight the KL inversely proportional to the kernel scale
-            # offsetting such that group with smallest scale doesn't have weight of 1
-            scales = torch.stack([
-                torch.linspace(
-                    self.temp_log_sigma_min,
-                    self.temp_log_sigma_max + ((self.temp_log_sigma_max - self.temp_log_sigma_min) / (self.num_temp_groups - 1)),
-                    self.num_temp_groups + 1,
-                    device=dkl.device,
-                ).exp()
-                for i in range(len(self.smooth_feature_idx) // self.num_temp_groups)
-            ], dim=1).flatten().flip(dims=[0])
-            inv_scales = 1 / scales
-            weight = (inv_scales / inv_scales.max())[:-3]
-            smooth_dkl = (weight * dkl[:, :, self.smooth_feature_idx]).sum(dim=-1).mean()
-            losses.append(smooth_dkl)
-            outputs |= dict(smooth_dkl=smooth_dkl.detach())
-
-        if self.prior_smoothing:
-            # alpha weighted standard normal kl for 'smooth' features
-            smooth_dkl_uw = (self.smooth_features * dkl).sum(dim=-1).mean()
-            smooth_dkl = self.alpha * smooth_dkl_uw
-            outputs |= dict(
-                smooth_dkl=smooth_dkl.detach(),
-                smooth_dkl_uw=smooth_dkl_uw.detach(),
-                smooth_dkl_norm_uw=smooth_dkl_uw.detach() / len(self.smooth_feature_idx)
-            )
-            losses.append(smooth_dkl)
-            # temporal coherence kl
-            mu_smooth, log_sigma_sq_smooth = mu[:, :, self.smooth_feature_idx], log_sigma_sq[:, :, self.smooth_feature_idx]
-            mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
-            var_ratio = (log_sigma_sq_smooth - log_sigma_sq_bar).exp()
-            sq_err = (mu_smooth - mu_bar).pow(2) * (-log_sigma_sq_bar).exp()
-            temp_coh_dkl = -1/2 * (1 + log_sigma_sq_smooth - log_sigma_sq_bar - var_ratio - sq_err)
-            temp_coh_dkl_uw = temp_coh_dkl.sum(dim=-1).mean()
-            # (1 - alpha) weighted temporal coherence kl
-            temp_coh_dkl = (1 - self.alpha) * temp_coh_dkl_uw
-            losses.append(temp_coh_dkl)
-            outputs |= dict(
-                temp_coh_dkl=temp_coh_dkl.detach(),
-                temp_coh_dkl_uw=temp_coh_dkl_uw.detach(),
-                temp_coh_dkl_norm_uw=temp_coh_dkl_uw.detach() / len(self.smooth_feature_idx),
-            )
-            # log the sum of kls
-            outputs |= dict(dkl=(sharp_dkl + smooth_dkl + temp_coh_dkl).detach())
-            outputs |= dict(smooth_temp_dkl=(smooth_dkl + temp_coh_dkl).detach())
+        # alpha weighted standard normal kl for 'smooth' features
+        smooth_dkl_uw = (self.smooth_features * dkl).sum(dim=-1).mean()
+        smooth_dkl = self.alpha * smooth_dkl_uw
+        outputs |= dict(
+            smooth_dkl=smooth_dkl.detach(),
+            smooth_dkl_uw=smooth_dkl_uw.detach(),
+            smooth_dkl_norm_uw=smooth_dkl_uw.detach() / len(self.smooth_feature_idx)
+        )
+        losses.append(smooth_dkl)
+        # temporal coherence kl
+        mu_smooth, log_sigma_sq_smooth = mu[:, :, self.smooth_feature_idx], log_sigma_sq[:, :, self.smooth_feature_idx]
+        mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
+        var_ratio = (log_sigma_sq_smooth - log_sigma_sq_bar).exp()
+        sq_err = (mu_smooth - mu_bar).pow(2) * (-log_sigma_sq_bar).exp()
+        temp_coh_dkl = -1/2 * (1 + log_sigma_sq_smooth - log_sigma_sq_bar - var_ratio - sq_err)
+        temp_coh_dkl_uw = temp_coh_dkl.sum(dim=-1).mean()
+        # (1 - alpha) weighted temporal coherence kl
+        temp_coh_dkl = (1 - self.alpha) * temp_coh_dkl_uw
+        losses.append(temp_coh_dkl)
+        outputs |= dict(
+            temp_coh_dkl=temp_coh_dkl.detach(),
+            temp_coh_dkl_uw=temp_coh_dkl_uw.detach(),
+            temp_coh_dkl_norm_uw=temp_coh_dkl_uw.detach() / len(self.smooth_feature_idx),
+        )
+        # log the sum of kls
+        outputs |= dict(dkl=(sharp_dkl + smooth_dkl + temp_coh_dkl).detach())
+        outputs |= dict(smooth_temp_dkl=(smooth_dkl + temp_coh_dkl).detach())
         # sum all loss components
         outputs |= dict(loss=sum(losses))
         return outputs
@@ -597,13 +548,20 @@ class TCVAE(L.LightningModule):
         log.info(f"Testing <{config.model.get('_target_')}> on <{config.data.get('_target_')}>")
         trainer.test(self, dataloaders=data_module.predict_dataloader())
 
+    def on_before_optimizer_step(self, optimizer):
+        encoders = [("feature_encoder", self.feature_encoder), ("content_encoder", self.feature_encoder)]
+        ema_encoders = [("feature_encoder_ema", self.feature_encoder_ema), ("content_encoder_ema", self.feature_encoder_ema)]
+        decoders = [("feature_decoder", self.feature_decoder), ("content_decoder", self.feature_decoder)]
+        for name, module in [*encoders, *decoders, *ema_encoders]:
+            norm, max_grad = grad_stats(module)
+            self.logger.experiment.log({"global_step": self.trainer.global_step, f"grad/{name}_norm": norm, f"grad/{name}_max": max_grad})
+
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):
         # update the student
         super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
-        if self.distilled:
-            # update the teacher
-            self.ema.update(self.feature_encoder, self.feature_encoder_ema)
-            self.ema.update(self.content_encoder, self.content_encoder_ema)
+        # update the teacher
+        self.ema.update(self.feature_encoder, self.feature_encoder_ema)
+        self.ema.update(self.content_encoder, self.content_encoder_ema)
 
     def step(self, batch: Batch, batch_idx: int, **kwargs: Any) -> Dict[str, torch.Tensor]:
         step_outputs = self.forward(**batch, t=self.trainer.global_step, **kwargs)
@@ -650,3 +608,48 @@ class TCVAE(L.LightningModule):
                 frequency=self.scheduler_frequency
             )]
         return optimiser
+
+# def temporal_smoothing(
+#     self,
+#     q_z: torch.Tensor,
+#     kernel_scales: torch.Tensor,
+#     mask_center: bool = False,
+#     padding_mode: str = "zeros",
+# ) -> torch.Tensor:
+#     kernels = gaussian_kernel(kernel_scales, mask_center=mask_center)
+#     K = (kernels.size(-1) - 1) // 2
+#     mu, log_sigma_sq = q_z.chunk(2, dim=-1)
+#     mu_bar = torch.zeros_like(mu)
+#     # smooth over selected features by convolution
+#     mu_bar[:, :, self.smooth_feature_idx] = F.conv1d(
+#         F.pad(mu[:, :, self.smooth_feature_idx].permute(0, 2, 1), (K, K), mode=padding_mode),
+#         kernels,
+#         groups=kernel_scales.size(0)
+#     ).permute(0, 2, 1)
+#     # copy over remaining
+#     mu_bar[:, :, self.sharp_feature_idx] = mu[:, :, self.sharp_feature_idx]
+#     return torch.cat([mu_bar, log_sigma_sq], dim=-1)
+
+# # apply hard smoothing (if specified)
+# if self.kernel_smoothing:
+#     q_z = self.temporal_smoothing(q_z, self.temporal_kernel_scales)
+
+# if self.kernel_smoothing:
+#     # Q: just use alpha?
+#     # weight the KL inversely proportional to the kernel scale
+#     # offsetting such that group with smallest scale doesn't have weight of 1
+#     scales = torch.stack([
+#         torch.linspace(
+#             self.temp_log_sigma_min,
+#             self.temp_log_sigma_max + ((self.temp_log_sigma_max - self.temp_log_sigma_min) / (self.num_temp_groups - 1)),
+#             self.num_temp_groups + 1,
+#             device=dkl.device,
+#         ).exp()
+#         for i in range(len(self.smooth_feature_idx) // self.num_temp_groups)
+#     ], dim=1).flatten().flip(dims=[0])
+#     inv_scales = 1 / scales
+#     weight = (inv_scales / inv_scales.max())[:-3]
+#     smooth_dkl = (weight * dkl[:, :, self.smooth_feature_idx]).sum(dim=-1).mean()
+#     losses.append(smooth_dkl)
+#     outputs |= dict(smooth_dkl=smooth_dkl.detach())
+
