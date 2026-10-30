@@ -120,6 +120,47 @@ def grad_stats(module):
     max_grad = max(g.abs().max() for g in grads)
     return norm, max_grad
 
+class ARPrior(torch.nn.Module):
+    def __init__(
+        self,
+        latent_dim: int,
+        hidden_dim: int,
+        num_layers: int = 1,
+    ) -> None:
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.init_token = torch.nn.Parameter(torch.randn(1, 1, self.latent_dim))
+        self.rnn = torch.nn.GRU(input_size=latent_dim, num_layers=num_layers, hidden_size=hidden_dim, batch_first=True)
+        self.proj = torch.nn.Linear(hidden_dim, 2 * latent_dim)
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        z_in = torch.cat([self.init_token.expand(z.size(0), 1, -1), z[:, :-1]], dim=1)
+        # maybe needs teacher forcing?
+        h, c = self.rnn(z_in)
+        p_z = self.proj(h)
+        return p_z
+
+    @torch.no_grad()
+    def generate(self, num_samples, num_frames: int, noise_sigma: float = 1e-1):
+        # generate initial sample using token
+        out, h_t = self.rnn(self.init_token.expand(num_samples, 1, -1))
+        mu_p, log_sigma_sq_p = self.proj(out).chunk(2, dim=-1)
+        # draw a sample to use as t=0
+        z_t = torch.distributions.Normal(mu_p, (0.5 * log_sigma_sq_p).exp()).rsample()
+        # collect generated samples
+        z_seq = [z_t]
+        # initialise hidden state to none
+        for t in range(num_frames - 1):
+            out, h_t = self.rnn(z_t, h_t)
+            p_z_t = self.proj(out)
+            mu_p, log_sigma_sq_p = p_z_t.chunk(2, dim=-1)
+            z_t = torch.distributions.Normal(mu_p, (0.5 * log_sigma_sq_p).exp()).rsample()
+            z_seq.append(z_t)
+        z_gen = torch.cat(z_seq, dim=1)
+        return z_gen
+
 class TCVAE(L.LightningModule):
     def __init__(
         self,
@@ -128,6 +169,7 @@ class TCVAE(L.LightningModule):
         content_encoder: omegaconf.DictConfig,
         feature_decoder: omegaconf.DictConfig,
         content_decoder: omegaconf.DictConfig,
+        ar_prior: omegaconf.DictConfig,
         latent_dim: int = 128,
         frequency_dim: int = 64,
         frame_window_length: int = 192,
@@ -153,6 +195,7 @@ class TCVAE(L.LightningModule):
         sigma_bar_warmup_steps: int | None = 100_000,
         kernel_mode: str = "GAUSS_TRUNC",
         ema_decay: float = 0.999,
+        prior_training: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -176,6 +219,7 @@ class TCVAE(L.LightningModule):
         self.temp_log_sigma_max = temp_log_sigma_max
         self.ema_decay = ema_decay
         self.kernel = Kernel(self.kernel_mode)
+        self.prior_training = prior_training
 
         self.learning_rate = learning_rate
         self.optimiser_cls = optimiser_cls
@@ -207,6 +251,17 @@ class TCVAE(L.LightningModule):
         self.content_encoder_ema.eval()
         self.content_encoder_ema.requires_grad_(False)
         self.ema = EMA(decay=self.ema_decay)
+
+        if self.prior_training:
+            self.feature_encoder.eval()
+            self.feature_encoder.requires_grad_(False)
+            self.content_encoder.eval()
+            self.content_encoder.requires_grad_(False)
+            self.feature_decoder.eval()
+            self.feature_decoder.requires_grad_(False)
+            self.content_decoder.eval()
+            self.content_decoder.requires_grad_(False)
+            self.prior = hydra.utils.instantiate(ar_prior)
 
     @property
     def smooth_feature_idx(self):
@@ -250,17 +305,39 @@ class TCVAE(L.LightningModule):
         outputs = {}
         x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
         outputs |= dict(x=x, x_framed=x_framed)
-        q_z, *_ = self.encode(x)
-        outputs |= dict(q_z=q_z)
-        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
-        z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()
-        x_hat = self.decode(z).view(*x.size())
-        x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_window_length)
-        outputs |= dict(x_hat=x_hat, x_hat_framed=x_hat_framed)
-        with torch.no_grad():
-            q_z_ema = self.encode_ema(x)
-            q_z_bar = self.temporal_moment_matching(q_z_ema, self.smooth_feature_idx, self.temporal_kernel_scales)
-        outputs |= dict(q_z_bar=q_z_bar, q_z_ema=q_z_ema)
+        # encode posterior
+        if self.prior_training:
+            with torch.no_grad():
+                q_z, *_ = self.encode(x)
+                outputs |= dict(q_z=q_z)
+                mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+                z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()
+            # predict samples autoregressively
+            p_z = self.prior(z)
+            mu_p, log_sigma_sq_p = p_z.chunk(2, dim=-1)
+            z_gen = torch.distributions.Normal(mu_p, (0.5 * log_sigma_sq_p).exp()).rsample()
+            # decode prior samples
+            with torch.no_grad():
+                x_gen = self.decode(z_gen).view(*x.size())
+                outputs |= dict(p_z=p_z, x_gen=x_gen, z_gen=z_gen)
+                # decode posterior latents
+                x_hat = self.decode(z).view(*x.size())
+                x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_window_length)
+                outputs |= dict(x_hat=x_hat, x_hat_framed=x_hat_framed)
+        else:
+            q_z, *_ = self.encode(x)
+            outputs |= dict(q_z=q_z)
+            mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+            z = torch.distributions.Normal(mu_z, (0.5 * log_sigma_sq_z).exp()).rsample()
+            # decode posterior latents
+            x_hat = self.decode(z).view(*x.size())
+            x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_window_length)
+            outputs |= dict(x_hat=x_hat, x_hat_framed=x_hat_framed)
+            # encode smoothed posterior
+            with torch.no_grad():
+                q_z_ema = self.encode_ema(x)
+                q_z_bar = self.temporal_moment_matching(q_z_ema, self.smooth_feature_idx, self.temporal_kernel_scales)
+                outputs |= dict(q_z_bar=q_z_bar, q_z_ema=q_z_ema)
         return outputs
 
     def predict(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
@@ -364,51 +441,62 @@ class TCVAE(L.LightningModule):
         x_hat_framed: torch.Tensor,
         q_z: torch.Tensor,
         q_z_bar: torch.Tensor | None = None,
+        p_z: torch.Tensor | None = None,
         **kwargs: Any
     ) -> Dict[str, torch.Tensor]:
         outputs = dict()
         losses = []
-        # batch/sequence mean frame-wise sum reconstruction loss
-        sigma_recon = torch.tensor(self.sigma_x, dtype=torch.float32, requires_grad=False, device=x_framed.device)
-        nll = negative_log_likelihood(x_framed, x_hat_framed, sigma_recon.pow(2).log()).flatten(start_dim=-3).sum(dim=-1)
-        losses.append(nll.mean())
-        outputs |= dict(log_likelihood_x=-nll.detach().mean())
-        # frame-wise standard normal kl for 'sharp' features
-        mu, log_sigma_sq = q_z.chunk(2, dim=-1)
-        dkl = (-1/2 * (1 + log_sigma_sq - mu.pow(2) - log_sigma_sq.exp()))
-        sharp_dkl = (self.sharp_features * dkl).sum(dim=-1).mean()
-        losses.append(sharp_dkl)
-        outputs |= dict(
-            sharp_dkl=sharp_dkl.detach(),
-            sharp_dkl_norm=sharp_dkl.detach() / len(self.sharp_feature_idx)
-        )
-        # alpha weighted standard normal kl for 'smooth' features
-        smooth_dkl_uw = (self.smooth_features * dkl).sum(dim=-1).mean()
-        smooth_dkl = self.alpha * smooth_dkl_uw
-        outputs |= dict(
-            smooth_dkl=smooth_dkl.detach(),
-            smooth_dkl_uw=smooth_dkl_uw.detach(),
-            smooth_dkl_norm_uw=smooth_dkl_uw.detach() / len(self.smooth_feature_idx)
-        )
-        losses.append(smooth_dkl)
-        # temporal coherence kl
-        mu_smooth, log_sigma_sq_smooth = mu[:, :, self.smooth_feature_idx], log_sigma_sq[:, :, self.smooth_feature_idx]
-        mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
-        var_ratio = (log_sigma_sq_smooth - log_sigma_sq_bar).exp()
-        sq_err = (mu_smooth - mu_bar).pow(2) * (-log_sigma_sq_bar).exp()
-        temp_coh_dkl = -1/2 * (1 + log_sigma_sq_smooth - log_sigma_sq_bar - var_ratio - sq_err)
-        temp_coh_dkl_uw = temp_coh_dkl.sum(dim=-1).mean()
-        # (1 - alpha) weighted temporal coherence kl
-        temp_coh_dkl = (1 - self.alpha) * temp_coh_dkl_uw
-        losses.append(temp_coh_dkl)
-        outputs |= dict(
-            temp_coh_dkl=temp_coh_dkl.detach(),
-            temp_coh_dkl_uw=temp_coh_dkl_uw.detach(),
-            temp_coh_dkl_norm_uw=temp_coh_dkl_uw.detach() / len(self.smooth_feature_idx),
-        )
-        # log the sum of kls
-        outputs |= dict(dkl=(sharp_dkl + smooth_dkl + temp_coh_dkl).detach())
-        outputs |= dict(smooth_temp_dkl=(smooth_dkl + temp_coh_dkl).detach())
+        # AR prior
+        if self.prior_training:
+            mu_q, log_sigma_sq_q = q_z.chunk(2, dim=-1)
+            mu_p, log_sigma_sq_p = p_z.chunk(2, dim=-1)
+            var_ratio = (log_sigma_sq_q - log_sigma_sq_p).exp()
+            sq_err = (mu_q - mu_p).pow(2) * (-log_sigma_sq_p).exp()
+            prior_dkl = -1/2 * (1 + log_sigma_sq_q - log_sigma_sq_p - var_ratio - sq_err)
+            prior_dkl = prior_dkl.sum(dim=-1).mean()
+            outputs |= dict(prior_dkl=prior_dkl.detach())
+            losses.append(prior_dkl)
+        else:
+            # batch/sequence mean frame-wise sum reconstruction loss
+            sigma_recon = torch.tensor(self.sigma_x, dtype=torch.float32, requires_grad=False, device=x_framed.device)
+            nll = negative_log_likelihood(x_framed, x_hat_framed, sigma_recon.pow(2).log()).flatten(start_dim=-3).sum(dim=-1)
+            losses.append(nll.mean())
+            outputs |= dict(log_likelihood_x=-nll.detach().mean())
+            # frame-wise standard normal kl for 'sharp' features
+            mu_q, log_sigma_sq_q = q_z.chunk(2, dim=-1)
+            dkl = (-1/2 * (1 + log_sigma_sq_q - mu_q.pow(2) - log_sigma_sq_q.exp()))
+            sharp_dkl = (self.sharp_features * dkl).sum(dim=-1).mean()
+            losses.append(sharp_dkl)
+            outputs |= dict(
+                sharp_dkl=sharp_dkl.detach(),
+                sharp_dkl_norm=sharp_dkl.detach() / len(self.sharp_feature_idx)
+            )
+            # alpha weighted standard normal kl for 'smooth' features
+            smooth_dkl_uw = (self.smooth_features * dkl).sum(dim=-1).mean()
+            smooth_dkl = self.alpha * smooth_dkl_uw
+            outputs |= dict(
+                smooth_dkl=smooth_dkl.detach(),
+                smooth_dkl_uw=smooth_dkl_uw.detach(),
+                smooth_dkl_norm_uw=smooth_dkl_uw.detach() / len(self.smooth_feature_idx)
+            )
+            losses.append(smooth_dkl)
+            # temporal coherence kl
+            mu_smooth, log_sigma_sq_smooth = mu_q[:, :, self.smooth_feature_idx], log_sigma_sq_q[:, :, self.smooth_feature_idx]
+            mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
+            var_ratio = (log_sigma_sq_smooth - log_sigma_sq_bar).exp()
+            sq_err = (mu_smooth - mu_bar).pow(2) * (-log_sigma_sq_bar).exp()
+            temp_coh_dkl = -1/2 * (1 + log_sigma_sq_smooth - log_sigma_sq_bar - var_ratio - sq_err)
+            temp_coh_dkl_uw = temp_coh_dkl.sum(dim=-1).mean()
+            # (1 - alpha) weighted temporal coherence kl
+            temp_coh_dkl = (1 - self.alpha) * temp_coh_dkl_uw
+            losses.append(temp_coh_dkl)
+            outputs |= dict(
+                temp_coh_dkl=temp_coh_dkl.detach(),
+                temp_coh_dkl_uw=temp_coh_dkl_uw.detach(),
+                temp_coh_dkl_norm_uw=temp_coh_dkl_uw.detach() / len(self.smooth_feature_idx),
+            )
+            outputs |= dict(dkl=(sharp_dkl + smooth_dkl + temp_coh_dkl).detach())
+            outputs |= dict(smooth_temp_dkl=(smooth_dkl + temp_coh_dkl).detach())
         # sum all loss components
         outputs |= dict(loss=sum(losses))
         return outputs
@@ -420,6 +508,7 @@ class TCVAE(L.LightningModule):
         x_hat_framed: torch.Tensor,
         q_z: torch.Tensor,
         q_z_bar: torch.Tensor | None = None,
+        p_z: torch.Tensor | None = None,
         include_hists: bool = True,
         **kwargs: Any
     ) -> Dict[str, Any]:
@@ -455,6 +544,12 @@ class TCVAE(L.LightningModule):
                 mu_bar_hist = np.histogram(mu_bar.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
                 sigma_bar_hist = np.histogram((0.5 * log_sigma_sq_bar).exp().flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
                 outputs |= dict(mu_bar_hist=mu_bar_hist, sigma_bar_hist=sigma_bar_hist)
+        if p_z is not None:
+            mu_p, log_sigma_sq_p = p_z.chunk(2, dim=-1)
+            if include_hists:
+                mu_p_hist = np.histogram(mu_p.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
+                sigma_p_hist = np.histogram((0.5 * log_sigma_sq_p).exp().flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
+                outputs |= dict(mu_p_hist=mu_p_hist, sigma_p_hist=sigma_p_hist)
         return outputs
 
     @torch.no_grad()
@@ -496,6 +591,7 @@ class TCVAE(L.LightningModule):
         x: torch.Tensor,
         x_hat: torch.Tensor,
         q_z: torch.Tensor,
+        x_gen: torch.Tensor | None = None,
         figsize: Tuple[int, int] = (6, 6),
         dpi: int = 75,
         num_samples: int = 6,
@@ -507,18 +603,44 @@ class TCVAE(L.LightningModule):
         x_hats = x_hat.squeeze().cpu().numpy()
         mu, _ = q_z.chunk(2, dim=-1)
         mu = mu.cpu().numpy()
-        for i in range(num_samples):
+        # for i in range(num_samples):
+        #     if self.prior_training:
+        #         fig, axes = plt.subplots(nrows=3, ncols=2, figsize=figsize, width_ratios=[0.97, 0.03], constrained_layout=True, dpi=dpi)
+        #         x_gens = x_gen.squeeze().cpu().numpy()
+        #         mesh = self.front_end.plot(xs[i].T, ax=axes[0, 0], vmin=x.min(), vmax=x.max())
+        #         mesh = self.front_end.plot(x_hats[i].T, ax=axes[1, 0], vmin=x.min(), vmax=x.max())
+        #         mesh = self.front_end.plot(x_gens[i].T, ax=axes[2, 0], vmin=x.min(), vmax=x.max())
+        #         axes[0, 0].set_title("Original")
+        #         axes[1, 0].set_title("Reconstruction")
+        #         axes[2, 0].set_title("Generated")
+        #         fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+        #         fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+        #         fig.colorbar(mesh, cax=axes[2, 1], orientation="vertical")
+        #         figures.append(("spectrograms", fig))
+        #     else:
+        #         fig, axes = plt.subplots(nrows=3, ncols=2, figsize=figsize, width_ratios=[0.97, 0.03], constrained_layout=True, dpi=dpi)
+        #         mesh = self.front_end.plot(xs[i].T, ax=axes[0, 0], vmin=x.min(), vmax=x.max())
+        #         mesh = self.front_end.plot(x_hats[i].T, ax=axes[1, 0], vmin=x.min(), vmax=x.max())
+        #         axes[0, 0].set_title("Original")
+        #         axes[1, 0].set_title("Reconstruction")
+        #         fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
+        #         fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
+        #         im = plot_latent_power_spectral_density_heatmap(mu[i], fft_length=mu[i].shape[0], **self.time_series_params, ax=axes[2, 0])
+        #         axes[2, 0].set_title("Latent Power Spectral Density")
+        #         fig.colorbar(im, cax=axes[2, 1], orientation="vertical")
+        #         figures.append(("latent_spectra", fig))
+
+        if self.prior_training and not self.training:
+            z = self.prior.generate(3, 39)
+            x_gen = self.decode(z)
             fig, axes = plt.subplots(nrows=3, ncols=2, figsize=figsize, width_ratios=[0.97, 0.03], constrained_layout=True, dpi=dpi)
-            mesh = self.front_end.plot(xs[i].T, ax=axes[0, 0], vmin=x.min(), vmax=x.max())
-            mesh = self.front_end.plot(x_hats[i].T, ax=axes[1, 0], vmin=x.min(), vmax=x.max())
-            axes[0, 0].set_title("Original")
-            axes[1, 0].set_title("Reconstruction")
-            fig.colorbar(mesh, cax=axes[0, 1], orientation="vertical")
-            fig.colorbar(mesh, cax=axes[1, 1], orientation="vertical")
-            im = plot_latent_power_spectral_density_heatmap(mu[i], fft_length=mu[i].shape[0], **self.time_series_params, ax=axes[2, 0])
-            axes[2, 0].set_title("Latent Power Spectral Density")
-            fig.colorbar(im, cax=axes[2, 1], orientation="vertical")
-            figures.append(("latent_spectra", fig))
+            x_gen = x_gen.squeeze().cpu().numpy()
+            for x_g, axs in zip(x_gen, axes):
+                ax1, ax2 = axs
+                mesh = self.front_end.plot(x_g.T, ax=ax1, vmin=x_gen.min(), vmax=x_gen.max())
+                fig.colorbar(mesh, cax=ax2, orientation="vertical")
+            figures.append(("generated", fig))
+
         return figures
 
     def run(self, trainer: L.Trainer, data_module: L.LightningDataModule, config: Dict[str, Any], test: bool = True):
@@ -605,6 +727,9 @@ class TCVAE(L.LightningModule):
                 frequency=self.scheduler_frequency
             )]
         return optimiser
+
+
+
 
 # def temporal_smoothing(
 #     self,

@@ -13,6 +13,7 @@ sigma_bar_min: 0.1
 sigma_bar_hold_steps: 10_000
 sigma_bar_warmup_steps: 20_000
 learning_rate: 4.e-5
+prior_training: false
 optimiser_cls: torch.optim.AdamW
 scheduler_cls: torch.optim.lr_scheduler.CosineAnnealingLR
 scheduler_config:
@@ -69,3 +70,8 @@ feature_decoder:
   activation: LEAK
   norm_type: LN
   dropout_prob: 0.0
+ar_prior:
+  _target_: src.core.models.tcvae.ARPrior
+  latent_dim: 128
+  hidden_dim: 512
+  num_layers: 1
