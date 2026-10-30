@@ -317,7 +317,18 @@ class TCSIVAE(L.LightningModule):
         return theta, dx, dy
 
     def predict(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> Dict[str, torch.Tensor]:
-        return self.forward(x, *args, **kwargs)
+        x_framed = self.frame(x, window_length=self.frame_window_length, hop_length=self.frame_window_length)
+        outputs = dict(x=x, x_framed=x_framed)
+        q_z = self.encode(x)
+        outputs |= dict(q_z=q_z)
+        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        theta = torch.zeros(q_z.size(0), q_z.size(1), 1, device=self.device, dtype=torch.float32)
+        z = torch.distributions.Normal(mu_z, (1/2 * log_sigma_sq_z).exp()).rsample()
+        U = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1)))
+        x_hat = self.cnn_decode(U, theta / torch.pi)
+        x_hat_framed = self.frame(x_hat, window_length=self.frame_window_length, hop_length=self.frame_window_length)
+        outputs |= dict(x_hat=x_hat, x_hat_framed=x_hat_framed)
+        return outputs
 
     def encode(self, x: torch.Tensor, hop_length: int | None = None) -> Tuple[torch.Tensor]:
         x, *_ = self.feature_encoder(x)
@@ -346,7 +357,7 @@ class TCSIVAE(L.LightningModule):
             q_z = torch.cat([mu_z, log_sigma_sq_z], dim=-1)
         return q_z
 
-    def decode(self, z: torch.Tensor, delta: torch.Tensor | None = None) -> torch.Tensor:
+    def decode(self, z: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
         U = self.content_decoder(z.flatten(end_dim=1)).unflatten(0, (z.size(0), z.size(1)))
         x_hat = self.cnn_decode(U, delta)
         return x_hat
@@ -506,12 +517,13 @@ class TCSIVAE(L.LightningModule):
         x_framed: torch.Tensor,
         x_hat_framed: torch.Tensor,
         q_z: torch.Tensor,
-        q_z_bar: torch.Tensor | None = None,
+        q_z_bar: torch.Tensor,
+        seq_len: int,
         include_hists: bool = True,
         **kwargs: Any
     ) -> Dict[str, Any]:
         outputs = {}
-        mu_z, log_sigma_sq_z = q_z.chunk(2, dim=-1)
+        mu_z, log_sigma_sq_z = q_z.view(-1, 2, seq_len, self.latent_dim * 2).chunk(2, dim=-1)
         sigma_z = (0.5 * log_sigma_sq_z).exp()
         if include_hists:
             mu_hist = np.histogram(mu_z.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
@@ -522,8 +534,8 @@ class TCSIVAE(L.LightningModule):
         outputs |= dict(mse=mse, mae=mae)
         dkl_norm = ((-1/2 * (1 + log_sigma_sq_z - mu_z.pow(2) - log_sigma_sq_z.exp())).sum(dim=-1).mean(dim=-1) / self.latent_dim).mean()
         outputs |= dict(dkl_norm=dkl_norm)
-        delta_sharp = mu_z[:, 1:, self.sharp_feature_idx] - mu_z[:, :-1, self.sharp_feature_idx]
-        delta_smooth = mu_z[:, 1:, self.smooth_feature_idx] - mu_z[:, :-1, self.smooth_feature_idx]
+        delta_sharp = mu_z[:, :, 1:, self.sharp_feature_idx] - mu_z[:, :, :-1, self.sharp_feature_idx]
+        delta_smooth = mu_z[:, :, 1:, self.smooth_feature_idx] - mu_z[:, :, :-1, self.smooth_feature_idx]
         outputs |= dict(
             sharp_neighbour_abs_err=delta_sharp.abs().mean(),
             sharp_neighbour_sq_err=delta_sharp.pow(2).mean(),
@@ -533,14 +545,14 @@ class TCSIVAE(L.LightningModule):
             smooth_neighbour_std=delta_smooth.std(),
         )
         if q_z_bar is not None:
-            mu_bar, log_sigma_sq_bar = q_z_bar.chunk(2, dim=-1)
+            mu_bar, log_sigma_sq_bar = q_z_bar.view(-1, 2, seq_len, int(self.latent_dim * self.smooth_prop) * 2).chunk(2, dim=-1)
             outputs |= dict(
                 mu_bar_std=mu_bar.std(),
-                mean_shift_abs_err=(mu_z[:, :, self.smooth_feature_idx] - mu_bar).abs().mean(),
+                mean_shift_abs_err=(mu_z[:, :, :, self.smooth_feature_idx] - mu_bar).abs().mean(),
             )
             if include_hists:
-                mu_bar_hist = np.histogram(mu_bar.flatten(end_dim=-2).cpu().numpy(), bins=32, range=[-5.0, 5.0])
-                sigma_bar_hist = np.histogram((0.5 * log_sigma_sq_bar).exp().flatten(end_dim=-2).cpu().numpy(), bins=32, range=[0.0, 2.0])
+                mu_bar_hist = np.histogram(mu_bar.flatten().cpu().numpy(), bins=32, range=[-5.0, 5.0])
+                sigma_bar_hist = np.histogram((0.5 * log_sigma_sq_bar).exp().flatten().cpu().numpy(), bins=32, range=[0.0, 2.0])
                 outputs |= dict(mu_bar_hist=mu_bar_hist, sigma_bar_hist=sigma_bar_hist)
         return outputs
 
@@ -554,7 +566,7 @@ class TCSIVAE(L.LightningModule):
     ) -> pd.DataFrame:
         x, *_ = batch
         frame_hop_length = frame_hop_length or self.frame_window_length // 2
-        q_z, *_ = self.encode(x, hop_length=frame_hop_length)
+        q_z = self.encode(x, hop_length=frame_hop_length)
         bs, seq, *_ = q_z.size()
         sample_idx = batch.s.cpu().unsqueeze(0).repeat(seq, 1).t().flatten()
         seq_idx = torch.arange(seq).repeat(bs, 1).view(bs * seq).cpu()
